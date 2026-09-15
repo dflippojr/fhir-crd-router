@@ -16,7 +16,7 @@ Auth is derived from `record.authType()`:
 | --- | --- |
 | `NONE` | No auth header. |
 | `API_KEY` | `Authorization: Bearer <resolved credentialRef>`. |
-| `OAUTH2_CLIENT_CREDENTIALS` | Fetches a token from `record.tokenEndpoint()` first — see the important caveat in `OAuth2TokenClient`'s javadoc about how `clientId:clientSecret` is currently packed into `credentialRef`, since the locked schema doesn't have a separate `clientId` field yet. |
+| `OAUTH2_CLIENT_CREDENTIALS` | Fetches a token from `record.tokenEndpoint()` using `record.clientId()` plus the client secret resolved from `credentialRef` (RFC 6749 `client_secret_basic`), then sends `Authorization: Bearer <token>`. |
 | `MUTUAL_TLS` | Not implemented at the per-request level yet — needs an `HttpClient` built with the right `SSLContext`/client cert, which is a caller-side concern for now. |
 
 OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes)
