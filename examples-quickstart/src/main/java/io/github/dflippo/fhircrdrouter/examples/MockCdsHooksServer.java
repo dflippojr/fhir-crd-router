@@ -19,7 +19,7 @@ final class MockCdsHooksServer {
         server = HttpServer.create(new InetSocketAddress("localhost", port), 0);
 
         server.createContext("/cds-services", exchange -> respond(exchange, """
-                {"services":[{"hook":"patient-view","title":"Prior Auth Check","description":"Checks prior auth requirements","id":"prior-auth-check"}]}"""));
+                {"services":[{"hook":"order-sign","title":"Prior Auth Check","description":"Checks prior auth requirements","id":"prior-auth-check"}]}"""));
 
         server.createContext("/cds-services/prior-auth-check", exchange -> respond(exchange, """
                 {"cards":[{"summary":"Prior authorization required for this service","indicator":"warning","detail":"Contact DEMO-PAYER utilization management before proceeding."}]}"""));

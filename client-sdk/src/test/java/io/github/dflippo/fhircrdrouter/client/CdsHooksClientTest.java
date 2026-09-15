@@ -15,14 +15,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CdsHooksClientTest {
 
     private HttpServer server;
     private ConnectionRecord record;
+    private final AtomicInteger tokenRequests = new AtomicInteger();
+    private final AtomicInteger securedHookCalls = new AtomicInteger();
 
     @BeforeEach
     void startServer() throws IOException {
@@ -30,7 +34,7 @@ class CdsHooksClientTest {
 
         server.createContext("/cds-services", exchange -> {
             String body = """
-                    {"services":[{"hook":"patient-view","title":"Example Hook","description":"desc","id":"example-hook"}]}""";
+                    {"services":[{"hook":"order-sign","title":"Example Hook","description":"desc","id":"example-hook"}]}""";
             sendJson(exchange, body);
         });
 
@@ -38,6 +42,27 @@ class CdsHooksClientTest {
             String body = """
                     {"cards":[{"summary":"Prior auth required","indicator":"warning"}]}""";
             sendJson(exchange, body);
+        });
+
+        server.createContext("/token", exchange -> sendJson(exchange,
+                "{\"access_token\":\"token-" + tokenRequests.incrementAndGet() + "\",\"expires_in\":300}"));
+
+        // Rejects the first token it sees (simulating early revocation), accepts later ones.
+        server.createContext("/cds-services/secured-hook", exchange -> {
+            securedHookCalls.incrementAndGet();
+            if ("Bearer token-1".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+                exchange.sendResponseHeaders(401, -1);
+                exchange.close();
+                return;
+            }
+            sendJson(exchange, "{\"cards\":[]}");
+        });
+
+        // Always rejects, to prove the client retries only once.
+        server.createContext("/cds-services/always-401", exchange -> {
+            securedHookCalls.incrementAndGet();
+            exchange.sendResponseHeaders(401, -1);
+            exchange.close();
         });
 
         server.start();
@@ -63,7 +88,7 @@ class CdsHooksClientTest {
 
         assertEquals(1, services.size());
         assertEquals("example-hook", services.get(0).id());
-        assertEquals("patient-view", services.get(0).hook());
+        assertEquals("order-sign", services.get(0).hook());
     }
 
     @Test
@@ -71,11 +96,51 @@ class CdsHooksClientTest {
         CdsHooksClient client = new CdsHooksClient(noopCredentialProvider());
 
         CdsHookResponse response = client.callHook(record, "example-hook",
-                new CdsHookRequest("patient-view", "instance-1", Map.of(), Map.of()));
+                new CdsHookRequest("order-sign", "instance-1", Map.of(), Map.of()));
 
         assertEquals(1, response.cards().size());
         assertEquals("Prior auth required", response.cards().get(0).summary());
         assertTrue(response.rawJson().has("cards"));
+    }
+
+    @Test
+    void oauth2RetriesOnceWithFreshTokenAfter401() {
+        CdsHooksClient client = new CdsHooksClient(fixedCredentialProvider("client:secret"));
+
+        client.callHook(oauthRecord(), "secured-hook",
+                new CdsHookRequest("order-sign", "instance-2", Map.of(), Map.of()));
+
+        assertEquals(2, tokenRequests.get());
+        assertEquals(2, securedHookCalls.get());
+    }
+
+    @Test
+    void oauth2GivesUpAfterSingleRetry() {
+        CdsHooksClient client = new CdsHooksClient(fixedCredentialProvider("client:secret"));
+
+        assertThrows(io.github.dflippo.fhircrdrouter.core.RouterException.class, () -> client.callHook(oauthRecord(),
+                "always-401", new CdsHookRequest("order-sign", "instance-3", Map.of(), Map.of())));
+        assertEquals(2, securedHookCalls.get());
+    }
+
+    private ConnectionRecord oauthRecord() {
+        String base = "http://localhost:" + server.getAddress().getPort();
+        return ConnectionRecord.builder()
+                .payerId("PAYER-OAUTH")
+                .environment(Environment.SANDBOX)
+                .baseUrl(base)
+                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .tokenEndpoint(base + "/token")
+                .credentialRef("payer-oauth")
+                .build();
+    }
+
+    private static CredentialProvider fixedCredentialProvider(String secret) {
+        return new CredentialProvider() {
+            @Override public Optional<String> resolve(String credentialRef) { return Optional.of(secret); }
+            @Override public void put(String credentialRef, String secretValue) { }
+            @Override public void remove(String credentialRef) { }
+        };
     }
 
     private static void sendJson(com.sun.net.httpserver.HttpExchange exchange, String body) throws IOException {

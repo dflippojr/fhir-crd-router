@@ -5,8 +5,12 @@ Runnable end-to-end demo, wired against an in-process mock CDS Hooks server
 live payer to point a personal project at.
 
 ```sh
-mvn -pl examples-quickstart -am exec:java
+./mvnw install -DskipTests          # once, so the sibling modules resolve
+./mvnw -pl examples-quickstart exec:java
 ```
+
+(Don't add `-am` to the second command — that runs `exec:java` in every
+upstream module too, and those have no main class.)
 
 What it does:
 

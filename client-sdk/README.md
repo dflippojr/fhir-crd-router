@@ -19,5 +19,11 @@ Auth is derived from `record.authType()`:
 | `OAUTH2_CLIENT_CREDENTIALS` | Fetches a token from `record.tokenEndpoint()` first — see the important caveat in `OAuth2TokenClient`'s javadoc about how `clientId:clientSecret` is currently packed into `credentialRef`, since the locked schema doesn't have a separate `clientId` field yet. |
 | `MUTUAL_TLS` | Not implemented at the per-request level yet — needs an `HttpClient` built with the right `SSLContext`/client cert, which is a caller-side concern for now. |
 
-No retries, no token caching, no connection pooling tuning — this is a v1
-"prove the flow works" client, not a hardened production SDK.
+OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes)
+until 30 seconds before `expires_in`; responses without `expires_in` aren't
+cached. If the payer returns 401 on an OAuth2 connection, the cached token is
+dropped and the request is retried exactly once with a fresh token.
+
+Beyond that single 401 retry there are no retries or backoff, and no
+connection pooling tuning. This is still a v1 client meant to show the flow
+works, not a hardened production SDK.

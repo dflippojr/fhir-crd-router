@@ -22,8 +22,8 @@ import java.util.Map;
  * record, resolve it through {@link PayerRouter}, and make a real CDS Hooks
  * discovery + hook call against the mock server via {@link CdsHooksClient}.
  *
- * <p>Run with {@code mvn -pl examples-quickstart exec:java} from the repo
- * root (after installing a JDK 17+ and Maven — see the root DECISIONS.md).
+ * <p>Run with {@code ./mvnw install -DskipTests} then
+ * {@code ./mvnw -pl examples-quickstart exec:java} from the repo root.
  */
 public final class QuickstartMain {
 
@@ -49,7 +49,7 @@ public final class QuickstartMain {
             System.out.println("Discovered services: " + services);
 
             CdsHookResponse response = client.callHook(record, "prior-auth-check",
-                    new CdsHookRequest("patient-view", "quickstart-instance", Map.of(), Map.of()));
+                    new CdsHookRequest("order-sign", "quickstart-instance", Map.of(), Map.of()));
             System.out.println("Hook response cards: " + response.cards());
         } finally {
             mockServer.stop();

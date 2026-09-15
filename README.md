@@ -29,11 +29,25 @@ library-first, why the credential store is pluggable, etc.).
   mock CDS Hooks server (since there's no real payer sandbox to hit from a
   personal project).
 
+## Building
+
+Requires JDK 17+. Maven itself doesn't need to be installed — use the
+bundled wrapper:
+
+```sh
+./mvnw verify                                   # build + all tests
+./mvnw install -DskipTests                      # then, to run the demo:
+./mvnw -pl examples-quickstart exec:java
+```
+
+CI (`.github/workflows/ci.yml`) runs `verify` on JDK 17 and 21.
+
 ## Status
 
-Scaffolded 2026-09-13, not yet built or tested — this machine only has JDK 8
-and no Maven installed. See [DECISIONS.md](./DECISIONS.md) for what's needed
-to actually build it, and what's still missing.
+Builds and passes tests (verified 2026-09-15 on JDK 21, compiled with
+`--release 17`), and the quickstart runs end-to-end against the mock server.
+Not yet published anywhere and not yet pointed at a real payer sandbox — see
+[DECISIONS.md](./DECISIONS.md) for what's still missing.
 
 ## License
 

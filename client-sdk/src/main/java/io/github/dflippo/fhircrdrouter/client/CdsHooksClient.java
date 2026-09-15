@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Given a resolved {@link ConnectionRecord}, talks to that payer's CDS
@@ -40,15 +41,11 @@ public final class CdsHooksClient {
 
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
     public List<CdsServiceDescriptor> discoverServices(ConnectionRecord record) {
+        String context = "Discovery call for payerId=" + record.payerId();
+        HttpResponse<String> response = send(record, context, () -> HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
+                .GET());
         try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
-                    .GET();
-            applyAuth(builder, record);
-
-            HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            requireSuccess(record, response);
-
             JsonNode servicesNode = mapper.readTree(response.body()).get("services");
             List<CdsServiceDescriptor> services = new ArrayList<>();
             if (servicesNode != null && servicesNode.isArray()) {
@@ -58,32 +55,27 @@ public final class CdsHooksClient {
             }
             return services;
         } catch (IOException e) {
-            throw new RouterException("Discovery call failed for payerId=" + record.payerId(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RouterException("Discovery call interrupted for payerId=" + record.payerId(), e);
+            throw new RouterException(context + " returned an unparseable body", e);
         }
     }
 
     /** Invokes a named hook (raw passthrough form). */
     public JsonNode callHookRaw(ConnectionRecord record, String serviceId, CdsHookRequest request) {
+        String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
+        String body;
         try {
-            String body = mapper.writeValueAsString(request);
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + serviceId))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body));
-            applyAuth(builder, record);
-
-            HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            requireSuccess(record, response);
-
+            body = mapper.writeValueAsString(request);
+        } catch (IOException e) {
+            throw new RouterException(context + " could not serialize request", e);
+        }
+        HttpResponse<String> response = send(record, context, () -> HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + serviceId))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)));
+        try {
             return mapper.readTree(response.body());
         } catch (IOException e) {
-            throw new RouterException("Hook call failed for payerId=" + record.payerId() + " serviceId=" + serviceId, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RouterException("Hook call interrupted for payerId=" + record.payerId() + " serviceId=" + serviceId, e);
+            throw new RouterException(context + " returned an unparseable body", e);
         }
     }
 
@@ -104,6 +96,38 @@ public final class CdsHooksClient {
         return new CdsHookResponse(cards, raw);
     }
 
+    /**
+     * Sends a request with auth applied. For OAuth2 connections a 401 drops the
+     * cached token and retries once with a fresh one, since payers can revoke
+     * tokens before their advertised expiry.
+     */
+    private HttpResponse<String> send(ConnectionRecord record, String context, Supplier<HttpRequest.Builder> requestFactory) {
+        try {
+            HttpResponse<String> response = sendOnce(record, requestFactory);
+            if (response.statusCode() == 401 && record.authType() == AuthType.OAUTH2_CLIENT_CREDENTIALS) {
+                oauth2TokenClient.invalidate(record, requireSecret(record));
+                response = sendOnce(record, requestFactory);
+            }
+            if (response.statusCode() / 100 != 2) {
+                throw new RouterException(context + " failed: payer returned HTTP " + response.statusCode()
+                        + ": " + response.body());
+            }
+            return response;
+        } catch (IOException e) {
+            throw new RouterException(context + " failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RouterException(context + " interrupted", e);
+        }
+    }
+
+    private HttpResponse<String> sendOnce(ConnectionRecord record, Supplier<HttpRequest.Builder> requestFactory)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder builder = requestFactory.get();
+        applyAuth(builder, record);
+        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     private void applyAuth(HttpRequest.Builder builder, ConnectionRecord record) {
         switch (record.authType()) {
             case NONE -> { /* no-op */ }
@@ -121,13 +145,6 @@ public final class CdsHooksClient {
         return credentialProvider.resolve(record.credentialRef())
                 .orElseThrow(() -> new RouterException(
                         "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")"));
-    }
-
-    private void requireSuccess(ConnectionRecord record, HttpResponse<String> response) {
-        if (response.statusCode() / 100 != 2) {
-            throw new RouterException("Payer " + record.payerId() + " returned HTTP " + response.statusCode()
-                    + ": " + response.body());
-        }
     }
 
     private static String trimTrailingSlash(String url) {
