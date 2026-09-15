@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.dflippo</groupId>
+    <artifactId>fhir-crd-router-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>examples-quickstart</artifactId>
+  <name>FHIR CRD Router - Quickstart Example</name>
+  <description>
+    Runnable example: loads sample connection records, resolves a payer, and
+    calls an in-process mock CDS Hooks server (no real payer sandbox needed).
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.dflippo</groupId>
+      <artifactId>directory-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.dflippo</groupId>
+      <artifactId>credential-store-encrypted-local</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.dflippo</groupId>
+      <artifactId>client-sdk</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.3.0</version>
+        <configuration>
+          <mainClass>io.github.dflippo.fhircrdrouter.examples.QuickstartMain</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

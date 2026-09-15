@@ -1,0 +1,7 @@
+- payerId: "DEMO-PAYER"
+  displayName: "Demo Payer (local mock server)"
+  environment: "SANDBOX"
+  baseUrl: "http://localhost:8089"
+  authType: "NONE"
+  igVersion: "crd-2.0.1"
+  status: "ACTIVE"

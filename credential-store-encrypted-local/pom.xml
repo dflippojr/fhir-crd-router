@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.dflippo</groupId>
+    <artifactId>fhir-crd-router-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>credential-store-encrypted-local</artifactId>
+  <name>FHIR CRD Router - Encrypted Local Credential Store</name>
+  <description>
+    Default CredentialProvider: secrets encrypted at rest with AES-GCM using
+    a locally generated key file. No external dependencies (Vault, AWS
+    Secrets Manager, etc.) required to get started.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.dflippo</groupId>
+      <artifactId>directory-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
