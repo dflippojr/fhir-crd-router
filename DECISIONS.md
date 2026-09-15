@@ -64,6 +64,35 @@ this one.
   parses. The rule's decision depends on the server's CQL (for the synthetic
   patient it returned "No Prior Authorization required").
 
+## Auth and mutual TLS (2026-09-15)
+
+The user chose each of these when asked:
+
+- **Mutual TLS is a transport setting, not an `authType`.** `MUTUAL_TLS` was
+  removed from the enum and replaced by an optional `mtlsCredentialRef`, so it
+  can be combined with any app-layer auth. CDS Hooks describes mTLS as used
+  "alongside" JWTs, and a payer may require mTLS plus OAuth. This changes the
+  schema locked in the 2026-09-12 scoping session. Nothing was published yet,
+  so there was no compatibility cost.
+- **New auth types.** `CDS_HOOKS_JWT` is the CDS Hooks 2.0 client JWT.
+  `OAUTH2_PRIVATE_KEY_JWT` is the RFC 7523 client assertion used by SMART
+  Backend Services.
+- **New record fields.** `keyId` (`kid`), `jwksUrl` (`jku`), and `tenant`
+  (the optional CDS Hooks claim, sent only when set).
+- **JWT signing uses Nimbus JOSE+JWT** (10.9.1, no required transitive
+  dependencies) rather than hand-written JWS code.
+- **Algorithms are RS384 (RSA 2048+) and ES384 (EC P-384) only**, taken from
+  the key, which are the algorithms CDS Hooks and SMART recommend.
+- **Private keys are PKCS#8 PEM behind `credentialRef`.** The mTLS credential
+  is a PEM bundle (certificate chain plus key). No secrets are stored on the
+  record.
+- **JWKS publishing is a helper (`Jwks`), not a hosted endpoint**, to stay
+  library-first.
+- **TLS 1.2 is the minimum** on clients the SDK builds, following the HRex
+  guidance CRD points to.
+- **Tests generate throwaway keys and certificates at runtime** (JDK
+  `KeyPairGenerator` and `keytool`), so no private keys are committed.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
@@ -71,8 +100,5 @@ this one.
 - No real payer has been contacted. The client has been tested against the
   HL7 Da Vinci CRD reference implementation running locally in Docker, but
   not against any payer's sandbox.
-- `MUTUAL_TLS` still depends on the caller building an `HttpClient` with the
-  right `SSLContext`.
-- No CDS Hooks client-signed JWT or SMART `private_key_jwt` auth type.
 - Typed contexts don't validate against full FHIR profiles, and FHIR
   resources are untyped `JsonNode`s.

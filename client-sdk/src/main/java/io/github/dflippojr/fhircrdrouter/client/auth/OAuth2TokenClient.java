@@ -2,6 +2,7 @@ package io.github.dflippojr.fhircrdrouter.client.auth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 
@@ -22,13 +23,17 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * OAuth2 client-credentials token fetch for
- * {@code authType = OAUTH2_CLIENT_CREDENTIALS} connections.
+ * {@code OAUTH2_CLIENT_CREDENTIALS} and {@code OAUTH2_PRIVATE_KEY_JWT} connections.
  *
  * <p>Follows RFC 6749: the client ID is a non-secret identifier stored on
  * the record ({@link ConnectionRecord#clientId()}), and only the client
  * secret lives behind {@code credentialRef}. The pair is sent with the
  * {@code client_secret_basic} method (HTTP Basic, each part form-urlencoded
  * first per §2.3.1), which authorization servers are required to support.
+ *
+ * <p>For {@code OAUTH2_PRIVATE_KEY_JWT}, {@code credentialRef} instead
+ * resolves to a PEM private key, and the client authenticates with a signed
+ * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
  * <p>Tokens are cached in memory per (token endpoint, client ID, scopes)
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}. A token response
@@ -43,6 +48,7 @@ public final class OAuth2TokenClient {
 
     private final HttpClient httpClient;
     private final Clock clock;
+    private final JwtSigner jwtSigner;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<CacheKey, CachedToken> cache = new ConcurrentHashMap<>();
 
@@ -53,16 +59,27 @@ public final class OAuth2TokenClient {
     OAuth2TokenClient(HttpClient httpClient, Clock clock) {
         this.httpClient = httpClient;
         this.clock = clock;
+        this.jwtSigner = new JwtSigner(clock);
     }
 
     /** Returns a cached, unexpired token if one exists; otherwise fetches a new one. */
-    public String fetchAccessToken(ConnectionRecord record, String clientSecret) {
+    public String fetchAccessToken(ConnectionRecord record, String secret) {
+        return fetchAccessToken(httpClient, record, secret);
+    }
+
+    /**
+     * Same as {@link #fetchAccessToken(ConnectionRecord, String)}, over a specific
+     * client, e.g. one configured for mutual TLS to the token endpoint.
+     *
+     * @param secret the client secret, or the PEM private key for {@code OAUTH2_PRIVATE_KEY_JWT}
+     */
+    public String fetchAccessToken(HttpClient client, ConnectionRecord record, String secret) {
         CacheKey key = cacheKey(record);
         CachedToken cached = cache.get(key);
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
             return cached.accessToken();
         }
-        CachedToken fresh = requestToken(record, clientSecret);
+        CachedToken fresh = requestToken(client, record, secret);
         if (fresh.refreshAt() != null) {
             cache.put(key, fresh);
         } else {
@@ -76,24 +93,31 @@ public final class OAuth2TokenClient {
         cache.remove(cacheKey(record));
     }
 
-    private CachedToken requestToken(ConnectionRecord record, String clientSecret) {
-        String credentials = formEncode(record.clientId()) + ":" + formEncode(clientSecret);
-        String basicAuth = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-
+    private CachedToken requestToken(HttpClient client, ConnectionRecord record, String secret) {
         List<String> scopes = record.scopes();
-        String form = "grant_type=client_credentials"
-                + (scopes.isEmpty() ? "" : "&scope=" + formEncode(String.join(" ", scopes)));
+        StringBuilder form = new StringBuilder("grant_type=client_credentials");
+        if (!scopes.isEmpty()) {
+            form.append("&scope=").append(formEncode(String.join(" ", scopes)));
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(record.tokenEndpoint()))
+                .header("Content-Type", "application/x-www-form-urlencoded");
+
+        if (record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+            String assertion = jwtSigner.clientAssertion(record, PemKeys.readPrivateKey(secret));
+            form.append("&client_assertion_type=").append(formEncode(JwtSigner.CLIENT_ASSERTION_TYPE))
+                    .append("&client_assertion=").append(formEncode(assertion));
+        } else {
+            String credentials = formEncode(record.clientId()) + ":" + formEncode(secret);
+            builder.header("Authorization", "Basic "
+                    + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8)));
+        }
 
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(record.tokenEndpoint()))
-                    .header("Authorization", "Basic " + basicAuth)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(form))
-                    .build();
+            HttpRequest request = builder.POST(HttpRequest.BodyPublishers.ofString(form.toString())).build();
 
             Instant requestedAt = clock.instant();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() / 100 != 2) {
                 throw new RouterException("Token request failed for payerId=" + record.payerId()
                         + " status=" + response.statusCode() + " body=" + response.body());

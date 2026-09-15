@@ -11,6 +11,14 @@ import java.util.Objects;
  * A payer's FHIR CRD (CDS Hooks) endpoint, plus enough metadata to reach and
  * authenticate against it. Never holds secret material directly — see
  * {@link #credentialRef()} and {@link CredentialProvider}.
+ *
+ * @param clientId OAuth2 client ID, or the {@code iss} claim for {@link AuthType#CDS_HOOKS_JWT}
+ * @param keyId {@code kid} of the signing key, for the JWT-based auth types
+ * @param jwksUrl optional {@code jku}: where the payer can fetch your public JWK Set
+ * @param tenant optional CDS Hooks {@code tenant} claim identifying the calling organization
+ * @param credentialRef the app-layer secret: API key, client secret, or PEM private key
+ * @param mtlsCredentialRef optional; when set, connections use mutual TLS with the PEM
+ *     client certificate chain and private key this resolves to. Works with any {@link AuthType}.
  */
 public record ConnectionRecord(
         String payerId,
@@ -20,8 +28,12 @@ public record ConnectionRecord(
         AuthType authType,
         String tokenEndpoint,
         String clientId,
+        String keyId,
+        String jwksUrl,
+        String tenant,
         List<String> scopes,
         String credentialRef,
+        String mtlsCredentialRef,
         String igVersion,
         ConnectionStatus status,
         Instant lastVerifiedAt,
@@ -38,8 +50,12 @@ public record ConnectionRecord(
             @JsonProperty("authType") AuthType authType,
             @JsonProperty("tokenEndpoint") String tokenEndpoint,
             @JsonProperty("clientId") String clientId,
+            @JsonProperty("keyId") String keyId,
+            @JsonProperty("jwksUrl") String jwksUrl,
+            @JsonProperty("tenant") String tenant,
             @JsonProperty("scopes") List<String> scopes,
             @JsonProperty("credentialRef") String credentialRef,
+            @JsonProperty("mtlsCredentialRef") String mtlsCredentialRef,
             @JsonProperty("igVersion") String igVersion,
             @JsonProperty("status") ConnectionStatus status,
             @JsonProperty("lastVerifiedAt") Instant lastVerifiedAt,
@@ -54,8 +70,12 @@ public record ConnectionRecord(
         this.authType = Objects.requireNonNull(authType, "authType");
         this.tokenEndpoint = tokenEndpoint;
         this.clientId = clientId;
+        this.keyId = keyId;
+        this.jwksUrl = jwksUrl;
+        this.tenant = tenant;
         this.scopes = scopes == null ? List.of() : List.copyOf(scopes);
         this.credentialRef = credentialRef;
+        this.mtlsCredentialRef = mtlsCredentialRef;
         this.igVersion = igVersion;
         this.status = status == null ? ConnectionStatus.ACTIVE : status;
         this.lastVerifiedAt = lastVerifiedAt;
@@ -63,13 +83,23 @@ public record ConnectionRecord(
         this.createdAt = createdAt == null ? Instant.now() : createdAt;
         this.updatedAt = updatedAt == null ? Instant.now() : updatedAt;
 
-        if (authType == AuthType.OAUTH2_CLIENT_CREDENTIALS && (tokenEndpoint == null || tokenEndpoint.isBlank())) {
-            throw new IllegalArgumentException(
-                    "tokenEndpoint is required when authType = OAUTH2_CLIENT_CREDENTIALS (payerId=" + payerId + ")");
+        boolean oauth2 = authType == AuthType.OAUTH2_CLIENT_CREDENTIALS || authType == AuthType.OAUTH2_PRIVATE_KEY_JWT;
+        boolean signsJwt = authType == AuthType.OAUTH2_PRIVATE_KEY_JWT || authType == AuthType.CDS_HOOKS_JWT;
+        if (oauth2) {
+            requireForAuthType(tokenEndpoint, "tokenEndpoint");
         }
-        if (authType == AuthType.OAUTH2_CLIENT_CREDENTIALS && (clientId == null || clientId.isBlank())) {
+        if (oauth2 || signsJwt) {
+            requireForAuthType(clientId, "clientId");
+        }
+        if (signsJwt) {
+            requireForAuthType(keyId, "keyId");
+        }
+    }
+
+    private void requireForAuthType(String value, String field) {
+        if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(
-                    "clientId is required when authType = OAUTH2_CLIENT_CREDENTIALS (payerId=" + payerId + ")");
+                    field + " is required when authType = " + authType + " (payerId=" + payerId + ")");
         }
     }
 
@@ -91,6 +121,10 @@ public record ConnectionRecord(
         private AuthType authType = AuthType.NONE;
         private String tokenEndpoint;
         private String clientId;
+        private String keyId;
+        private String jwksUrl;
+        private String tenant;
+        private String mtlsCredentialRef;
         private List<String> scopes = List.of();
         private String credentialRef;
         private String igVersion;
@@ -107,6 +141,10 @@ public record ConnectionRecord(
         public Builder authType(AuthType v) { this.authType = v; return this; }
         public Builder tokenEndpoint(String v) { this.tokenEndpoint = v; return this; }
         public Builder clientId(String v) { this.clientId = v; return this; }
+        public Builder keyId(String v) { this.keyId = v; return this; }
+        public Builder jwksUrl(String v) { this.jwksUrl = v; return this; }
+        public Builder tenant(String v) { this.tenant = v; return this; }
+        public Builder mtlsCredentialRef(String v) { this.mtlsCredentialRef = v; return this; }
         public Builder scopes(List<String> v) { this.scopes = v; return this; }
         public Builder credentialRef(String v) { this.credentialRef = v; return this; }
         public Builder igVersion(String v) { this.igVersion = v; return this; }
@@ -118,7 +156,7 @@ public record ConnectionRecord(
 
         public ConnectionRecord build() {
             return new ConnectionRecord(payerId, displayName, environment, baseUrl, authType,
-                    tokenEndpoint, clientId, scopes, credentialRef, igVersion, status, lastVerifiedAt,
+                    tokenEndpoint, clientId, keyId, jwksUrl, tenant, scopes, credentialRef, mtlsCredentialRef, igVersion, status, lastVerifiedAt,
                     contactInfo, createdAt, updatedAt);
         }
     }

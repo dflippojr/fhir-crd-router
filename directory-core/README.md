@@ -3,8 +3,11 @@
 Core contracts and the default implementations:
 
 - `ConnectionRecord` — immutable record for one payer+environment's endpoint
-  and auth metadata (schema per the capsule's "Draft Connection Record
-  Schema"). Built via `ConnectionRecord.builder()...build()`.
+  and auth metadata. Built via `ConnectionRecord.builder()...build()`.
+  `authType` sets app-layer auth (`NONE`, `API_KEY`,
+  `OAUTH2_CLIENT_CREDENTIALS`, `OAUTH2_PRIVATE_KEY_JWT`, `CDS_HOOKS_JWT`).
+  The optional `mtlsCredentialRef` adds mutual TLS on top of any of them. See
+  the `client-sdk` README for which fields each auth type needs.
 - `ConnectionStore` — pluggable persistence; `FileBasedConnectionStore` is
   the v1 default (flat YAML file, whole-file read/rewrite).
 - `CredentialProvider` — pluggable secret resolution; the default
