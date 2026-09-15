@@ -1,0 +1,37 @@
+name: CRD reference server
+
+# Builds the HL7 Da Vinci CRD reference implementation and runs the live
+# integration tests against it. Slow (the server build takes minutes), so it
+# runs weekly and on demand instead of on every push.
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build reference server image
+        run: docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+      - name: Start reference server
+        run: |
+          docker run -d --name crd-ri -p 18090:8090 crd-ri
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18090/r4/cds-services > /dev/null && exit 0
+            sleep 5
+          done
+          docker logs crd-ri | tail -50
+          exit 1
+      - name: Run tests against it
+        env:
+          CRD_RI_BASE_URL: http://127.0.0.1:18090/r4
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp -pl client-sdk -am test

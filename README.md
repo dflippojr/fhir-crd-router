@@ -20,7 +20,7 @@ library-first, why the credential store is pluggable, etc.).
   implementation: an AES-GCM encrypted local file, keyed by a locally
   generated secret. `ConnectionRecord` only ever stores an opaque
   `credentialRef` into this (or another) provider — never a raw secret.
-- **`client-sdk`** — `CdsHooksClient`: given a resolved `ConnectionRecord`,
+- **`client-sdk`** — `CdsHooksClient` plus typed CRD hook contexts and coverage-information parsing: given a resolved `ConnectionRecord`,
   calls the payer's standard `GET {baseUrl}/cds-services` discovery endpoint
   and invokes a named hook, with both a typed and a raw-passthrough response
   mode.

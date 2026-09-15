@@ -1,0 +1,60 @@
+{
+  "_comment": "Synthetic test data (no real patient). Hospital bed order (HCPCS E0250) for a Medicare Part A patient, shaped to trigger the HL7 CRD reference implementation's HospitalBedsAndAccessories rule.",
+  "userId": "Practitioner/prac-1",
+  "patientId": "pat-1",
+  "resources": {
+    "deviceRequest": {
+      "resourceType": "DeviceRequest",
+      "id": "devreq-1",
+      "status": "draft",
+      "intent": "order",
+      "codeCodeableConcept": {
+        "coding": [{ "system": "https://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets", "code": "E0250" }],
+        "text": "Hospital bed, fixed height, with any type side rails, with mattress"
+      },
+      "subject": { "reference": "Patient/pat-1" },
+      "performer": { "reference": "PractitionerRole/role-1" },
+      "insurance": [{ "reference": "Coverage/cov-1" }]
+    },
+    "patient": {
+      "resourceType": "Patient",
+      "id": "pat-1",
+      "gender": "female",
+      "birthDate": "1950-03-12",
+      "address": [{ "use": "home", "state": "MA" }]
+    },
+    "practitioner": {
+      "resourceType": "Practitioner",
+      "id": "prac-1",
+      "identifier": [{ "system": "http://hl7.org/fhir/sid/us-npi", "value": "1234567893" }],
+      "name": [{ "family": "Example", "given": ["Pat"] }]
+    },
+    "payer": {
+      "resourceType": "Organization",
+      "id": "org-cms",
+      "name": "Centers for Medicare and Medicaid Services"
+    },
+    "location": {
+      "resourceType": "Location",
+      "id": "loc-1",
+      "address": { "city": "Boston", "state": "MA", "postalCode": "02108" }
+    },
+    "practitionerRole": {
+      "resourceType": "PractitionerRole",
+      "id": "role-1",
+      "practitioner": { "reference": "Practitioner/prac-1" },
+      "location": [{ "reference": "Location/loc-1" }]
+    },
+    "coverage": {
+      "resourceType": "Coverage",
+      "id": "cov-1",
+      "status": "active",
+      "beneficiary": { "reference": "Patient/pat-1" },
+      "payor": [{ "reference": "Organization/org-cms" }],
+      "class": [{
+        "type": { "coding": [{ "system": "http://terminology.hl7.org/CodeSystem/coverage-class", "code": "plan" }] },
+        "value": "Medicare Part A"
+      }]
+    }
+  }
+}

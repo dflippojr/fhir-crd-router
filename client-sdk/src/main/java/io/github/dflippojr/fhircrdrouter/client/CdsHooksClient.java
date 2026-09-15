@@ -79,21 +79,25 @@ public final class CdsHooksClient {
         }
     }
 
-    /** Invokes a named hook and also deserializes the common {@code cards} shape. */
+    /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
     public CdsHookResponse callHook(ConnectionRecord record, String serviceId, CdsHookRequest request) {
         JsonNode raw = callHookRaw(record, serviceId, request);
-        List<Card> cards = new ArrayList<>();
-        JsonNode cardsNode = raw.get("cards");
-        if (cardsNode != null && cardsNode.isArray()) {
-            for (JsonNode node : cardsNode) {
-                try {
-                    cards.add(mapper.treeToValue(node, Card.class));
-                } catch (IOException e) {
-                    throw new RouterException("Failed to parse a card in hook response for payerId=" + record.payerId(), e);
-                }
+        return new CdsHookResponse(
+                parseArray(record, raw, "cards", Card.class),
+                parseArray(record, raw, "systemActions", SystemAction.class),
+                raw);
+    }
+
+    private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type) {
+        List<T> items = new ArrayList<>();
+        for (JsonNode node : raw.path(field)) {
+            try {
+                items.add(mapper.treeToValue(node, type));
+            } catch (IOException e) {
+                throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(), e);
             }
         }
-        return new CdsHookResponse(cards, raw);
+        return items;
     }
 
     /**

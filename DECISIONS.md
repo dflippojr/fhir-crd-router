@@ -44,14 +44,35 @@ client's JWKS), and SMART Backend Services uses `private_key_jwt`. If real
 payers expect either, that would be a new `authType` rather than a change to
 this one.
 
+## Typed CRD models + reference server testing (2026-09-15)
+
+- Added typed contexts for all six CRD hooks (`CrdHookContext`), CRD prefetch
+  keys (`CrdPrefetch`), `fhirServer`/`fhirAuthorization` on requests, and on
+  responses: typed card `source`/`topic`, `systemActions`, discovery
+  `prefetch` templates, and `CoverageInformation` parsing.
+- FHIR resources are kept as Jackson `JsonNode`s instead of adding HAPI FHIR,
+  to keep the library light. HAPI could be an optional adapter module later.
+- Tested against the HL7 Da Vinci CRD reference implementation
+  (`HL7-DaVinci/CRD`, built from `master` on 2026-09-15). Differences found
+  between it and the 2.2.1 spec, which the client now handles:
+  - It uses its own prefetch keys, not CRD's `patient`/`coverage`.
+  - It returns coverage information inside card suggestions, not
+    `systemActions`.
+  - It uses the older `identifier` sub-extension instead of
+    `coverage-assertion-id`, and adds `questionnaire`.
+- The live test only checks that the right rule matched and that the response
+  parses. The rule's decision depends on the server's CQL (for the synthetic
+  patient it returned "No Prior Authorization required").
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
   Packages).
-- No real payer has been contacted. `examples-quickstart` talks to an
-  in-process mock CDS Hooks server, not a real sandbox.
+- No real payer has been contacted. The client has been tested against the
+  HL7 Da Vinci CRD reference implementation running locally in Docker, but
+  not against any payer's sandbox.
 - `MUTUAL_TLS` still depends on the caller building an `HttpClient` with the
   right `SSLContext`.
-- The request model is generic maps. There are no typed CRD
-  `context`/`prefetch` shapes for `order-sign`, `order-select`, or
-  `appointment-book` yet.
+- No CDS Hooks client-signed JWT or SMART `private_key_jwt` auth type.
+- Typed contexts don't validate against full FHIR profiles, and FHIR
+  resources are untyped `JsonNode`s.
