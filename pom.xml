@@ -33,6 +33,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
+    <sonar.projectKey>fhir-crd-router</sonar.projectKey>
     <jackson.version>2.17.2</jackson.version>
     <junit.version>5.10.3</junit.version>
     <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
@@ -81,6 +82,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.2.5</version>
+        </plugin>
+        <plugin>
+          <groupId>org.sonarsource.scanner.maven</groupId>
+          <artifactId>sonar-maven-plugin</artifactId>
+          <version>5.1.0.4751</version>
         </plugin>
       </plugins>
     </pluginManagement>

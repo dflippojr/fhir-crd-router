@@ -42,6 +42,16 @@ bundled wrapper:
 
 CI (`.github/workflows/ci.yml`) runs `verify` on JDK 17 and 21.
 
+## Local SonarQube (tower)
+
+Analysis of this repo is **local/on-tower only**. Do not add a GitHub-hosted Action that talks to the homelab SonarQube (especially from pull requests). After `./mvnw verify`:
+
+```powershell
+D:\Docker\sonarqube\scan.ps1 -Path . -ProjectKey fhir-crd-router -Maven
+```
+
+Public GitHub CI can move to SonarCloud later. See `D:\Docker\sonarqube\README.md`.
+
 ## Status
 
 Builds and passes tests (verified 2026-09-15 on JDK 21, compiled with
