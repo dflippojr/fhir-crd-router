@@ -50,7 +50,7 @@ Analysis of this repo is **local/on-tower only**. Do not add a GitHub-hosted Act
 D:\Docker\sonarqube\scan.ps1 -Path . -ProjectKey fhir-crd-router -Maven
 ```
 
-Public GitHub CI can move to SonarCloud later. See `D:\Docker\sonarqube\README.md`.
+Public CI analysis runs on SonarCloud (`.github/workflows/sonar.yml`, needs the `SONAR_TOKEN` repo secret); the parent pom's `sonar.*` properties point there, and `scan.ps1` overrides the key and host for the tower. See `D:\Docker\sonarqube\README.md`.
 
 ## Status
 
