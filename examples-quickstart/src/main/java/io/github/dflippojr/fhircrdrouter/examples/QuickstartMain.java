@@ -16,13 +16,19 @@ import io.github.dflippojr.fhircrdrouter.credential.local.EncryptedLocalCredenti
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryFlag;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.EnumSet;
 import java.util.List;
 
 /**
@@ -86,28 +92,35 @@ public final class QuickstartMain {
 
     /**
      * Creates the demo's work directory readable only by the current user,
-     * since it holds the encrypted credential store and its key. On POSIX
-     * filesystems the directory is created as {@code rwx------}; elsewhere it
-     * is created with the defaults and then narrowed to the owner where the
-     * platform allows it.
+     * since it holds the encrypted credential store and its key: {@code rwx------}
+     * on POSIX filesystems, and an ACL granting access to the current user
+     * alone elsewhere (Windows/NTFS).
      */
     private static Path createOwnerOnlyTempDirectory(String prefix) throws IOException {
         if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
             return Files.createTempDirectory(prefix,
                     PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
         }
-        Path dir = Files.createTempDirectory(prefix);
-        File f = dir.toFile();
-        boolean readable = f.setReadable(true, true);
-        boolean writable = f.setWritable(true, true);
-        boolean executable = f.setExecutable(true, true);
-        if (!(readable && writable && executable)) {
-            // Expected on Windows, where File's owner-only flags don't map to NTFS ACLs;
-            // the per-user %TEMP% directory's own ACLs already keep other users out.
-            System.out.println("Note: could not narrow permissions on " + dir
-                    + "; relying on the temp directory's own access controls");
-        }
-        return dir;
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        AclEntry ownerFullControl = AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                .setFlags(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
+                .build();
+        FileAttribute<List<AclEntry>> ownerOnlyAcl = new FileAttribute<>() {
+            @Override
+            public String name() {
+                return "acl:acl";
+            }
+
+            @Override
+            public List<AclEntry> value() {
+                return List.of(ownerFullControl);
+            }
+        };
+        return Files.createTempDirectory(prefix, ownerOnlyAcl);
     }
 
     /**
