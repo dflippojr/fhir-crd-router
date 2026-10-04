@@ -16,10 +16,13 @@ import io.github.dflippojr.fhircrdrouter.credential.local.EncryptedLocalCredenti
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 
 /**
@@ -38,7 +41,7 @@ public final class QuickstartMain {
         System.out.println("Mock payer server listening on http://localhost:" + mockServer.port());
 
         try {
-            Path workDir = Files.createTempDirectory("fhir-crd-router-quickstart");
+            Path workDir = createOwnerOnlyTempDirectory("fhir-crd-router-quickstart");
             ConnectionStore store = new FileBasedConnectionStore(workDir.resolve("connections.yaml"));
             seedFromSampleYaml(store);
 
@@ -79,6 +82,32 @@ public final class QuickstartMain {
         } finally {
             mockServer.stop();
         }
+    }
+
+    /**
+     * Creates the demo's work directory readable only by the current user,
+     * since it holds the encrypted credential store and its key. On POSIX
+     * filesystems the directory is created as {@code rwx------}; elsewhere it
+     * is created with the defaults and then narrowed to the owner where the
+     * platform allows it.
+     */
+    private static Path createOwnerOnlyTempDirectory(String prefix) throws IOException {
+        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return Files.createTempDirectory(prefix,
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        }
+        Path dir = Files.createTempDirectory(prefix);
+        File f = dir.toFile();
+        boolean readable = f.setReadable(true, true);
+        boolean writable = f.setWritable(true, true);
+        boolean executable = f.setExecutable(true, true);
+        if (!(readable && writable && executable)) {
+            // Expected on Windows, where File's owner-only flags don't map to NTFS ACLs;
+            // the per-user %TEMP% directory's own ACLs already keep other users out.
+            System.out.println("Note: could not narrow permissions on " + dir
+                    + "; relying on the temp directory's own access controls");
+        }
+        return dir;
     }
 
     /**
