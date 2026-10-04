@@ -17,6 +17,11 @@
     calls an in-process mock CDS Hooks server (no real payer sandbox needed).
   </description>
 
+  <properties>
+    <!-- Runnable demo with no tests; keep it out of SonarCloud coverage. -->
+    <sonar.coverage.exclusions>**/*</sonar.coverage.exclusions>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>

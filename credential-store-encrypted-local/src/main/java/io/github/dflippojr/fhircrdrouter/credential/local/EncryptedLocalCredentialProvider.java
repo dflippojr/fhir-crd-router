@@ -41,6 +41,7 @@ public final class EncryptedLocalCredentialProvider implements CredentialProvide
     private static final int GCM_TAG_BITS = 128;
     private static final int GCM_IV_BYTES = 12;
     private static final int KEY_BITS = 256;
+    private static final SecureRandom IV_RANDOM = new SecureRandom();
 
     private final Path keyFile;
     private final Path secretsFile;
@@ -95,7 +96,7 @@ public final class EncryptedLocalCredentialProvider implements CredentialProvide
     private String encrypt(String plaintext) {
         try {
             byte[] iv = new byte[GCM_IV_BYTES];
-            new SecureRandom().nextBytes(iv);
+            IV_RANDOM.nextBytes(iv);
 
             Cipher cipher = Cipher.getInstance(AES_GCM);
             cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey(), new GCMParameterSpec(GCM_TAG_BITS, iv));

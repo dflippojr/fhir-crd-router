@@ -18,8 +18,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryFlag;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.EnumSet;
 import java.util.List;
 
 /**
@@ -38,7 +47,7 @@ public final class QuickstartMain {
         System.out.println("Mock payer server listening on http://localhost:" + mockServer.port());
 
         try {
-            Path workDir = Files.createTempDirectory("fhir-crd-router-quickstart");
+            Path workDir = createOwnerOnlyTempDirectory("fhir-crd-router-quickstart");
             ConnectionStore store = new FileBasedConnectionStore(workDir.resolve("connections.yaml"));
             seedFromSampleYaml(store);
 
@@ -79,6 +88,39 @@ public final class QuickstartMain {
         } finally {
             mockServer.stop();
         }
+    }
+
+    /**
+     * Creates the demo's work directory readable only by the current user,
+     * since it holds the encrypted credential store and its key: {@code rwx------}
+     * on POSIX filesystems, and an ACL granting access to the current user
+     * alone elsewhere (Windows/NTFS).
+     */
+    private static Path createOwnerOnlyTempDirectory(String prefix) throws IOException {
+        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return Files.createTempDirectory(prefix,
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        }
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        AclEntry ownerFullControl = AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                .setFlags(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
+                .build();
+        FileAttribute<List<AclEntry>> ownerOnlyAcl = new FileAttribute<>() {
+            @Override
+            public String name() {
+                return "acl:acl";
+            }
+
+            @Override
+            public List<AclEntry> value() {
+                return List.of(ownerFullControl);
+            }
+        };
+        return Files.createTempDirectory(prefix, ownerOnlyAcl);
     }
 
     /**
