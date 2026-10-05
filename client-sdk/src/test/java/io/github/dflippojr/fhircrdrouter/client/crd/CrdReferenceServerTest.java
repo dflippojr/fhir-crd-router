@@ -14,16 +14,25 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end check against a running HL7 Da Vinci CRD reference
@@ -53,31 +62,47 @@ class CrdReferenceServerTest {
             .authType(AuthType.NONE)
             .build();
 
-    @Test
-    void discoversCrdServicesWithPrefetchTemplates() {
-        List<CdsServiceDescriptor> services = client.discoverServices(record);
+    private static final Set<String> CRD_HOOKS = Set.of("order-sign", "order-select", "order-dispatch",
+            "appointment-book", "encounter-start", "encounter-discharge");
 
-        CdsServiceDescriptor orderSign = services.stream()
-                .filter(s -> "order-sign".equals(s.hook()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("no order-sign service in " + services));
-        assertFalse(orderSign.prefetch().isEmpty(), "reference server advertises prefetch templates");
+    @Test
+    void everyDiscoveredServiceSatisfiesTheDiscoveryContract() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(record.baseUrl().replaceAll("/+$", "") + "/cds-services"))
+                .timeout(Duration.ofSeconds(10)).GET().build();
+        HttpResponse<String> response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+                .send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode(), response.body());
+        JsonNode services = mapper.readTree(response.body()).path("services");
+        assertTrue(services.isArray() && !services.isEmpty(), "discovery must list services: " + response.body());
+        List<CdsServiceDescriptor> parsed = client.discoverServices(record);
+        assertEquals(services.size(), parsed.size(), "SDK must parse every advertised service");
+        for (JsonNode service : services) {
+            for (String field : List.of("id", "hook", "description")) {
+                assertTrue(service.path(field).isTextual() && !service.path(field).asText().isBlank(),
+                        "missing required " + field + " in " + service);
+            }
+            CdsServiceDescriptor descriptor = mapper.treeToValue(service, CdsServiceDescriptor.class);
+            JsonNode prefetch = service.path("prefetch");
+            assertTrue(prefetch.isMissingNode() || prefetch.isObject(), "prefetch must be an object: " + service);
+            assertEquals(prefetch.size(), descriptor.prefetch().size(), "every template must parse: " + service);
+            prefetch.fields().forEachRemaining(entry -> {
+                assertTrue(entry.getValue().isTextual() && !entry.getValue().asText().isBlank(),
+                        "invalid prefetch template " + entry.getKey() + " in " + service);
+                assertEquals(entry.getValue().asText(), descriptor.prefetch().get(entry.getKey()));
+            });
+            System.out.println("RI discovery: service=" + descriptor.id() + " hook=" + descriptor.hook()
+                    + (CRD_HOOKS.contains(descriptor.hook()) ? " (CRD)" : " (non-CRD hook; discovery only)"));
+        }
     }
 
-    @Test
-    void orderSignReturnsCardsAndCoverageInformation() throws Exception {
-        JsonNode fixture;
-        try (InputStream in = getClass().getResourceAsStream("/crd-ri/order-sign-hospital-bed.json")) {
-            fixture = mapper.readTree(in);
-        }
+    @ParameterizedTest(name = "order-sign rule: {0}")
+    @ValueSource(strings = {"hospital-bed", "home-oxygen"})
+    void orderSignReturnsCardsAndCoverageInformation(String rule) throws Exception {
+        JsonNode fixture = fixture(rule);
         JsonNode r = fixture.get("resources");
         JsonNode deviceRequest = r.get("deviceRequest");
-
-        String serviceId = client.discoverServices(record).stream()
-                .filter(s -> "order-sign".equals(s.hook()))
-                .map(CdsServiceDescriptor::id)
-                .findFirst()
-                .orElseThrow();
+        String serviceId = serviceFor("order-sign").id();
 
         // The reference server wants its own prefetch keys (from discovery), not CRD's "patient"/"coverage".
         CdsHookRequest request = CdsHookRequest.of(
@@ -95,7 +120,9 @@ class CrdReferenceServerTest {
         assertFalse(response.cards().isEmpty(), "expected at least one card, got " + response.rawJson());
         Card card = response.cards().get(0);
         // The rule's decision depends on the reference server's CQL; assert only that the right rule matched.
-        assertTrue(card.summary().startsWith("Hospital Beds And Accessories"), card.summary());
+        String expectedRule = fixture.get("expectedRule").asText();
+        assertTrue(response.cards().stream().anyMatch(c -> c.summary().startsWith(expectedRule)),
+                "expected " + expectedRule + ", got " + response.rawJson());
         assertFalse(card.source().label().isBlank(), "CRD requires source.label");
         assertEquals("http://hl7.org/fhir/us/davinci-crd/CodeSystem/cardType", card.source().topic().system());
 
@@ -104,6 +131,79 @@ class CrdReferenceServerTest {
         assertEquals("DeviceRequest/devreq-1", coverage.get(0).resourceReference());
         assertEquals("Coverage/cov-1", coverage.get(0).coverage());
         assertNotNull(coverage.get(0).coverageAssertionId(), "reference server sends its assertion id as \"identifier\"");
+    }
+
+    @ParameterizedTest(name = "typed CRD hook: {0}")
+    @ValueSource(strings = {"order-select", "order-dispatch", "appointment-book", "encounter-start",
+            "encounter-discharge"})
+    void otherAdvertisedCrdHooksReturnParseableResponses(String hook) throws Exception {
+        CdsServiceDescriptor service = serviceFor(hook);
+        JsonNode fixture = fixture("hospital-bed");
+        JsonNode r = fixture.get("resources");
+        // These calls exercise the hook/response contract, not CQL rules. A synthetic
+        // code also avoids the RI order-dispatch rule-card builder's null request bug.
+        ObjectNode coding = (ObjectNode) r.path("deviceRequest").path("codeCodeableConcept")
+                .path("coding").get(0);
+        coding.put("system", "urn:example:crd-test").put("code", "synthetic-device");
+        ((ObjectNode) r.path("deviceRequest").path("codeCodeableConcept"))
+                .put("text", "Synthetic device for hook contract tests");
+        ((ObjectNode) r.path("deviceRequest")).put("status", "active");
+        String userId = fixture.get("userId").asText();
+        String patientId = fixture.get("patientId").asText();
+        JsonNode encounter = mapper.createObjectNode().put("resourceType", "Encounter")
+                .put("id", "enc-1").put("status", "in-progress");
+        ((ObjectNode) encounter).putObject("class").put("system", "http://terminology.hl7.org/CodeSystem/v3-ActCode")
+                .put("code", "AMB");
+        ((ObjectNode) encounter).putObject("subject").put("reference", "Patient/" + patientId);
+        ObjectNode appointment = mapper.createObjectNode().put("resourceType", "Appointment")
+                .put("id", "appt-1").put("status", "proposed");
+        ObjectNode participant = appointment.putArray("participant").addObject().put("status", "needs-action");
+        participant.putObject("actor").put("reference", "Patient/" + patientId);
+        CrdHookContext context = switch (hook) {
+            case "order-select" -> new CrdHookContext.OrderSelect(userId, patientId, "enc-1",
+                    List.of("DeviceRequest/devreq-1"), bundle("collection", r.get("deviceRequest")));
+            case "order-dispatch" -> new CrdHookContext.OrderDispatch(patientId,
+                    List.of("DeviceRequest/devreq-1"), "PractitionerRole/role-1", null);
+            case "appointment-book" -> new CrdHookContext.AppointmentBook(userId, patientId, "enc-1",
+                    bundle("collection", appointment));
+            case "encounter-start" -> new CrdHookContext.EncounterStart(userId, patientId, "enc-1");
+            case "encounter-discharge" -> new CrdHookContext.EncounterDischarge(userId, patientId, "enc-1");
+            default -> throw new IllegalArgumentException("unsupported CRD hook: " + hook);
+        };
+        CdsHookRequest request = CdsHookRequest.of(context, CrdPrefetch.builder()
+                .put("deviceRequestBundle", bundle("searchset", r.get("deviceRequest"), r.get("patient"),
+                        r.get("practitioner"), r.get("payer"), r.get("location"), r.get("practitionerRole"),
+                        r.get("coverage")))
+                .put("coverageBundle", bundle("searchset", r.get("coverage")))
+                .put("encounterBundle", bundle("searchset", encounter, r.get("patient")))
+                .put("appointmentBundle", bundle("searchset", appointment, r.get("patient")))
+                .patient(r.get("patient")).encounter(encounter).build());
+        CdsHookResponse response = client.callHook(record, service.id(), request);
+        assertTrue(response.rawJson().isObject(), hook + " response: " + response.rawJson());
+        assertTrue(response.rawJson().path("cards").isArray(), hook + " response: " + response.rawJson());
+        assertNotNull(response.cards(), hook + " cards parse");
+        assertNotNull(response.systemActions(), hook + " system actions parse");
+        response.coverageInformation();
+        System.out.println("RI typed hook: " + hook + " service=" + service.id() + " parsed successfully");
+    }
+
+    private CdsServiceDescriptor serviceFor(String hook) {
+        Optional<CdsServiceDescriptor> service = client.discoverServices(record).stream()
+                .filter(s -> hook.equals(s.hook())).findFirst();
+        String message = "RI does not advertise " + hook + "; skipping hook call";
+        if (service.isEmpty()) {
+            System.out.println(message);
+        }
+        assumeTrue(service.isPresent(), message);
+        return service.orElseThrow();
+    }
+
+    private JsonNode fixture(String rule) throws Exception {
+        String path = "/crd-ri/order-sign-" + rule + ".json";
+        try (InputStream in = getClass().getResourceAsStream(path)) {
+            assertNotNull(in, "missing synthetic fixture " + path);
+            return mapper.readTree(in);
+        }
     }
 
     private JsonNode bundle(String type, JsonNode... resources) {

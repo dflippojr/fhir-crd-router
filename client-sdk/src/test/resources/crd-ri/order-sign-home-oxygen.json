@@ -1,6 +1,6 @@
 {
-  "_comment": "Synthetic test data (no real patient). Hospital bed order (HCPCS E0250) for a Medicare Part A patient, shaped to trigger the HL7 CRD reference implementation's HospitalBedsAndAccessories rule.",
-  "expectedRule": "Hospital Beds And Accessories",
+  "_comment": "Synthetic test data (no real patient). Home oxygen order (HCPCS E0424) for a Medicare Part A patient, shaped to trigger the HL7 CRD reference implementation's HomeOxygenTherapy rule.",
+  "expectedRule": "Home Oxygen Therapy",
   "userId": "Practitioner/prac-1",
   "patientId": "pat-1",
   "resources": {
@@ -10,8 +10,8 @@
       "status": "draft",
       "intent": "order",
       "codeCodeableConcept": {
-        "coding": [{ "system": "https://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets", "code": "E0250" }],
-        "text": "Hospital bed, fixed height, with any type side rails, with mattress"
+        "coding": [{ "system": "https://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets", "code": "E0424" }],
+        "text": "Stationary compressed gaseous oxygen system, rental"
       },
       "subject": { "reference": "Patient/pat-1" },
       "performer": { "reference": "PractitionerRole/role-1" },

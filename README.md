@@ -73,6 +73,20 @@ docker run -d -p 18090:8090 crd-ri
 CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
 ```
 
+The suite checks required discovery fields (`id`, `hook`, `description`) and
+parses every service and prefetch template into `CdsServiceDescriptor`. Non-CRD
+hooks are named in the output and still checked for discovery conformance.
+
+- `order-sign`: synthetic Medicare Part A orders for hospital beds (HCPCS E0250,
+  HospitalBedsAndAccessories) and home oxygen (HCPCS E0424, HomeOxygenTherapy).
+  Checks rule matching and parsed cards/coverage information, without asserting
+  the CQL-dependent coverage decision.
+- `order-select`, `order-dispatch`, `appointment-book`, `encounter-start`, and
+  `encounter-discharge`: one request per advertised hook using `CrdHookContext`,
+  with synthetic resources and RI prefetch bundles; checks response parsing.
+  These requests use a synthetic device code outside the RI rule catalog.
+  Each absent hook is skipped with its name in the output.
+
 ### CI
 
 GitHub Actions runs three workflows:
@@ -95,8 +109,8 @@ which does not read the root `sonar-project.properties`.
 
 ## Status
 
-- `./mvnw verify` passes: 42 tests, of which the 2 reference-server tests
-  are skipped unless `CRD_RI_BASE_URL` is set. The code compiles with
+- `./mvnw verify` passes. The reference-server suite is skipped unless
+  `CRD_RI_BASE_URL` is set. The code compiles with
   `--release 17`, and CI builds it on JDK 17 and 21.
 - The quickstart runs end-to-end against its mock server.
 - The client has been tested against the HL7 Da Vinci CRD reference
