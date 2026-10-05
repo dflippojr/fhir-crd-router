@@ -2,6 +2,9 @@ package io.github.dflippojr.fhircrdrouter.client.auth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
@@ -19,6 +22,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -46,6 +50,7 @@ public final class OAuth2TokenClient {
     /** Refresh this long before the advertised expiry to avoid racing it. */
     static final Duration EXPIRY_SKEW = Duration.ofSeconds(30);
 
+    private final Duration requestTimeout;
     private final HttpClient httpClient;
     private final Clock clock;
     private final JwtSigner jwtSigner;
@@ -53,10 +58,22 @@ public final class OAuth2TokenClient {
     private final Map<CacheKey, CachedToken> cache = new ConcurrentHashMap<>();
 
     public OAuth2TokenClient(HttpClient httpClient) {
-        this(httpClient, Clock.systemUTC());
+        this(httpClient, CdsHooksClient.DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    public OAuth2TokenClient(HttpClient httpClient, Duration requestTimeout) {
+        this(httpClient, Clock.systemUTC(), requestTimeout);
     }
 
     OAuth2TokenClient(HttpClient httpClient, Clock clock) {
+        this(httpClient, clock, CdsHooksClient.DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    private OAuth2TokenClient(HttpClient httpClient, Clock clock, Duration requestTimeout) {
+        this.requestTimeout = Objects.requireNonNull(requestTimeout);
+        if (requestTimeout.isNegative() || requestTimeout.isZero()) {
+            throw new IllegalArgumentException("requestTimeout must be positive");
+        }
         this.httpClient = httpClient;
         this.clock = clock;
         this.jwtSigner = new JwtSigner(clock);
@@ -101,6 +118,7 @@ public final class OAuth2TokenClient {
         }
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(record.tokenEndpoint()))
+                .timeout(requestTimeout)
                 .header("Content-Type", "application/x-www-form-urlencoded");
 
         if (record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
@@ -119,12 +137,19 @@ public final class OAuth2TokenClient {
             Instant requestedAt = clock.instant();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() / 100 != 2) {
-                throw new RouterException("Token request failed for payerId=" + record.payerId()
-                        + " status=" + response.statusCode() + " body=" + response.body());
+                throw new PayerCallException("Token request failed for payerId=" + record.payerId()
+                        + " status=" + response.statusCode() + " body=", PayerCallPhase.TOKEN,
+                        record.payerId(), request.uri(), response, tokenErrorBody(response.body(), secret));
             }
 
-            JsonNode json = mapper.readTree(response.body());
-            JsonNode accessToken = json.get("access_token");
+            JsonNode json;
+            try {
+                json = mapper.readTree(response.body());
+            } catch (IOException e) {
+                // Jackson parse errors can include source content: never attach a token body or its parser cause.
+                throw new RouterException("Token response for payerId=" + record.payerId() + " returned an unparseable body");
+            }
+            JsonNode accessToken = json == null ? null : json.get("access_token");
             if (accessToken == null) {
                 throw new RouterException("Token response for payerId=" + record.payerId()
                         + " had no access_token field");
@@ -138,11 +163,29 @@ public final class OAuth2TokenClient {
             }
             return new CachedToken(accessToken.asText(), refreshAt);
         } catch (IOException e) {
-            throw new RouterException("Token request I/O failure for payerId=" + record.payerId(), e);
+            throw PayerCallException.transport("Token request I/O failure for payerId=" + record.payerId(),
+                    PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RouterException("Token request interrupted for payerId=" + record.payerId(), e);
+            throw PayerCallException.transport("Token request interrupted for payerId=" + record.payerId(),
+                    PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
         }
+    }
+
+    private String tokenErrorBody(String body, String secret) {
+        var safe = mapper.createObjectNode();
+        try {
+            JsonNode json = mapper.readTree(body);
+            for (String field : List.of("error", "error_description")) {
+                if (json != null && json.path(field).isTextual()) {
+                    String value = json.get(field).asText();
+                    safe.put(field, secret.isEmpty() ? value : value.replace(secret, "[REDACTED]"));
+                }
+            }
+        } catch (IOException e) {
+            // Non-JSON errors have no RFC 6749 fields; omit the raw body.
+        }
+        return safe.toString();
     }
 
     // tokenEndpoint and clientId presence are already enforced by ConnectionRecord for this authType.
