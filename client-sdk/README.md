@@ -195,3 +195,50 @@ timeout; set it on that client's builder. The custom constructor's connect
 timeout applies to SDK-built mutual TLS clients. Standalone `OAuth2TokenClient`
 users can pass `(httpClient, requestTimeout)`; its existing constructor defaults
 to 10 seconds. No retry is added for 429 or 5xx responses.
+
+
+## Exchange logging and tracing
+
+Register a `PayerExchangeListener` through the timeout constructor. Existing
+constructors default to a no-op and need no changes:
+
+```java
+CdsHooksClient client = new CdsHooksClient(credentials,
+        Duration.ofSeconds(3), Duration.ofSeconds(2),
+        exchange -> System.out.printf("%s %s %s status=%s %d ms%n",
+                exchange.phase(), exchange.method(), exchange.uri(),
+                exchange.statusCode().isPresent() ? exchange.statusCode().getAsInt() : "transport-error",
+                exchange.elapsed().toMillis()));
+
+// Also available with a custom client and optional mTLS trust store:
+CdsHooksClient custom = new CdsHooksClient(httpClient, credentials, trustStore,
+        Duration.ofSeconds(3), Duration.ofSeconds(2), listener);
+```
+
+Each immutable `PayerExchange` identifies the `PayerCallPhase`, payer, environment,
+HTTP method, URI and attempt, with an `Instant startedAt` and monotonic `Duration
+elapsed` measuring the HTTP send (excluding authentication and listener execution).
+Headers are immutable, case-insensitive `HttpHeaders`; bodies are strings.
+`statusCode` is an `OptionalInt`; transport failures, interruptions and timeouts
+have no status or response body, empty response headers and the original exception
+in `error`. HTTP error responses have a status and body with no transport error.
+Exchanges are delivered before parsing, including failed or malformed responses.
+
+OAuth2's 401 retry reports TOKEN 1, HOOK 401 attempt 1, TOKEN 2, HOOK attempt 2
+when a fresh token is required initially. Cached tokens produce no HTTP exchange.
+Discovery retries use the same attempt numbering. Callbacks run synchronously in
+send order; exceptions from the listener are ignored. Keep callbacks brief, and
+make listeners thread safe if you share the SDK client across threads. No logging,
+metrics or tracing framework dependency is required.
+
+Before delivery, the SDK replaces Authorization values with their scheme plus
+`[REDACTED]` and drops Set-Cookie headers. TOKEN request bodies are omitted (`null`),
+and TOKEN response bodies become JSON containing only scalar `token_type`,
+`expires_in` and `scope` fields; malformed or non-JSON responses become `{}`.
+These rules also apply to unsuccessful token requests.
+
+**PHI:** HOOK request and response bodies pass through exactly as sent and received.
+They may contain protected health information (PHI), including any FHIR authorization
+supplied in a hook request. The listener owns what it logs, traces, stores and retains;
+apply your deployment's access and retention controls. Discovery bodies also pass
+through. The quickstart prints metadata only, one line per HTTP exchange.

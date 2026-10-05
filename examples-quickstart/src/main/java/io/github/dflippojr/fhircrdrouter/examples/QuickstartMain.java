@@ -57,7 +57,12 @@ public final class QuickstartMain {
 
             EncryptedLocalCredentialProvider credentials =
                     new EncryptedLocalCredentialProvider(workDir.resolve("credentials"));
-            CdsHooksClient client = new CdsHooksClient(credentials);
+            CdsHooksClient client = new CdsHooksClient(credentials,
+                    CdsHooksClient.DEFAULT_REQUEST_TIMEOUT, CdsHooksClient.DEFAULT_CONNECT_TIMEOUT,
+                    exchange -> System.out.printf("%s %s %s status=%s %d ms%n",
+                            exchange.phase(), exchange.method(), exchange.uri(),
+                            exchange.statusCode().isPresent() ? exchange.statusCode().getAsInt() : "transport-error",
+                            exchange.elapsed().toMillis()));
 
             List<CdsServiceDescriptor> services = client.discoverServices(record);
             System.out.println("Discovered services: " + services);
