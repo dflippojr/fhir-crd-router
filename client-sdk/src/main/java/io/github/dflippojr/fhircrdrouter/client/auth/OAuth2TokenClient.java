@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
+import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
+import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
@@ -50,6 +52,7 @@ public final class OAuth2TokenClient {
     /** Refresh this long before the advertised expiry to avoid racing it. */
     static final Duration EXPIRY_SKEW = Duration.ofSeconds(30);
 
+    private final PayerExchangeListener exchangeListener;
     private final Duration requestTimeout;
     private final HttpClient httpClient;
     private final Clock clock;
@@ -62,14 +65,20 @@ public final class OAuth2TokenClient {
     }
 
     public OAuth2TokenClient(HttpClient httpClient, Duration requestTimeout) {
-        this(httpClient, Clock.systemUTC(), requestTimeout);
+        this(httpClient, requestTimeout, PayerExchangeListener.NOOP);
+    }
+
+    public OAuth2TokenClient(HttpClient httpClient, Duration requestTimeout, PayerExchangeListener exchangeListener) {
+        this(httpClient, Clock.systemUTC(), requestTimeout, exchangeListener);
     }
 
     OAuth2TokenClient(HttpClient httpClient, Clock clock) {
-        this(httpClient, clock, CdsHooksClient.DEFAULT_REQUEST_TIMEOUT);
+        this(httpClient, clock, CdsHooksClient.DEFAULT_REQUEST_TIMEOUT, PayerExchangeListener.NOOP);
     }
 
-    private OAuth2TokenClient(HttpClient httpClient, Clock clock, Duration requestTimeout) {
+    private OAuth2TokenClient(HttpClient httpClient, Clock clock, Duration requestTimeout,
+                              PayerExchangeListener exchangeListener) {
+        this.exchangeListener = Objects.requireNonNull(exchangeListener);
         this.requestTimeout = Objects.requireNonNull(requestTimeout);
         if (requestTimeout.isNegative() || requestTimeout.isZero()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
@@ -91,12 +100,17 @@ public final class OAuth2TokenClient {
      * @param secret the client secret, or the PEM private key for {@code OAUTH2_PRIVATE_KEY_JWT}
      */
     public String fetchAccessToken(HttpClient client, ConnectionRecord record, String secret) {
+        return fetchAccessToken(client, record, secret, 1);
+    }
+
+    /** Carries the payer attempt number through a token refresh after a 401. */
+    public String fetchAccessToken(HttpClient client, ConnectionRecord record, String secret, int attempt) {
         CacheKey key = cacheKey(record);
         CachedToken cached = cache.get(key);
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
             return cached.accessToken();
         }
-        CachedToken fresh = requestToken(client, record, secret);
+        CachedToken fresh = requestToken(client, record, secret, attempt);
         if (fresh.refreshAt() != null) {
             cache.put(key, fresh);
         } else {
@@ -110,7 +124,7 @@ public final class OAuth2TokenClient {
         cache.remove(cacheKey(record));
     }
 
-    private CachedToken requestToken(HttpClient client, ConnectionRecord record, String secret) {
+    private CachedToken requestToken(HttpClient client, ConnectionRecord record, String secret, int attempt) {
         List<String> scopes = record.scopes();
         StringBuilder form = new StringBuilder("grant_type=client_credentials");
         if (!scopes.isEmpty()) {
@@ -135,7 +149,7 @@ public final class OAuth2TokenClient {
             HttpRequest request = builder.POST(HttpRequest.BodyPublishers.ofString(form.toString())).build();
 
             Instant requestedAt = clock.instant();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = ExchangeSender.send(client, request, null, record, PayerCallPhase.TOKEN, attempt, exchangeListener);
             if (response.statusCode() / 100 != 2) {
                 throw new PayerCallException("Token request failed for payerId=" + record.payerId()
                         + " status=" + response.statusCode() + " body=", PayerCallPhase.TOKEN,

@@ -6,6 +6,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.JwtSigner;
 import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
+import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -45,6 +46,7 @@ public final class CdsHooksClient {
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
 
+    private final PayerExchangeListener exchangeListener;
     private final Duration requestTimeout;
     private final Duration connectTimeout;
     private final HttpClient httpClient;
@@ -61,9 +63,15 @@ public final class CdsHooksClient {
 
     /** Builds the default client with explicit request and connection budgets. */
     public CdsHooksClient(CredentialProvider credentialProvider, Duration requestTimeout, Duration connectTimeout) {
+        this(credentialProvider, requestTimeout, connectTimeout, PayerExchangeListener.NOOP);
+    }
+
+    /** Builds the default client with timeouts and a redacted exchange listener. */
+    public CdsHooksClient(CredentialProvider credentialProvider, Duration requestTimeout, Duration connectTimeout,
+                          PayerExchangeListener exchangeListener) {
         this(HttpClient.newBuilder().sslParameters(MutualTls.sslParameters())
                 .connectTimeout(positiveTimeout(connectTimeout)).build(), credentialProvider, null,
-                requestTimeout, connectTimeout);
+                requestTimeout, connectTimeout, exchangeListener);
     }
 
     public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider) {
@@ -81,18 +89,25 @@ public final class CdsHooksClient {
     /** A supplied client retains its own connect timeout; connectTimeout applies to SDK-built mTLS clients. */
     public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider, KeyStore mtlsTrustStore,
                           Duration requestTimeout, Duration connectTimeout) {
+        this(httpClient, credentialProvider, mtlsTrustStore, requestTimeout, connectTimeout, PayerExchangeListener.NOOP);
+    }
+
+    /** Same timeout semantics, with a listener invoked after each HTTP attempt. */
+    public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider, KeyStore mtlsTrustStore,
+                          Duration requestTimeout, Duration connectTimeout, PayerExchangeListener exchangeListener) {
+        this.exchangeListener = Objects.requireNonNull(exchangeListener, "exchangeListener");
         this.requestTimeout = positiveTimeout(requestTimeout);
         this.connectTimeout = positiveTimeout(connectTimeout);
         this.httpClient = Objects.requireNonNull(httpClient);
         this.credentialProvider = credentialProvider;
         this.mtlsTrustStore = mtlsTrustStore;
-        this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout);
+        this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout, exchangeListener);
     }
 
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
     public List<CdsServiceDescriptor> discoverServices(ConnectionRecord record) {
         String context = "Discovery call for payerId=" + record.payerId();
-        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, () -> HttpRequest.newBuilder()
+        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
                 .GET());
         try {
@@ -118,7 +133,7 @@ public final class CdsHooksClient {
         } catch (IOException e) {
             throw new RouterException(context + " could not serialize request", e);
         }
-        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, () -> HttpRequest.newBuilder()
+        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, () -> HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + serviceId))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
@@ -155,14 +170,14 @@ public final class CdsHooksClient {
      * cached token and retries once with a fresh one, since payers can revoke
      * tokens before their advertised expiry.
      */
-    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, Supplier<HttpRequest.Builder> requestFactory) {
+    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body, Supplier<HttpRequest.Builder> requestFactory) {
         URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);
-            HttpResponse<String> response = sendOnce(client, record, requestFactory);
+            HttpResponse<String> response = sendOnce(client, record, phase, body, 1, requestFactory);
             if (response.statusCode() == 401 && isOAuth2(record)) {
                 oauth2TokenClient.invalidate(record);
-                response = sendOnce(client, record, requestFactory);
+                response = sendOnce(client, record, phase, body, 2, requestFactory);
             }
             if (response.statusCode() / 100 != 2) {
                 throw new PayerCallException(context + " failed: payer returned HTTP " + response.statusCode()
@@ -178,20 +193,21 @@ public final class CdsHooksClient {
     }
 
     private HttpResponse<String> sendOnce(HttpClient client, ConnectionRecord record,
+                                          PayerCallPhase phase, String body, int attempt,
                                           Supplier<HttpRequest.Builder> requestFactory)
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = requestFactory.get().timeout(requestTimeout);
         URI uri = builder.copy().build().uri();
-        applyAuth(client, builder, uri, record);
-        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        applyAuth(client, builder, uri, record, attempt);
+        return ExchangeSender.send(client, builder.build(), body, record, phase, attempt, exchangeListener);
     }
 
-    private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record) {
+    private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt) {
         switch (record.authType()) {
             case NONE -> { /* no-op */ }
             case API_KEY -> builder.header("Authorization", "Bearer " + requireSecret(record));
             case OAUTH2_CLIENT_CREDENTIALS, OAUTH2_PRIVATE_KEY_JWT -> builder.header("Authorization",
-                    "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, requireSecret(record)));
+                    "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, requireSecret(record), attempt));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
                     "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
         }
