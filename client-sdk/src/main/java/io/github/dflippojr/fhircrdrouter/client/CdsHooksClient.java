@@ -17,6 +17,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Objects;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -40,6 +42,11 @@ import java.util.function.Supplier;
  */
 public final class CdsHooksClient {
 
+    public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
+
+    private final Duration requestTimeout;
+    private final Duration connectTimeout;
     private final HttpClient httpClient;
     private final KeyStore mtlsTrustStore;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -49,7 +56,14 @@ public final class CdsHooksClient {
     private final Map<String, HttpClient> mtlsClients = new ConcurrentHashMap<>();
 
     public CdsHooksClient(CredentialProvider credentialProvider) {
-        this(HttpClient.newBuilder().sslParameters(MutualTls.sslParameters()).build(), credentialProvider, null);
+        this(credentialProvider, DEFAULT_REQUEST_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
+    }
+
+    /** Builds the default client with explicit request and connection budgets. */
+    public CdsHooksClient(CredentialProvider credentialProvider, Duration requestTimeout, Duration connectTimeout) {
+        this(HttpClient.newBuilder().sslParameters(MutualTls.sslParameters())
+                .connectTimeout(positiveTimeout(connectTimeout)).build(), credentialProvider, null,
+                requestTimeout, connectTimeout);
     }
 
     public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider) {
@@ -61,16 +75,24 @@ public final class CdsHooksClient {
      *     or {@code null} for the JVM default (e.g. to trust a sandbox's private CA)
      */
     public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider, KeyStore mtlsTrustStore) {
-        this.httpClient = httpClient;
+        this(httpClient, credentialProvider, mtlsTrustStore, DEFAULT_REQUEST_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
+    }
+
+    /** A supplied client retains its own connect timeout; connectTimeout applies to SDK-built mTLS clients. */
+    public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider, KeyStore mtlsTrustStore,
+                          Duration requestTimeout, Duration connectTimeout) {
+        this.requestTimeout = positiveTimeout(requestTimeout);
+        this.connectTimeout = positiveTimeout(connectTimeout);
+        this.httpClient = Objects.requireNonNull(httpClient);
         this.credentialProvider = credentialProvider;
         this.mtlsTrustStore = mtlsTrustStore;
-        this.oauth2TokenClient = new OAuth2TokenClient(httpClient);
+        this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout);
     }
 
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
     public List<CdsServiceDescriptor> discoverServices(ConnectionRecord record) {
         String context = "Discovery call for payerId=" + record.payerId();
-        HttpResponse<String> response = send(record, context, () -> HttpRequest.newBuilder()
+        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, () -> HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
                 .GET());
         try {
@@ -96,7 +118,7 @@ public final class CdsHooksClient {
         } catch (IOException e) {
             throw new RouterException(context + " could not serialize request", e);
         }
-        HttpResponse<String> response = send(record, context, () -> HttpRequest.newBuilder()
+        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, () -> HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + serviceId))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
@@ -133,7 +155,8 @@ public final class CdsHooksClient {
      * cached token and retries once with a fresh one, since payers can revoke
      * tokens before their advertised expiry.
      */
-    private HttpResponse<String> send(ConnectionRecord record, String context, Supplier<HttpRequest.Builder> requestFactory) {
+    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, Supplier<HttpRequest.Builder> requestFactory) {
+        URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);
             HttpResponse<String> response = sendOnce(client, record, requestFactory);
@@ -142,22 +165,22 @@ public final class CdsHooksClient {
                 response = sendOnce(client, record, requestFactory);
             }
             if (response.statusCode() / 100 != 2) {
-                throw new RouterException(context + " failed: payer returned HTTP " + response.statusCode()
-                        + ": " + response.body());
+                throw new PayerCallException(context + " failed: payer returned HTTP " + response.statusCode()
+                        + ": ", phase, record.payerId(), uri, response, response.body());
             }
             return response;
         } catch (IOException e) {
-            throw new RouterException(context + " failed", e);
+            throw PayerCallException.transport(context + " failed", phase, record.payerId(), uri, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RouterException(context + " interrupted", e);
+            throw PayerCallException.transport(context + " interrupted", phase, record.payerId(), uri, e);
         }
     }
 
     private HttpResponse<String> sendOnce(HttpClient client, ConnectionRecord record,
                                           Supplier<HttpRequest.Builder> requestFactory)
             throws IOException, InterruptedException {
-        HttpRequest.Builder builder = requestFactory.get();
+        HttpRequest.Builder builder = requestFactory.get().timeout(requestTimeout);
         URI uri = builder.copy().build().uri();
         applyAuth(client, builder, uri, record);
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
@@ -190,6 +213,7 @@ public final class CdsHooksClient {
         // Keyed by content hash too, so a rotated certificate gets a fresh client.
         String key = record.mtlsCredentialRef() + "#" + sha256(pemBundle);
         return mtlsClients.computeIfAbsent(key, k -> HttpClient.newBuilder()
+                .connectTimeout(connectTimeout)
                 .sslContext(MutualTls.sslContext(pemBundle, mtlsTrustStore))
                 .sslParameters(MutualTls.sslParameters())
                 .build());
@@ -211,6 +235,14 @@ public final class CdsHooksClient {
         return credentialProvider.resolve(record.credentialRef())
                 .orElseThrow(() -> new RouterException(
                         "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")"));
+    }
+
+    private static Duration positiveTimeout(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        return timeout;
     }
 
     private static String trimTrailingSlash(String url) {

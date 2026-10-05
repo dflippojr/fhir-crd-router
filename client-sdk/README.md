@@ -145,3 +145,53 @@ if those also need a custom trust store.
 Beyond that single 401 retry there are no retries or backoff, and no
 connection pooling tuning. This is still a v1 client meant to show the flow
 works, not a hardened production SDK.
+
+## Payer call errors and timeouts
+
+Discovery, token and hook HTTP failures throw `PayerCallException`, a subclass
+of `RouterException`, so existing catch blocks still work. `phase()` returns
+`PayerCallPhase.DISCOVERY`, `TOKEN` or `HOOK`; `payerId()` and `uri()` identify
+the call. `statusCode()` is an `OptionalInt`, empty for transport failures,
+interruptions and timeouts. `timedOut()` distinguishes HTTP request/connect
+timeouts from other transport errors; the cause preserves the transport error.
+
+`responseHeaders()` returns immutable, case-insensitive Java `HttpHeaders`
+containing only `WWW-Authenticate`, `Retry-After`, `Content-Type`, `X-Request-Id`
+and `X-Correlation-Id`. `responseBody()` and the body included in the message
+are limited to 4096 UTF-8 bytes, without splitting a character. Token error
+bodies include only textual RFC 6749 `error` and `error_description` fields,
+with an echoed credential redacted; non-JSON token errors become `{}`.
+Successful token bodies are never attached to exceptions. Hook and discovery
+bodies may contain sensitive clinical data; take care when logging them.
+
+```java
+try {
+    client.discoverServices(record);
+} catch (PayerCallException e) {
+    e.phase();
+    e.statusCode();
+    e.responseHeaders().firstValue("Retry-After");
+    e.timedOut();
+}
+```
+
+Existing constructors use a **10-second timeout per request**, including token
+requests and the OAuth2 401 retry. SDK-built clients (including mutual TLS)
+use a **5-second connect timeout**. These are per-exchange budgets, so a token
+fetch and a retried hook can take multiple request budgets in total.
+
+```java
+CdsHooksClient client = new CdsHooksClient(credentials,
+        Duration.ofSeconds(3),   // request timeout
+        Duration.ofSeconds(2)); // connect timeout
+
+// With a custom HTTP client and optional mTLS trust store:
+CdsHooksClient custom = new CdsHooksClient(httpClient, credentials, trustStore,
+        Duration.ofSeconds(3), Duration.ofSeconds(2));
+```
+
+Both durations must be positive. A supplied `HttpClient` keeps its own connect
+timeout; set it on that client's builder. The custom constructor's connect
+timeout applies to SDK-built mutual TLS clients. Standalone `OAuth2TokenClient`
+users can pass `(httpClient, requestTimeout)`; its existing constructor defaults
+to 10 seconds. No retry is added for 429 or 5xx responses.
