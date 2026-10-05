@@ -61,6 +61,36 @@ actions instead, and uses older sub-extension names (`identifier` rather than
 `coverage-assertion-id`). `coverageInformation()` searches both places and
 accepts both names.
 
+### Validating coverage information
+
+Parsing is lenient on purpose. To tell a payer what is wrong with a
+determination, check it against the CRD 2.2.1 `ext-coverage-information`
+profile:
+
+```java
+for (CoverageInformation info : response.coverageInformation()) {
+    for (CoverageInformationValidator.Violation v : CoverageInformationValidator.validate(info)) {
+        System.out.printf("%s %s: %s%n", v.severity(), v.path(), v.message());
+        // ERROR extension[date]: date is required
+    }
+}
+```
+
+`validate(JsonNode)` takes the raw extension object instead. Each `Violation`
+has a `severity` (`ERROR` or `WARNING`), a `path` such as
+`extension[coverage-assertion-id]`, and a plain-language `message`. The rules
+are hand-written from the published StructureDefinition (no FHIR validator
+dependency): required sub-extensions and their cardinality, value types, the
+required code bindings for `covered`, `pa-needed`, `doc-needed`, `doc-purpose`
+and `info-needed`, the FHIR `date` format, a `coverage` reference to a
+Coverage, and invariants `crd-ci-q1` to `crd-ci-q9` (cited in the message).
+Unknown sub-extensions are allowed, since the profile's slicing is open, and
+the internals of `detail` are not checked.
+
+The pre-2.x `identifier` sub-extension in place of `coverage-assertion-id` is
+a `WARNING`, not an `ERROR`. The reference implementation's responses also
+get `ERROR`s for missing `covered` and `date`, which 2.2.1 requires.
+
 ## Testing against the HL7 CRD reference implementation
 
 `CrdReferenceServerTest` runs only when `CRD_RI_BASE_URL` is set:

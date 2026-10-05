@@ -1,0 +1,31 @@
+{
+  "_comment": "Synthetic test data (no real patient). Response shape the HL7 CRD reference implementation (HL7-DaVinci/CRD master, 2026-09-15) returns for order-sign-hospital-bed.json: coverage information inside a card suggestion, with the pre-2.x 'identifier' and 'coverageInfo' sub-extensions.",
+  "cards": [{
+    "summary": "Hospital Beds And Accessories: Documentation Required.",
+    "indicator": "info",
+    "source": { "label": "Da Vinci CRD Reference Implementation" },
+    "suggestions": [{
+      "label": "Save Update To EHR",
+      "actions": [{
+        "type": "update",
+        "description": "Update original order",
+        "resource": {
+          "resourceType": "DeviceRequest",
+          "id": "devreq-1",
+          "status": "draft",
+          "intent": "order",
+          "extension": [{
+            "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+            "extension": [
+              { "url": "coverageInfo", "valueCoding": { "code": "clinical" } },
+              { "url": "coverage", "valueReference": { "reference": "Coverage/cov-1" } },
+              { "url": "identifier", "valueString": "id-1" },
+              { "url": "doc-needed", "valueCode": "admin" },
+              { "url": "questionnaire", "valueCanonical": "http://localhost:8090/fhir/r4/Questionnaire/HospitalBeds" }
+            ]
+          }]
+        }
+      }]
+    }]
+  }]
+}
