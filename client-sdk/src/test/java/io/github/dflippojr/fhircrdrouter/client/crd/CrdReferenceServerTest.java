@@ -67,8 +67,9 @@ class CrdReferenceServerTest {
 
     @Test
     void everyDiscoveredServiceSatisfiesTheDiscoveryContract() throws Exception {
+        String discoveryUrl = record.baseUrl() + (record.baseUrl().endsWith("/") ? "" : "/") + "cds-services";
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(record.baseUrl().replaceAll("/+$", "") + "/cds-services"))
+                .uri(URI.create(discoveryUrl))
                 .timeout(Duration.ofSeconds(10)).GET().build();
         HttpResponse<String> response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
                 .send(request, HttpResponse.BodyHandlers.ofString());
