@@ -103,6 +103,15 @@ GitHub Actions runs three workflows:
   tests against it. The server build is slow, so it runs weekly (Mondays
   12:00 UTC) and on manual dispatch instead of on every push.
 
+Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub
+Actions weekly and opens at most 3 pull requests per ecosystem, labeled
+`dependencies`. The Jackson artifacts are grouped into one pull request.
+Nothing auto-merges: CI and SonarCloud decide whether each update is safe, and
+the owner merges. Changes to the `--release 17` baseline or the JDK matrix are
+deliberate issues, not Dependabot pull requests. Dependabot-triggered runs do
+not receive repository secrets, so the SonarCloud job has no `SONAR_TOKEN` on
+these pull requests (see the PR checks for how it ends).
+
 A local SonarQube scan against a self-hosted server is optional and only for
 the maintainer. The SonarCloud workflow analyzes through the Maven scanner,
 which does not read the root `sonar-project.properties`.
