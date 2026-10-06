@@ -224,7 +224,30 @@ Both durations must be positive. A supplied `HttpClient` keeps its own connect
 timeout; set it on that client's builder. The custom constructor's connect
 timeout applies to SDK-built mutual TLS clients. Standalone `OAuth2TokenClient`
 users can pass `(httpClient, requestTimeout)`; its existing constructor defaults
-to 10 seconds. No retry is added for 429 or 5xx responses.
+to 10 seconds. Nothing is retried by default.
+
+### Throttling and Retry-After
+
+`PayerCallException.isRateLimited()` is true for HTTP 429, and `retryAfter()`
+returns an `Optional<Duration>` parsed from `Retry-After` in either form (delta
+seconds or an HTTP-date). A date in the past gives `Duration.ZERO`; a missing or
+invalid value gives an empty `Optional`.
+
+Retry is **off by default**. To opt in, give the client a `RetryPolicy`:
+
+```java
+client.retryPolicy(new RetryPolicy(2, Duration.ofSeconds(3)));
+// at most 2 HTTP attempts per call, at most 3 seconds of total waiting
+```
+
+Only 429 and 503 responses with a usable `Retry-After` are retried, and only
+`Retry-After` sets the wait; there is no exponential backoff. If the payer asks
+for more than the remaining `maxTotalWait`, the call fails at once with the
+`PayerCallException`, whose `retryAfter()` tells you what the payer wanted.
+Each attempt is reported to the `PayerExchangeListener` with its own `attempt`
+number. Network errors and timeouts are never retried, and the existing single
+OAuth2 401 retry is separate. **CDS Hooks calls are interactive** (a clinician is
+waiting), so keep the limits small and prefer failing fast.
 
 
 ## Exchange logging and tracing

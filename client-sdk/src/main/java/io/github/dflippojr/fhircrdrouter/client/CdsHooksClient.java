@@ -55,6 +55,7 @@ public final class CdsHooksClient {
     private final CredentialProvider credentialProvider;
     private final OAuth2TokenClient oauth2TokenClient;
     private final JwtSigner jwtSigner = new JwtSigner();
+    private volatile RetryPolicy retryPolicy = RetryPolicy.NONE;
     private final Map<String, HttpClient> mtlsClients = new ConcurrentHashMap<>();
 
     public CdsHooksClient(CredentialProvider credentialProvider) {
@@ -102,6 +103,16 @@ public final class CdsHooksClient {
         this.credentialProvider = credentialProvider;
         this.mtlsTrustStore = mtlsTrustStore;
         this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout, exchangeListener);
+    }
+
+    /**
+     * Opts in to bounded retry of 429 and 503 responses that carry {@code Retry-After}; off by default.
+     * Each attempt is reported to the {@link PayerExchangeListener}. CDS Hooks calls are interactive,
+     * so keep the limits small. Returns this client.
+     */
+    public CdsHooksClient retryPolicy(RetryPolicy policy) {
+        this.retryPolicy = Objects.requireNonNull(policy, "policy");
+        return this;
     }
 
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
@@ -174,21 +185,47 @@ public final class CdsHooksClient {
         URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);
-            HttpResponse<String> response = sendOnce(client, record, phase, body, 1, requestFactory);
-            if (response.statusCode() == 401 && isOAuth2(record)) {
-                oauth2TokenClient.invalidate(record);
-                response = sendOnce(client, record, phase, body, 2, requestFactory);
+            RetryPolicy policy = retryPolicy;
+            int attempt = 1;
+            int throttleRetries = 0;
+            boolean reauthenticated = false;
+            Duration waited = Duration.ZERO;
+            while (true) {
+                HttpResponse<String> response = sendOnce(client, record, phase, body, attempt, requestFactory);
+                int status = response.statusCode();
+                if (status / 100 == 2) {
+                    return response;
+                }
+                if (status == 401 && isOAuth2(record) && !reauthenticated) {
+                    reauthenticated = true;
+                    oauth2TokenClient.invalidate(record);
+                    attempt++;
+                    continue;
+                }
+                PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
+                        + status + ": ", phase, record.payerId(), uri, response, response.body());
+                Duration wait = policy.enabled() && RetryPolicy.retryable(status)
+                        && throttleRetries + 1 < policy.maxAttempts()
+                        ? failure.retryAfter().orElse(null) : null;
+                if (wait == null || wait.compareTo(policy.maxTotalWait().minus(waited)) > 0) {
+                    throw failure;
+                }
+                sleep(wait);
+                waited = waited.plus(wait);
+                throttleRetries++;
+                attempt++;
             }
-            if (response.statusCode() / 100 != 2) {
-                throw new PayerCallException(context + " failed: payer returned HTTP " + response.statusCode()
-                        + ": ", phase, record.payerId(), uri, response, response.body());
-            }
-            return response;
         } catch (IOException e) {
             throw PayerCallException.transport(context + " failed", phase, record.payerId(), uri, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw PayerCallException.transport(context + " interrupted", phase, record.payerId(), uri, e);
+        }
+    }
+
+    private static void sleep(Duration wait) throws InterruptedException {
+        if (!wait.isZero()) {
+            Thread.sleep(wait.toMillis() + (wait.toNanosPart() % 1_000_000 == 0 ? 0 : 1));
         }
     }
 
