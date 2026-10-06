@@ -3,6 +3,8 @@ package io.github.dflippojr.fhircrdrouter.client.auth;
 import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,12 +19,21 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OAuth2TokenClientTest {
@@ -32,13 +43,28 @@ class OAuth2TokenClientTest {
     private final AtomicReference<String> expiresInJson = new AtomicReference<>(",\"expires_in\":300");
     private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
     private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+    private final AtomicBoolean tokenEndpointFails = new AtomicBoolean();
+    private volatile long tokenDelayMillis;
     private OAuth2TokenClient tokenClient;
 
     @BeforeEach
     void startServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/token", exchange -> {
             int n = tokenRequests.incrementAndGet();
+            if (tokenDelayMillis > 0) {
+                try {
+                    Thread.sleep(tokenDelayMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (tokenEndpointFails.get()) {
+                exchange.sendResponseHeaders(500, -1);
+                exchange.close();
+                return;
+            }
             lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             byte[] bytes = ("{\"access_token\":\"token-" + n + "\",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}")
                     .getBytes(StandardCharsets.UTF_8);
@@ -114,6 +140,111 @@ class OAuth2TokenClientTest {
     @Test
     void recordRequiresClientIdForOAuth2() {
         assertThrows(IllegalArgumentException.class, () -> record(null, List.of()));
+    }
+
+    @Test
+    void concurrentColdCallersShareOneTokenRequest() throws Exception {
+        tokenDelayMillis = 50;
+        ConnectionRecord record = record(List.of());
+
+        List<String> tokens = concurrently(32, () -> tokenClient.fetchAccessToken(record, "secret"));
+
+        assertEquals(1, tokenRequests.get());
+        assertEquals(32, tokens.size());
+        tokens.forEach(t -> assertEquals("token-1", t));
+    }
+
+    @Test
+    void concurrentColdCallersShareOneSignedAssertionRequest() throws Exception {
+        tokenDelayMillis = 50;
+        String pem = TestKeys.privateKeyPem(TestKeys.rsa(2048));
+        ConnectionRecord record = ConnectionRecord.builder()
+                .payerId("PAYER-PKJWT")
+                .environment(Environment.SANDBOX)
+                .baseUrl("http://localhost:" + server.getAddress().getPort())
+                .authType(AuthType.OAUTH2_PRIVATE_KEY_JWT)
+                .tokenEndpoint("http://localhost:" + server.getAddress().getPort() + "/token")
+                .clientId("client")
+                .keyId("key-1")
+                .credentialRef("ref")
+                .build();
+
+        List<String> tokens = concurrently(8, () -> tokenClient.fetchAccessToken(record, pem));
+
+        assertEquals(1, tokenRequests.get());
+        tokens.forEach(t -> assertEquals("token-1", t));
+    }
+
+    @Test
+    void failureReachesEveryWaiterAndIsNotCached() throws Exception {
+        tokenDelayMillis = 50;
+        tokenEndpointFails.set(true);
+        ConnectionRecord record = record(List.of());
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<Throwable>> results = new ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return assertThrows(PayerCallException.class, () -> tokenClient.fetchAccessToken(record, "secret"));
+                }));
+            }
+            start.countDown();
+            Throwable first = results.get(0).get(10, TimeUnit.SECONDS);
+            for (Future<Throwable> r : results) {
+                assertSame(first, r.get(10, TimeUnit.SECONDS));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(1, tokenRequests.get());
+
+        tokenEndpointFails.set(false);
+        assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"));
+        assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
+    void invalidateDuringFlightLetsNextCallerStartFreshRequest() throws Exception {
+        tokenDelayMillis = 200;
+        ConnectionRecord record = record(List.of());
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> old = pool.submit(() -> tokenClient.fetchAccessToken(record, "secret"));
+            while (tokenRequests.get() == 0) {
+                Thread.sleep(5);
+            }
+            tokenClient.invalidate(record);
+            String fresh = tokenClient.fetchAccessToken(record, "secret");
+            assertEquals("token-1", old.get(10, TimeUnit.SECONDS));
+            assertEquals("token-2", fresh);
+            assertEquals(2, tokenRequests.get());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private static List<String> concurrently(int threads, Supplier<String> call) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<String>> futures = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return call.get();
+                }));
+            }
+            start.countDown();
+            List<String> results = new ArrayList<>();
+            for (Future<String> f : futures) {
+                results.add(f.get(10, TimeUnit.SECONDS));
+            }
+            return results;
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private ConnectionRecord record(List<String> scopes) {

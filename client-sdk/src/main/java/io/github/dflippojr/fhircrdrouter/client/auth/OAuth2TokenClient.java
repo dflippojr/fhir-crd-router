@@ -25,6 +25,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -59,6 +61,7 @@ public final class OAuth2TokenClient {
     private final JwtSigner jwtSigner;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<CacheKey, CachedToken> cache = new ConcurrentHashMap<>();
+    private final Map<CacheKey, CompletableFuture<CachedToken>> inFlight = new ConcurrentHashMap<>();
 
     public OAuth2TokenClient(HttpClient httpClient) {
         this(httpClient, CdsHooksClient.DEFAULT_REQUEST_TIMEOUT);
@@ -110,18 +113,59 @@ public final class OAuth2TokenClient {
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
             return cached.accessToken();
         }
-        CachedToken fresh = requestToken(client, record, secret, attempt);
-        if (fresh.refreshAt() != null) {
-            cache.put(key, fresh);
-        } else {
-            cache.remove(key);
+        CompletableFuture<CachedToken> mine = new CompletableFuture<>();
+        CompletableFuture<CachedToken> existing = inFlight.putIfAbsent(key, mine);
+        if (existing != null) {
+            return await(existing).accessToken();
         }
-        return fresh.accessToken();
+        try {
+            // A previous flight may have finished between the cache read above and claiming the slot.
+            cached = cache.get(key);
+            CachedToken result;
+            if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
+                result = cached;
+            } else {
+                result = requestToken(client, record, secret, attempt);
+                // invalidate() during the flight detaches it: its result must not repopulate the cache.
+                if (inFlight.get(key) == mine) {
+                    if (result.refreshAt() != null) {
+                        cache.put(key, result);
+                    } else {
+                        cache.remove(key);
+                    }
+                }
+            }
+            mine.complete(result);
+            return result.accessToken();
+        } catch (RuntimeException | Error e) {
+            mine.completeExceptionally(e);
+            throw e;
+        } finally {
+            inFlight.remove(key, mine);
+        }
+    }
+
+    private static CachedToken await(CompletableFuture<CachedToken> flight) {
+        try {
+            return flight.join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            if (cause instanceof Error err) {
+                throw err;
+            }
+            throw e;
+        }
     }
 
     /** Drops any cached token for this connection, e.g. after the payer returns 401. */
     public void invalidate(ConnectionRecord record) {
-        cache.remove(cacheKey(record));
+        CacheKey key = cacheKey(record);
+        cache.remove(key);
+        // Do not cancel a running fetch, but stop new callers joining it: it may hold the revoked token.
+        inFlight.remove(key);
     }
 
     private CachedToken requestToken(HttpClient client, ConnectionRecord record, String secret, int attempt) {
