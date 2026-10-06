@@ -7,8 +7,14 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpTimeoutException;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 
@@ -55,6 +61,42 @@ public final class PayerCallException extends RouterException {
     public HttpHeaders responseHeaders() { return responseHeaders; }
     public String responseBody() { return responseBody; }
     public boolean timedOut() { return getCause() instanceof HttpTimeoutException; }
+
+    /** True when the payer answered HTTP 429. */
+    public boolean isRateLimited() { return statusCode.isPresent() && statusCode.getAsInt() == 429; }
+
+    /**
+     * The payer's {@code Retry-After} as a wait, from delta-seconds or an HTTP-date (RFC 9110).
+     * A date in the past yields {@link Duration#ZERO}; a missing or unparseable value yields empty.
+     */
+    public Optional<Duration> retryAfter() {
+        return retryAfter(Clock.systemUTC());
+    }
+
+    Optional<Duration> retryAfter(Clock clock) {
+        return responseHeaders.firstValue("Retry-After").flatMap(v -> parseRetryAfter(v, clock));
+    }
+
+    static Optional<Duration> parseRetryAfter(String value, Clock clock) {
+        String v = value.strip();
+        if (v.isEmpty()) {
+            return Optional.empty();
+        }
+        if (v.chars().allMatch(c -> c >= '0' && c <= '9')) {
+            try {
+                return Optional.of(Duration.ofSeconds(Long.parseLong(v)));
+            } catch (NumberFormatException e) {
+                return Optional.empty();
+            }
+        }
+        try {
+            ZonedDateTime date = ZonedDateTime.parse(v, DateTimeFormatter.RFC_1123_DATE_TIME);
+            Duration wait = Duration.between(clock.instant(), date.toInstant());
+            return Optional.of(wait.isNegative() ? Duration.ZERO : wait);
+        } catch (DateTimeException e) {
+            return Optional.empty();
+        }
+    }
 
     private static String truncate(String body) {
         if (body == null) {
