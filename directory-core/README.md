@@ -9,7 +9,9 @@ Core contracts and the default implementations:
   The optional `mtlsCredentialRef` adds mutual TLS on top of any of them. See
   the `client-sdk` README for which fields each auth type needs.
 - `ConnectionStore` — pluggable persistence; `FileBasedConnectionStore` is
-  the v1 default (flat YAML file, whole-file read/rewrite).
+  the v1 default (flat YAML file, whole-file read/rewrite). Writes are atomic
+  (temp file + move), so a crash never leaves a partial file, but there is no
+  cross-process locking: one process must own the file.
 - `CredentialProvider` — pluggable secret resolution; the default
   implementation lives in the sibling `credential-store-encrypted-local`
   module to keep crypto code out of the core module.
