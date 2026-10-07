@@ -24,17 +24,40 @@ jobs:
     # Secrets are not passed to pull requests from forks; skip rather than fail.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      - name: Check analysis token
+        id: token
+        env:
+          # GitHub supplies the same name from the Dependabot secret store on
+          # Dependabot PRs, and the Actions secret store on other runs.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          DEPENDABOT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
+        shell: bash
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DEPENDABOT_PR" = "true" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarCloud analysis skipped: repository Dependabot secret SONAR_TOKEN is not configured."
+            echo "SonarCloud analysis was skipped because the repository Dependabot secret SONAR_TOKEN is missing. This run did not publish analysis or evaluate the quality gate. Add the secret and synchronize the PR to run analysis." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::SONAR_TOKEN is required for SonarCloud analysis. Configure the repository Actions secret."
+            exit 1
+          fi
       - uses: actions/checkout@v5
+        if: steps.token.outputs.available == 'true'
         with:
           # Full history so SonarCloud can blame lines and find the PR base.
           fetch-depth: 0
       - uses: actions/setup-java@v5
+        if: steps.token.outputs.available == 'true'
         with:
           distribution: temurin
           java-version: 21
           cache: maven
       - run: chmod +x mvnw
+        if: steps.token.outputs.available == 'true'
       - name: Build, test and analyze
+        if: steps.token.outputs.available == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./mvnw -B -ntp verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true
