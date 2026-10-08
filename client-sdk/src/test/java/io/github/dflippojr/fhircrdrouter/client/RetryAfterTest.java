@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
@@ -10,7 +11,6 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -93,9 +93,7 @@ class RetryAfterTest {
             if (first) {
                 exchange.getResponseHeaders().add("Retry-After", "1");
             }
-            byte[] bytes = (first ? "slow down" : "{\"cards\":[]}").getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(first ? 429 : 200, bytes.length);
-            try (var out = exchange.getResponseBody()) { out.write(bytes); }
+            TestResponses.respond(exchange, first ? 429 : 200, first ? "slow down" : "{\"cards\":[]}");
         });
         CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), null, null,
                 Duration.ofSeconds(2), Duration.ofSeconds(1), seen::add)
@@ -167,9 +165,7 @@ class RetryAfterTest {
         server.createContext(HOOK_PATH, exchange -> {
             calls.incrementAndGet();
             headers.forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
-            byte[] bytes = "throttled".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(status, bytes.length);
-            try (var out = exchange.getResponseBody()) { out.write(bytes); }
+            TestResponses.respond(exchange, status, "throttled");
         });
     }
 }

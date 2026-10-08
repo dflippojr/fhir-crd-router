@@ -3,6 +3,7 @@ package io.github.dflippojr.fhircrdrouter.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -16,7 +17,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -213,10 +213,6 @@ class RawDiscoveryTest {
         if (exchange.getRequestURI().getPath().equals("/cds-services")) {
             serverAuth.add(exchange.getRequestHeaders().getFirst("Authorization"));
         }
-        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(code, bytes.length);
-        try (var stream = exchange.getResponseBody()) {
-            stream.write(bytes);
-        }
+        TestResponses.respond(exchange, code, json);
     }
 }
