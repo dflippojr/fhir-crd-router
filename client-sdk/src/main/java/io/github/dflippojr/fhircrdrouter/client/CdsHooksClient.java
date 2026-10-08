@@ -36,7 +36,7 @@ import java.util.function.Supplier;
  * client SDK does (per the capsule's "optional client SDK" decision).
  *
  * <p>Connections with an {@code mtlsCredentialRef} use a separate
- * {@link HttpClient} per client certificate, built by this class and
+ * {@link HttpClient} per credential reference, built by this class and
  * restricted to TLS 1.2+. The token endpoint for OAuth2 connections is called
  * over that same client. Connections without mutual TLS use the
  * {@code HttpClient} passed to the constructor.
@@ -56,7 +56,9 @@ public final class CdsHooksClient {
     private final OAuth2TokenClient oauth2TokenClient;
     private final JwtSigner jwtSigner = new JwtSigner();
     private volatile RetryPolicy retryPolicy = RetryPolicy.NONE;
-    private final Map<String, HttpClient> mtlsClients = new ConcurrentHashMap<>();
+    private final Map<String, MtlsClient> mtlsClients = new ConcurrentHashMap<>();
+
+    private record MtlsClient(String fingerprint, HttpClient client) { }
 
     public CdsHooksClient(CredentialProvider credentialProvider) {
         this(credentialProvider, DEFAULT_REQUEST_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
@@ -263,13 +265,20 @@ public final class CdsHooksClient {
         String pemBundle = credentialProvider.resolve(record.mtlsCredentialRef())
                 .orElseThrow(() -> new RouterException("No mTLS credential found for ref="
                         + record.mtlsCredentialRef() + " (payerId=" + record.payerId() + ")"));
-        // Keyed by content hash too, so a rotated certificate gets a fresh client.
-        String key = record.mtlsCredentialRef() + "#" + sha256(pemBundle);
-        return mtlsClients.computeIfAbsent(key, k -> HttpClient.newBuilder()
-                .connectTimeout(connectTimeout)
-                .sslContext(MutualTls.sslContext(pemBundle, mtlsTrustStore))
-                .sslParameters(MutualTls.sslParameters())
-                .build());
+        String fingerprint = sha256(pemBundle);
+        // Build before publishing: a failure leaves the previous entry intact.
+        // Replacing the entry releases our old reference; in-flight calls keep theirs.
+        return mtlsClients.compute(record.mtlsCredentialRef(), (ref, current) -> {
+            if (current != null && current.fingerprint().equals(fingerprint)) {
+                return current;
+            }
+            HttpClient replacement = HttpClient.newBuilder()
+                    .connectTimeout(connectTimeout)
+                    .sslContext(MutualTls.sslContext(pemBundle, mtlsTrustStore))
+                    .sslParameters(MutualTls.sslParameters())
+                    .build();
+            return new MtlsClient(fingerprint, replacement);
+        }).client();
     }
 
     private static String sha256(String value) {
