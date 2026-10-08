@@ -59,10 +59,11 @@ public final class QuickstartMain {
                     new EncryptedLocalCredentialProvider(workDir.resolve("credentials"));
             CdsHooksClient client = new CdsHooksClient(credentials,
                     CdsHooksClient.DEFAULT_REQUEST_TIMEOUT, CdsHooksClient.DEFAULT_CONNECT_TIMEOUT,
-                    exchange -> System.out.printf("%s %s %s status=%s %d ms%n",
-                            exchange.phase(), exchange.method(), exchange.uri(),
-                            exchange.statusCode().isPresent() ? exchange.statusCode().getAsInt() : "transport-error",
-                            exchange.elapsed().toMillis()));
+                    io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener.metadataOnly(
+                            m -> System.out.printf("%s payer=%s env=%s %s attempt=%d start=%s status=%s %d ms %s%n",
+                                    m.phase(), m.payerId(), m.environment(), m.method(), m.attempt(), m.startedAt(),
+                                    m.statusCode().isPresent() ? m.statusCode().getAsInt() : "none",
+                                    m.elapsed().toMillis(), m.outcome())));
 
             List<CdsServiceDescriptor> services = client.discoverServices(record);
             System.out.println("Discovered services: " + services);
