@@ -24,7 +24,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /** Opt-in, one writer per file. No business actions are instrumented by this foundation. */
-public final class JsonlAuditTrail implements AutoCloseable {
+public final class JsonlAuditTrail implements AuditSink, AutoCloseable {
     private final Clock clock;
     private final FileChannel channel;
     private final FileLock fileLock;
@@ -67,6 +67,7 @@ public final class JsonlAuditTrail implements AutoCloseable {
     }
 
     /** Force ATTEMPTED before the host action; force SUCCEEDED/FAILED after its result. */
+    @Override
     public synchronized AuditEvent record(AuditContext context, String action, String targetKind,
                                           String targetId, Environment environment,
                                           AuditEvent.Outcome outcome, List<String> changedFields) {
