@@ -124,6 +124,7 @@ class AuditedCredentialProviderTest {
         assertEquals(1, thrown.getSuppressed().length);
         assertEquals(List.of("credential.put:ATTEMPTED"), recorded);
 
+        delegate.failure = new IllegalStateException("read failed"); // fresh instance: suppressed is per exception
         var resolveThrown = assertThrows(IllegalStateException.class, () -> provider.resolve(CONTEXT, "ref-1"));
         assertEquals(1, resolveThrown.getSuppressed().length);
     }
