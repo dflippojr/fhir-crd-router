@@ -1,6 +1,8 @@
 version: 2
 updates:
   - package-ecosystem: maven
+    assignees:
+      - dflippojr
     directory: /
     schedule:
       interval: weekly
@@ -11,6 +13,8 @@ updates:
         patterns:
           - "com.fasterxml.jackson*"
   - package-ecosystem: github-actions
+    assignees:
+      - dflippojr
     directory: /
     schedule:
       interval: weekly
