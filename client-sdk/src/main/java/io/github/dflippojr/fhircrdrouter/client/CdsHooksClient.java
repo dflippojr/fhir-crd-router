@@ -118,11 +118,9 @@ public final class CdsHooksClient {
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
     public List<CdsServiceDescriptor> discoverServices(ConnectionRecord record) {
         String context = "Discovery call for payerId=" + record.payerId();
-        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
-                .GET());
+        JsonNode raw = discoverServicesRaw(record);
         try {
-            JsonNode servicesNode = mapper.readTree(response.body()).get("services");
+            JsonNode servicesNode = raw.get("services");
             List<CdsServiceDescriptor> services = new ArrayList<>();
             if (servicesNode != null && servicesNode.isArray()) {
                 for (JsonNode node : servicesNode) {
@@ -130,6 +128,23 @@ public final class CdsHooksClient {
                 }
             }
             return services;
+        } catch (IOException e) {
+            throw new RouterException(context + " returned an unparseable body", e);
+        }
+    }
+
+    /**
+     * Fetches discovery without coercing descriptor fields. Uses the same authentication,
+     * timeouts, retries and exchange listener as typed discovery. Catalog validation is
+     * opt-in via {@link CdsDiscoveryValidator#validate(JsonNode)}.
+     */
+    public JsonNode discoverServicesRaw(ConnectionRecord record) {
+        String context = "Discovery call for payerId=" + record.payerId();
+        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
+                .GET());
+        try {
+            return mapper.readTree(response.body());
         } catch (IOException e) {
             throw new RouterException(context + " returned an unparseable body", e);
         }
