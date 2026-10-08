@@ -15,10 +15,12 @@ upstream module too, and those have no main class.)
 What it does:
 
 1. Starts the mock server on `localhost:8089`.
-2. Loads `sample-connections.yaml` into a temp `FileBasedConnectionStore`.
+2. Loads `sample-connections.yaml` into a `FileBasedConnectionStore` in an
+   owner-only temp directory (which also holds the encrypted credential store).
 3. Resolves `DEMO-PAYER` via `PayerRouter`.
 4. Calls `discoverServices(...)` and `callHook(...)` against the mock server
-   through the real `CdsHooksClient`.
+   through the real `CdsHooksClient`, printing one metadata-only line per HTTP
+   exchange (`PayerExchangeListener.metadataOnly`).
 
 Swap `sample-connections.yaml` for a real payer's sandbox `baseUrl` (and set
 `authType`/`credentialRef` appropriately) once you have one to test against.

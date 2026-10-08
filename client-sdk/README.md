@@ -155,7 +155,8 @@ separately (next section), so it can be combined with any of these.
 OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes)
 until 30 seconds before `expires_in`; responses without `expires_in` aren't
 cached. If the payer returns 401 on an OAuth2 connection, the cached token is
-dropped and the request is retried exactly once with a fresh token.
+dropped and the request is retried exactly once with a fresh token. Concurrent
+fetches for the same cache key share one token request.
 
 ### Signed JWTs
 
@@ -209,7 +210,8 @@ To trust a sandbox's private CA, pass a trust store:
 mutual TLS use the `HttpClient` you pass in, so set its `SSLContext` yourself
 if those also need a custom trust store.
 
-Beyond that single 401 retry there are no retries or backoff, and no
+Beyond that single 401 retry, the only retry is the opt-in `Retry-After` policy
+described under "Throttling and Retry-After" below. There is no backoff and no
 connection pooling tuning. This is still a v1 client meant to show the flow
 works, not a hardened production SDK.
 

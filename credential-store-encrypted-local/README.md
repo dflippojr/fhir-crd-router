@@ -10,6 +10,12 @@ To use Vault / AWS Secrets Manager / Azure Key Vault instead, implement
 wherever this one would otherwise be wired in — `ConnectionRecord` never
 knows or cares which provider resolved its `credentialRef`.
 
+Files under the base directory: `key.bin` (the AES key) and `secrets.properties`
+(`credentialRef -> base64(iv || ciphertext)`). To audit key creation, credential
+puts, removes and resolves, pass an `AuditSink` as a second constructor argument
+and wrap the provider in `AuditedCredentialProvider`; see
+[AUDIT.md](../directory-core/AUDIT.md).
+
 ```java
 CredentialProvider credentials = new EncryptedLocalCredentialProvider(Path.of(".fhir-crd-router"));
 credentials.put("payer-1-prod-key", "sk_live_...");

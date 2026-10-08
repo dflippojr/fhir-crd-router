@@ -17,7 +17,10 @@ so far.
   (`FileBasedConnectionStore`), `CredentialProvider` interface, and
   `PayerRouter` (the `payerId -> ConnectionRecord` resolver). A record
   never holds a secret, only opaque `credentialRef` / `mtlsCredentialRef`
-  references into a `CredentialProvider`.
+  references into a `CredentialProvider`. It also holds the opt-in
+  `core.audit` package: an append-only JSONL audit trail, store and
+  credential wrappers, and an owner read/export API
+  (see [AUDIT.md](./directory-core/AUDIT.md)).
 - **`credential-store-encrypted-local`**: the default `CredentialProvider`,
   an AES-GCM encrypted local file keyed by a locally generated secret.
 - **`client-sdk`**: `CdsHooksClient`. Given a resolved `ConnectionRecord`, it
@@ -36,6 +39,10 @@ so far.
     (RSA 2048+) or ES384 (EC P-384), chosen from the key; private keys are
     PKCS#8 PEM. `Jwks` builds the public JWK Set to give a payer, and
     `PemKeys` reads keys and certificates.
+  - **Diagnostics and resilience**: typed `PayerCallException` errors with
+    configurable timeouts, an opt-in `Retry-After` retry policy, redacted and
+    metadata-only `PayerExchangeListener`s, and `discoverServicesRaw` with
+    `CdsDiscoveryValidator`. See the [client-sdk README](./client-sdk/README.md).
   - **Mutual TLS** is a transport setting rather than an auth type: a record
     with an `mtlsCredentialRef` (PEM certificate chain plus key) gets its own
     TLS 1.2+ client, combinable with any of the auth types above.

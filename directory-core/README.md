@@ -37,4 +37,6 @@ ConnectionRecord record = router.resolve("PAYER-1");
 ## Audit foundation
 
 Optional actor-attributed JSONL history and the owner read/export API are documented
-in [AUDIT.md](AUDIT.md). This facility does not automatically instrument store actions.
+in [AUDIT.md](AUDIT.md). It is opt-in: `AuditedConnectionStore` and
+`AuditedCredentialProvider` wrap the stores you already use, and the plain
+constructors stay audit-disabled.
