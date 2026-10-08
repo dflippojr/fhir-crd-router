@@ -34,8 +34,8 @@ public final class AuditReader {
         List<AuditEvent> events = new ArrayList<>();
         long lineNumber = 1;
         boolean limitReached = false;
-        var input = new BufferedInputStream(source);
-        try (var line = new ByteArrayOutputStream()) {
+        try (var input = new BufferedInputStream(source);
+             var line = new ByteArrayOutputStream()) {
             int value;
             while ((value = input.read()) != -1) {
                 if (value != '\n') {

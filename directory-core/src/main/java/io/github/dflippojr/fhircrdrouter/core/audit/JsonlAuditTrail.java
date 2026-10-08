@@ -2,10 +2,10 @@ package io.github.dflippojr.fhircrdrouter.core.audit;
 
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.nio.channels.Channels;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -49,8 +49,10 @@ public final class JsonlAuditTrail implements AutoCloseable {
         try {
             acquired = channel.tryLock();
             if (acquired == null) throw new IOException("Audit trail already has a writer");
-            if (AuditReader.scan(Channels.newInputStream(channel), AuditQuery.all(1)).incompleteFinalLine()) {
-                throw new IOException("Archive incomplete audit tail before reopening writer");
+            try (var input = new BorrowedChannelInputStream(channel)) {
+                if (AuditReader.scan(input, AuditQuery.all(1)).incompleteFinalLine()) {
+                    throw new IOException("Archive incomplete audit tail before reopening writer");
+                }
             }
             channel.position(channel.size());
             fileLock = acquired;
@@ -86,6 +88,24 @@ public final class JsonlAuditTrail implements AutoCloseable {
         buffer.flip();
         while (buffer.hasRemaining()) channel.write(buffer);
         channel.force(true);
+    }
+
+    /** Closing this view releases stream resources without closing the trail-owned channel. */
+    private static final class BorrowedChannelInputStream extends InputStream {
+        private final FileChannel borrowed;
+        private BorrowedChannelInputStream(FileChannel borrowed) { this.borrowed = borrowed; }
+
+        @Override
+        public int read() throws IOException {
+            ByteBuffer byteBuffer = ByteBuffer.allocate(1);
+            return borrowed.read(byteBuffer) == -1 ? -1 : Byte.toUnsignedInt(byteBuffer.array()[0]);
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            return borrowed.read(ByteBuffer.wrap(bytes, offset, length));
+        }
+        // InputStream.close() is a no-op; JsonlAuditTrail.close() owns the channel lifetime.
     }
 
     private static void prepareFile(Path path) throws IOException {
