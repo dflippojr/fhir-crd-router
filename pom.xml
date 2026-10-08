@@ -38,7 +38,7 @@
     <sonar.organization>dflippojr</sonar.organization>
     <sonar.projectKey>dflippojr_fhir-crd-router</sonar.projectKey>
     <sonar.host.url>https://sonarcloud.io</sonar.host.url>
-    <jackson.version>2.17.2</jackson.version>
+    <jackson.version>2.22.3</jackson.version>
     <junit.version>5.10.3</junit.version>
     <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
   </properties>
