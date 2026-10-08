@@ -332,3 +332,29 @@ They may contain protected health information (PHI), including any FHIR authoriz
 supplied in a hook request. The listener owns what it logs, traces, stores and retains;
 apply your deployment's access and retention controls. Discovery bodies also pass
 through. The quickstart prints metadata only, one line per HTTP exchange.
+
+### Metadata-only listener for audit logging
+
+`PayerExchangeListener.metadataOnly` hands your consumer an immutable
+`PayerExchangeMetadata` with only: phase, payerId, environment, method, attempt,
+startedAt, elapsed, optional statusCode and an `Outcome`. It never includes URIs,
+bodies, headers, exceptions or messages, and holds no reference to the exchange.
+
+```java
+CdsHooksClient audited = new CdsHooksClient(credentials,
+        Duration.ofSeconds(3), Duration.ofSeconds(2),
+        PayerExchangeListener.metadataOnly(m -> System.out.printf(
+                "%s payer=%s env=%s %s attempt=%d start=%s status=%s %d ms %s%n",
+                m.phase(), m.payerId(), m.environment(), m.method(), m.attempt(), m.startedAt(),
+                m.statusCode().isPresent() ? m.statusCode().getAsInt() : "none",
+                m.elapsed().toMillis(), m.outcome())));
+```
+
+`Outcome` is `HTTP_SUCCESS` (2xx), `HTTP_ERROR` (any other status), `TIMEOUT`
+(including connect timeout), `INTERRUPTED`, or `TRANSPORT_ERROR`. It describes the HTTP
+attempt only: a 200 with a malformed body is `HTTP_SUCCESS` even if the SDK then fails to
+parse it. Limitations: `payerId` is passed through as the configured opaque identifier and
+must be non-sensitive (as must any host-supplied identity); the projection cannot sanitize
+a misconfigured one. It supplies no initiating actor or source, logical-call correlation,
+durable retention, integrity guarantee or final parser outcome; the host must provide that
+context when integrating the audit foundation. The rich listener above is unchanged.
