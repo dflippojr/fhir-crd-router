@@ -34,3 +34,7 @@ store.save(ConnectionRecord.builder()
 PayerRouter router = new PayerRouter(store);
 ConnectionRecord record = router.resolve("PAYER-1");
 ```
+## Audit foundation
+
+Optional actor-attributed JSONL history and the owner read/export API are documented
+in [AUDIT.md](AUDIT.md). This facility does not automatically instrument store actions.
