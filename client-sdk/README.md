@@ -162,10 +162,14 @@ openssl ec -in signing-key.pem -pubout -out signing-key.pub.pem
 
 Set `mtlsCredentialRef` on a record to connect with a client certificate. The
 secret it resolves to is a PEM bundle: the certificate chain (leaf first)
-followed by the PKCS#8 private key. The SDK builds one `HttpClient` per client
-certificate and restricts it to TLS 1.2 and 1.3. Calls to the OAuth2 token
-endpoint use that same client. If the certificate is rotated, a new client is
-built automatically.
+followed by the PKCS#8 private key. Each `CdsHooksClient` retains one current
+`HttpClient` per credential reference and restricts it to TLS 1.2 and 1.3.
+Calls to the OAuth2 token endpoint use that same client. Unchanged credential
+content reuses the client; rotation atomically replaces it, dropping the cache's
+strong reference to the obsolete client. Calls already using that client can
+finish; it is not forcibly closed. On Java 17, resource and idle selector thread
+reclamation is left to the JDK and is not immediate. An invalid replacement
+fails the initiating call without discarding the previously valid cache entry.
 
 To trust a sandbox's private CA, pass a trust store:
 `new CdsHooksClient(httpClient, credentials, trustStore)`. Connections without

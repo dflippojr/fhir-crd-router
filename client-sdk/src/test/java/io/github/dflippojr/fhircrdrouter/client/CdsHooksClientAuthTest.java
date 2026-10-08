@@ -36,6 +36,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -168,6 +171,70 @@ class CdsHooksClientAuthTest {
     }
 
     @Test
+    void rotationUsesNewCertificateForTokenAndHookWhileOldCallFinishes() throws Exception {
+        var serverId = TestKeys.selfSigned(tempDir, "payer-server");
+        var oldId = TestKeys.selfSigned(tempDir, "old-client");
+        var newId = TestKeys.selfSigned(tempDir, "new-client");
+        secrets.put("client-cert", oldId.pemBundle());
+        secrets.put("oauth-secret", "synthetic-secret");
+        CountDownLatch oldStarted = new CountDownLatch(1);
+        CountDownLatch finishOld = new CountDownLatch(1);
+        AtomicReference<String> hookPeer = new AtomicReference<>();
+        AtomicReference<String> tokenPeer = new AtomicReference<>();
+        var workers = Executors.newCachedThreadPool();
+        try {
+            startHttpsServer(serverId, exchange -> {
+                String peer = peerName(exchange);
+                if ("CN=old-client".equals(peer)) {
+                    oldStarted.countDown();
+                    try {
+                        if (!finishOld.await(10, TimeUnit.SECONDS)) {
+                            respond(exchange, 500, EMPTY_RESPONSE);
+                            return;
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException(e);
+                    }
+                } else {
+                    hookPeer.set(peer);
+                }
+                respond(exchange, 200, EMPTY_RESPONSE);
+            }, oldId, newId);
+            server.setExecutor(workers);
+            server.createContext("/token", exchange -> {
+                tokenPeer.set(peerName(exchange));
+                respond(exchange, 200, "{\"access_token\":\"rotated\",\"expires_in\":300}");
+            });
+            server.start();
+            String base = "https://127.0.0.1:" + server.getAddress().getPort();
+            var oldRecord = ConnectionRecord.builder().payerId("SYNTHETIC").environment(Environment.SANDBOX)
+                    .baseUrl(base).authType(AuthType.NONE).mtlsCredentialRef("client-cert").build();
+            var rotatedRecord = ConnectionRecord.builder().payerId("SYNTHETIC").environment(Environment.SANDBOX)
+                    .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).clientId("synthetic")
+                    .credentialRef("oauth-secret").tokenEndpoint(base + "/token")
+                    .mtlsCredentialRef("client-cert").build();
+            var client = new CdsHooksClient(HttpClient.newHttpClient(), credentials(), serverId.trustStore());
+            var oldCall = workers.submit(() -> client.callHook(oldRecord, "order-sign-crd", REQUEST));
+            assertTrue(oldStarted.await(10, TimeUnit.SECONDS));
+            secrets.put("client-cert", newId.pemBundle());
+            client.callHook(rotatedRecord, "order-sign-crd", REQUEST);
+            assertEquals("CN=new-client", tokenPeer.get());
+            assertEquals("CN=new-client", hookPeer.get());
+            finishOld.countDown();
+            assertTrue(oldCall.get(10, TimeUnit.SECONDS).cards().isEmpty());
+        } finally {
+            finishOld.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    private static String peerName(HttpExchange exchange) throws javax.net.ssl.SSLPeerUnverifiedException {
+        var peer = (X509Certificate) ((HttpsExchange) exchange).getSSLSession().getPeerCertificates()[0];
+        return peer.getSubjectX500Principal().getName();
+    }
+
+    @Test
     void serverRequiringMutualTlsRejectsClientWithoutCertificate() throws Exception {
         TestKeys.Identity serverId = TestKeys.selfSigned(tempDir, "payer-server");
         TestKeys.Identity clientId = TestKeys.selfSigned(tempDir, "ehr-client");
@@ -200,10 +267,20 @@ class CdsHooksClientAuthTest {
 
     private void startHttpsServer(TestKeys.Identity serverId, TestKeys.Identity trustedClient,
                                   com.sun.net.httpserver.HttpHandler handler) throws Exception {
+        startHttpsServer(serverId, handler, trustedClient);
+        server.start();
+    }
+
+    private void startHttpsServer(TestKeys.Identity serverId, com.sun.net.httpserver.HttpHandler handler,
+                                  TestKeys.Identity... trustedClients) throws Exception {
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(serverId.keyStore(), TestKeys.Identity.password());
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(trustedClient.trustStore());
+        var trustStore = trustedClients[0].trustStore();
+        for (int i = 1; i < trustedClients.length; i++) {
+            trustStore.setCertificateEntry("client-" + i, trustedClients[i].certificate());
+        }
+        tmf.init(trustStore);
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
 
@@ -217,7 +294,6 @@ class CdsHooksClientAuthTest {
             }
         });
         https.createContext("/cds-services/order-sign-crd", handler);
-        https.start();
         server = https;
     }
 
