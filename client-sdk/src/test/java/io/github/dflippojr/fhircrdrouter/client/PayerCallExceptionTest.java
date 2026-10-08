@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -227,9 +228,7 @@ class PayerCallExceptionTest {
         server.createContext(path, exchange -> {
             calls.incrementAndGet();
             headers.forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(status, bytes.length);
-            try (var output = exchange.getResponseBody()) { output.write(bytes); }
+            TestResponses.respond(exchange, status, body);
         });
     }
 }

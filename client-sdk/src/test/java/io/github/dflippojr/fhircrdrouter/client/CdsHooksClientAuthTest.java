@@ -9,6 +9,7 @@ import com.sun.net.httpserver.HttpsExchange;
 import com.sun.net.httpserver.HttpsParameters;
 import com.sun.net.httpserver.HttpsServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -317,11 +318,7 @@ class CdsHooksClientAuthTest {
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (var os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
+        TestResponses.respond(exchange, status, body);
     }
 }

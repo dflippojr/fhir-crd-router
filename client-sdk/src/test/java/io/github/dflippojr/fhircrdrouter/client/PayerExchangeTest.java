@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -220,10 +221,6 @@ class PayerExchangeTest {
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {
         exchange.getResponseHeaders().add("sEt-CoOkIe", "session=cookie-secret");
         exchange.getResponseHeaders().add("X-Request-Id", "trace-1");
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (var out = exchange.getResponseBody()) {
-            out.write(bytes);
-        }
+        TestResponses.respond(exchange, status, body);
     }
 }

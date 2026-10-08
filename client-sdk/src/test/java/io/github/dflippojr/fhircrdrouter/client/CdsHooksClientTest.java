@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -11,7 +12,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -145,12 +145,8 @@ class CdsHooksClientTest {
     }
 
     private static void sendJson(com.sun.net.httpserver.HttpExchange exchange, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, bytes.length);
-        try (var os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
+        TestResponses.respond(exchange, 200, body);
     }
 
     private static CredentialProvider noopCredentialProvider() {

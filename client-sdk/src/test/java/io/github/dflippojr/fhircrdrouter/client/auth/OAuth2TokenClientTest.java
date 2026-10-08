@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client.auth;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
@@ -66,13 +67,9 @@ class OAuth2TokenClientTest {
                 return;
             }
             lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            byte[] bytes = ("{\"access_token\":\"token-" + n + "\",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}")
-                    .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, bytes.length);
-            try (var os = exchange.getResponseBody()) {
-                os.write(bytes);
-            }
+            TestResponses.respond(exchange, 200,
+                    "{\"access_token\":\"token-" + n + "\",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}");
         });
         server.start();
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient(), clock);
