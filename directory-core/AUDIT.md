@@ -2,7 +2,7 @@
 
 The `core.audit` package is an opt-in facility for host-established attribution and
 owner inspection. Existing store, router and SDK constructors remain audit-disabled.
-This foundation does not instrument actions; coverage belongs to #40. There is no
+Coverage of connection mutations and credential access is below. There is no
 server, web page, identity system or new dependency.
 
 `AuditContext` names the initiating host caller: CLIENT, SYSTEM, ANONYMOUS or
@@ -125,3 +125,57 @@ The app API is append-only. Checksums detect accidental corruption, not tamperin
 there is no hash chain, signature, secret key or external anchor. The process/OS
 owner remains trusted and can edit, delete, recompute checksums or replace files
 and backups outside this boundary. No tamper-proof or tamper-evidence claim is made.
+
+## Covered actions (opt-in wrappers)
+
+Wrap the stores you already use; existing constructors and interfaces stay audit-disabled.
+Reads of connections (`find*`) are deliberately not audited; add that only for a concrete host need.
+
+| Wrapper | Actions (all use ATTEMPTED then SUCCEEDED/FAILED unless noted) |
+|---|---|
+| `AuditedConnectionStore` | `connection.create`, `connection.update`, `connection.no_change`, `connection.delete`, `connection.delete_missing`. Target is `connection` + payerId + environment. Fields are changed field *names* only (`baseUrl`, `authType`, `credentialRef`, `contactInfo`, ...); `createdAt`/`updatedAt` are ignored for classification and never used as the event clock. A payerId that is not a safe label becomes `ref-<digest>`. |
+| `AuditedCredentialProvider` | `credential.put` (create vs replace is not distinguished: the old secret is never decrypted), `credential.remove` (the provider contract treats a missing reference as a no-op, so success does not prove it existed), and one completion-only event per resolve: `credential.resolve.found`, `.not_found`, or `.failed.io_error` / `.failed.provider_error`. If a resolve event cannot be recorded the secret is discarded. Target is `credential` + the opaque reference. Nothing recorded is a secret, ciphertext, hash of a secret, PEM or exception text. A resolve event proves lookup, not later use. |
+| `EncryptedLocalCredentialProvider(baseDir, sink)` | `credential.key.create` (target `local-key-store` + digest of the store location) when `key.bin` is first created, attributed to the context of the put/resolve that triggered it. Loading an existing key is not an event. Failure to record the attempt means no key was created. |
+
+A mutation whose attempt cannot be recorded does not run (`ATTEMPT_NOT_RECORDED`). One whose completion
+cannot be recorded already happened (`COMPLETED_ACTION_AUDIT_FAILED`): do not retry it. A delegate
+failure records FAILED and rethrows the original exception. Connection read-before/write/event
+classification is serialized inside one `AuditedConnectionStore` instance, so one instance should own
+the file. Context is passed per call, never held globally.
+
+### Supplying identity
+
+The library cannot infer who is calling. Your host builds an `AuditContext` from its own trusted
+boundary: a service client, a CLI user, a scheduled job (`Source.JOB`) or an agent (`Source.AGENT`,
+with `onBehalfOfActorId` for the human it acts for). Never take it from `context.userId`, a request
+header or patient data.
+
+### Synthetic CLI import batch
+
+Use one context for the whole batch: its correlation UUID is the operation ID shared by every event.
+
+```java
+var context = new AuditContext(AuditContext.ActorKind.HOST_ADMINISTRATOR, "owner-cli", null,
+        AuditContext.Source.CLI, UUID.randomUUID());
+try (var trail = new JsonlAuditTrail(Path.of("private-audit/events.jsonl"), Clock.systemUTC())) {
+    var store = new AuditedConnectionStore(new FileBasedConnectionStore(Path.of("connections.yaml")), trail);
+    var credentials = new AuditedCredentialProvider(
+            new EncryptedLocalCredentialProvider(Path.of("credentials"), trail), trail);
+    for (ConnectionRecord record : importedRecords) {
+        store.save(context, record);
+    }
+    credentials.put(context, "synthetic-ref", syntheticSecret);
+}
+```
+
+Find the batch later with `AuditQuery` on the correlation UUID.
+
+### Exports and what is not covered
+
+`findAll` is a read, not proof of an export. If a host exports connections, it must call
+`trail.record(context, "connection.export", "connection", "<export-label>", null, ...)` itself
+(ATTEMPTED then SUCCEEDED/FAILED). Agents and other callers that use the unwrapped stores, direct
+edits of `connections.yaml`, `secrets.properties` or `key.bin`, OS-level deletion, copy or restore,
+and a replaced `key.bin` are outside interception. Restoring an older credential directory or
+connection file silently reverts state without events. Backing up `key.bin` with the secrets file
+defeats the separation of key and ciphertext; the audit trail records key *creation* only.
