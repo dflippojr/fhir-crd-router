@@ -12,6 +12,39 @@ the payer directly — the router itself never makes this call.
   the same `CdsHookResponse`.
 - `callHookRaw(record, serviceId, request)` — raw `JsonNode` only.
 
+## Discovery diagnostics
+
+`discoverServicesRaw(record)` fetches the original discovery `JsonNode`, preserving
+scalar types and unknown properties before typed descriptor parsing can coerce them.
+It shares discovery authentication, mutual TLS, timeouts, configured retries,
+typed HTTP errors and the redacted exchange listener. Each call to either discovery
+API makes one discovery operation plus configured retries; neither caches catalogs.
+
+Validation is offline and opt-in:
+
+```java
+JsonNode catalog = client.discoverServicesRaw(record);
+List<CdsDiscoveryValidator.Violation> findings = CdsDiscoveryValidator.validate(catalog);
+for (CdsDiscoveryValidator.Violation finding : findings) {
+    System.out.printf("%s %s: %s%n", finding.severity(), finding.path(), finding.message());
+    // ERROR services[0].id: id is required and must be a nonblank string
+}
+```
+
+`{"services":[]}` is a valid empty catalog with no findings. `{}` and
+`{"services":{}}` are invalid catalogs with an error at `services`, even though
+lenient `discoverServices(record)` returns an empty list for all three.
+Typed discovery does not automatically validate.
+
+The validator checks CDS Hooks 2.0 discovery shapes, nonblank textual `id`, `hook`
+and `description`, optional textual `title`, and optional `prefetch` objects whose
+values are nonblank strings. Findings have severity `ERROR` and immutable,
+deterministic ordering: service order, then `id`, `hook`, `description`, `title`,
+and prefetch keys in input order. Malformed parents produce no child findings.
+Unknown properties, custom hooks, payer-specific prefetch keys and IDs repeated
+across hooks are accepted. Nonblank checks follow the SDK's diagnostic convention;
+this does not execute FHIR queries, expand templates or validate full FHIR profiles.
+
 ## CRD requests and responses
 
 Typed hook contexts follow the CRD 2.2.1 logical models, in
