@@ -10,6 +10,7 @@ import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
+import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 
 import java.io.IOException;
@@ -19,6 +20,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 import java.security.KeyStore;
 import java.security.MessageDigest;
@@ -27,6 +29,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -59,6 +62,19 @@ public final class CdsHooksClient {
     private final Map<String, MtlsClient> mtlsClients = new ConcurrentHashMap<>();
 
     private record MtlsClient(String fingerprint, HttpClient client) { }
+
+    /**
+     * A credential reference that is unset or does not resolve; keeps the existing message.
+     * {@code phase} is null when the credential belongs to the request being sent.
+     */
+    private static final class MissingCredentialException extends RouterException {
+        private final transient PayerCallPhase phase;
+
+        MissingCredentialException(String message, PayerCallPhase phase) {
+            super(message);
+            this.phase = phase;
+        }
+    }
 
     public CdsHooksClient(CredentialProvider credentialProvider) {
         this(credentialProvider, DEFAULT_REQUEST_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
@@ -142,14 +158,91 @@ public final class CdsHooksClient {
      */
     public JsonNode discoverServicesRaw(ConnectionRecord record) {
         String context = "Discovery call for payerId=" + record.payerId();
-        HttpResponse<String> response = send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
-                .GET());
+        HttpResponse<String> response = sendDiscovery(record, context);
         try {
             return mapper.readTree(response.body());
         } catch (IOException e) {
             throw new RouterException(context + " returned an unparseable body", e);
         }
+    }
+
+    /**
+     * Checks that a connection works: makes the discovery exchange (plus the token exchange and
+     * configured retries when they apply) through the usual pipeline, so the exchange listener sees
+     * it, and validates the catalog with {@link CdsDiscoveryValidator}. Never calls a hook. Payer
+     * HTTP, transport, timeout, token and credential failures are reported, not thrown. The reason
+     * text never includes response bodies, headers, credential contents or exception messages.
+     *
+     * <p>The SDK does not write to a store: when {@link ConnectionVerification#ok()} is true, save
+     * {@code record.withLastVerifiedAt(report.checkedAt())}.
+     */
+    public ConnectionVerification verify(ConnectionRecord record) {
+        Objects.requireNonNull(record, "record");
+        String payerId = record.payerId();
+        Environment environment = record.environment();
+        Instant checkedAt = Instant.now();
+        long started = System.nanoTime();
+        try {
+            HttpResponse<String> response = sendDiscovery(record, "Discovery call for payerId=" + payerId);
+            JsonNode catalog;
+            try {
+                catalog = mapper.readTree(response.body());
+            } catch (IOException e) {
+                return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                        PayerCallPhase.DISCOVERY, OptionalInt.of(response.statusCode()),
+                        "discovery response is not valid JSON");
+            }
+            JsonNode services = catalog == null ? null : catalog.get("services");
+            List<String> hooks = new ArrayList<>();
+            int serviceCount = 0;
+            if (services != null && services.isArray()) {
+                serviceCount = services.size();
+                for (JsonNode service : services) {
+                    JsonNode hook = service.get("hook");
+                    if (hook != null && hook.isTextual() && !hook.textValue().isBlank()) {
+                        hooks.add(hook.textValue());
+                    }
+                }
+            }
+            return ConnectionVerification.catalog(payerId, environment, checkedAt, since(started),
+                    hooks, serviceCount, CdsDiscoveryValidator.validate(catalog));
+        } catch (PayerCallException e) {
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    e.phase(), e.statusCode(), payerCallReason(e));
+        } catch (MissingCredentialException e) {
+            PayerCallPhase phase = e.phase == null ? PayerCallPhase.DISCOVERY : e.phase;
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    phase, OptionalInt.empty(), "missing credential for " + describe(phase));
+        } catch (RouterException | IllegalArgumentException e) {
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    null, OptionalInt.empty(), "connection could not be verified: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private static String payerCallReason(PayerCallException e) {
+        String request = describe(e.phase());
+        if (e.statusCode().isPresent()) {
+            return request + " returned HTTP " + e.statusCode().getAsInt();
+        }
+        return request + (e.timedOut() ? " timed out" : " transport failure");
+    }
+
+    private static String describe(PayerCallPhase phase) {
+        return switch (phase) {
+            case DISCOVERY -> "discovery request";
+            case TOKEN -> "token request";
+            case HOOK -> "hook request";
+        };
+    }
+
+    private static Duration since(long startedNanos) {
+        return Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos));
+    }
+
+    private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context) {
+        return send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
+                .GET());
     }
 
     /** Invokes a named hook (raw passthrough form). */
@@ -278,8 +371,8 @@ public final class CdsHooksClient {
             return httpClient;
         }
         String pemBundle = credentialProvider.resolve(record.mtlsCredentialRef())
-                .orElseThrow(() -> new RouterException("No mTLS credential found for ref="
-                        + record.mtlsCredentialRef() + " (payerId=" + record.payerId() + ")"));
+                .orElseThrow(() -> new MissingCredentialException("No mTLS credential found for ref="
+                        + record.mtlsCredentialRef() + " (payerId=" + record.payerId() + ")", null));
         String fingerprint = sha256(pemBundle);
         // Build before publishing: a failure leaves the previous entry intact.
         // Replacing the entry releases our old reference; in-flight calls keep theirs.
@@ -306,12 +399,15 @@ public final class CdsHooksClient {
     }
 
     private String requireSecret(ConnectionRecord record) {
+        // An OAuth2 secret authenticates the token exchange; any other secret, the request itself.
+        PayerCallPhase phase = isOAuth2(record) ? PayerCallPhase.TOKEN : null;
         if (record.credentialRef() == null) {
-            throw new RouterException("authType=" + record.authType() + " but no credentialRef set for payerId=" + record.payerId());
+            throw new MissingCredentialException("authType=" + record.authType()
+                    + " but no credentialRef set for payerId=" + record.payerId(), phase);
         }
         return credentialProvider.resolve(record.credentialRef())
-                .orElseThrow(() -> new RouterException(
-                        "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")"));
+                .orElseThrow(() -> new MissingCredentialException(
+                        "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")", phase));
     }
 
     private static Duration positiveTimeout(Duration timeout) {

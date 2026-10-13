@@ -92,6 +92,21 @@ class AuditedConnectionStoreTest {
     }
 
     @Test
+    void savingVerifiedCopyAuditsOnlyLastVerifiedAt(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("events.jsonl");
+        try (var trail = new JsonlAuditTrail(file, Clock.systemUTC())) {
+            var store = new AuditedConnectionStore(new FileBasedConnectionStore(dir.resolve("c.yaml")), trail);
+            ConnectionRecord record = base().createdAt(Instant.EPOCH).updatedAt(Instant.EPOCH).build();
+            store.save(AuditContext.unknown(), record);
+            store.save(AuditContext.unknown(), record.withLastVerifiedAt(Instant.parse("2026-10-13T12:00:00Z")));
+        }
+        AuditEvent update = events(file).stream()
+                .filter(e -> e.outcome() == AuditEvent.Outcome.SUCCEEDED).toList().get(1);
+        assertEquals("connection.update", update.action());
+        assertEquals(List.of("lastVerifiedAt"), update.changedFields());
+    }
+
+    @Test
     void delegateFailureIsRecordedAsFailedNeverSucceeded() {
         List<AuditEvent.Outcome> outcomes = new ArrayList<>();
         AuditSink sink = (c, a, k, t, env, o, f) -> {

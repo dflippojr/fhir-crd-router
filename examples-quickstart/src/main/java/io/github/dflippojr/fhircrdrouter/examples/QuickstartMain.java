@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookResponse;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
+import io.github.dflippojr.fhircrdrouter.client.ConnectionVerification;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.client.crd.CrdHookContext;
 import io.github.dflippojr.fhircrdrouter.client.crd.CrdPrefetch;
@@ -33,8 +34,9 @@ import java.util.List;
 
 /**
  * End-to-end demo: start the mock payer server, load a sample connection
- * record, resolve it through {@link PayerRouter}, and make a real CDS Hooks
- * discovery + hook call against the mock server via {@link CdsHooksClient}.
+ * record, resolve it through {@link PayerRouter}, verify the connection and
+ * record {@code lastVerifiedAt}, then make a real CDS Hooks discovery + hook
+ * call against the mock server via {@link CdsHooksClient}.
  *
  * <p>Run with {@code ./mvnw install -DskipTests} then
  * {@code ./mvnw -pl examples-quickstart exec:java} from the repo root.
@@ -64,6 +66,14 @@ public final class QuickstartMain {
                                     m.phase(), m.payerId(), m.environment(), m.method(), m.attempt(), m.startedAt(),
                                     m.statusCode().isPresent() ? m.statusCode().getAsInt() : "none",
                                     m.elapsed().toMillis(), m.outcome())));
+
+            ConnectionVerification report = client.verify(record);
+            System.out.println("Verification: " + report);
+            if (report.ok()) {
+                store.save(record.withLastVerifiedAt(report.checkedAt()));
+                record = router.resolve("DEMO-PAYER", io.github.dflippojr.fhircrdrouter.core.Environment.SANDBOX);
+                System.out.println("Recorded lastVerifiedAt=" + record.lastVerifiedAt());
+            }
 
             List<CdsServiceDescriptor> services = client.discoverServices(record);
             System.out.println("Discovered services: " + services);

@@ -4,9 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -52,6 +55,24 @@ class ConnectionRecordTest {
         assertEquals("https://ehr.test/.well-known/jwks.json", reloaded.jwksUrl());
         assertEquals("clinic-7", reloaded.tenant());
         assertEquals("client-cert", reloaded.mtlsCredentialRef());
+    }
+
+    @Test
+    void withLastVerifiedAtChangesOnlyThatField() {
+        ConnectionRecord original = base(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .displayName("Synthetic").tokenEndpoint("https://payer.test/token").clientId("c")
+                .scopes(List.of("system/*.read")).credentialRef("ref").mtlsCredentialRef("cert")
+                .igVersion("2.1.0").status(ConnectionStatus.INACTIVE).contactInfo("ops@payer.test")
+                .createdAt(Instant.EPOCH).updatedAt(Instant.EPOCH.plusSeconds(60)).build();
+        Instant verifiedAt = Instant.parse("2026-10-13T12:00:00Z");
+
+        ConnectionRecord verified = original.withLastVerifiedAt(verifiedAt);
+
+        assertEquals(verifiedAt, verified.lastVerifiedAt());
+        assertEquals(Instant.EPOCH.plusSeconds(60), verified.updatedAt());
+        assertNull(original.lastVerifiedAt());
+        // Every other component is equal: clearing the field again restores the original.
+        assertEquals(original, verified.withLastVerifiedAt(null));
     }
 
     private static ConnectionRecord.Builder base(AuthType authType) {
