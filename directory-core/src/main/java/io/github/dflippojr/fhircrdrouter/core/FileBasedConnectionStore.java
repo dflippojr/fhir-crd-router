@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
@@ -18,6 +19,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -32,6 +34,13 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * directory, is flushed to disk, and is then moved over the target, so a
  * crash or full disk never leaves a truncated file behind.
  *
+ * <p>Reads are served from an in-memory copy of the parsed records, kept with
+ * the raw file bytes it was parsed from. Every read still reads the file and
+ * compares its bytes with the cached ones, re-parsing only when they differ,
+ * so hand edits and other writers are seen on the next read. {@link #save}
+ * and {@link #delete} refresh the cache with what they wrote. A read or parse
+ * failure is thrown, never answered from the cache.
+ *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
  * writers in separate processes or instances can lose each other's updates.
@@ -42,12 +51,13 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     private final Path path;
     private final ObjectMapper mapper;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    private volatile Snapshot cache;
 
     public FileBasedConnectionStore(Path path) {
         this(path, defaultMapper());
     }
 
-    // Visible for tests, which inject a mapper that fails mid-write.
+    // Visible for tests, which inject a mapper that fails mid-write or counts parses.
     FileBasedConnectionStore(Path path, ObjectMapper mapper) {
         this.path = path;
         this.mapper = mapper;
@@ -106,10 +116,18 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         lock.readLock().lock();
         try {
             if (!Files.exists(path)) {
+                cache = null;
                 return List.of();
             }
-            ConnectionRecord[] records = mapper.readValue(path.toFile(), ConnectionRecord[].class);
-            return records == null ? List.of() : List.of(records);
+            byte[] bytes = Files.readAllBytes(path);
+            Snapshot cached = cache;
+            if (cached != null && Arrays.equals(cached.bytes, bytes)) {
+                return cached.records;
+            }
+            ConnectionRecord[] records = mapper.readValue(bytes, ConnectionRecord[].class);
+            List<ConnectionRecord> parsed = records == null ? List.of() : List.of(records);
+            cache = new Snapshot(bytes, parsed);
+            return parsed;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed reading connection store at " + path, e);
         } finally {
@@ -124,9 +142,12 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             Files.createDirectories(dir);
             tmp = Files.createTempFile(dir, path.getFileName() + ".", ".tmp");
             applyPermissions(tmp);
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            mapper.writeValue(buffer, records);
+            byte[] bytes = buffer.toByteArray();
             try (OutputStream out = Files.newOutputStream(tmp, StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING)) {
-                mapper.writeValue(out, records);
+                out.write(bytes);
                 out.flush();
             }
             try (FileChannel ch = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
@@ -134,6 +155,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             }
             move(tmp);
             tmp = null;
+            cache = new Snapshot(bytes, List.copyOf(records));
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing connection store at " + path, e);
         } finally {
@@ -152,6 +174,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
             Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** Parsed records together with the exact file bytes they came from. */
+    private static final class Snapshot {
+        private final byte[] bytes;
+        private final List<ConnectionRecord> records;
+
+        private Snapshot(byte[] bytes, List<ConnectionRecord> records) {
+            this.bytes = bytes;
+            this.records = records;
         }
     }
 

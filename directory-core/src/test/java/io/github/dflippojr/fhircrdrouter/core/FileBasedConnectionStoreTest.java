@@ -4,22 +4,28 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class FileBasedConnectionStoreTest {
 
@@ -121,5 +127,106 @@ class FileBasedConnectionStoreTest {
 
         assertEquals(n, new FileBasedConnectionStore(file).findAll().size());
         assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    /** A YAML mapper like the store's default that counts deserializations. */
+    private static final class CountingMapper extends ObjectMapper {
+        final AtomicInteger parses = new AtomicInteger();
+
+        CountingMapper() {
+            super(new YAMLFactory());
+            registerModule(new JavaTimeModule());
+            disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+            enable(SerializationFeature.INDENT_OUTPUT);
+        }
+
+        @Override
+        public <T> T readValue(byte[] src, Class<T> valueType) throws IOException {
+            parses.incrementAndGet();
+            return super.readValue(src, valueType);
+        }
+    }
+
+    @Test
+    void unchangedFileIsParsedAtMostOnce(@TempDir Path tempDir) {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore writer = new FileBasedConnectionStore(file);
+        for (int i = 0; i < 100; i++) {
+            writer.save(record("PAYER-" + i));
+        }
+        CountingMapper mapper = new CountingMapper();
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file, mapper);
+
+        for (int i = 0; i < 100; i++) {
+            assertTrue(store.findByPayerIdAndEnvironment("PAYER-99", Environment.SANDBOX).isPresent());
+        }
+
+        assertEquals(1, mapper.parses.get());
+    }
+
+    @Test
+    void saveAndDeleteRefreshTheCacheWithoutParsing(@TempDir Path tempDir) {
+        CountingMapper mapper = new CountingMapper();
+        FileBasedConnectionStore store = new FileBasedConnectionStore(tempDir.resolve("connections.yaml"), mapper);
+
+        store.save(record("A"));
+        int afterFirstSave = mapper.parses.get();
+        assertEquals(List.of("A"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+        assertEquals(afterFirstSave, mapper.parses.get());
+
+        store.save(record("B"));
+        int afterSecondSave = mapper.parses.get();
+        assertEquals(List.of("A", "B"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+        assertEquals(afterSecondSave, mapper.parses.get());
+
+        store.delete("A", Environment.SANDBOX);
+        assertEquals(List.of("B"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+        assertEquals(afterSecondSave, mapper.parses.get());
+    }
+
+    @Test
+    void externalSameLengthEditIsSeenOnNextRead(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        store.save(record("PAYER-A"));
+        List<ConnectionRecord> first = store.findAll();
+        assertSame(first, store.findAll());
+
+        String original = Files.readString(file);
+        String edited = original.replace("PAYER-A", "PAYER-B");
+        assertEquals(original.length(), edited.length());
+        FileTime mtime = Files.getLastModifiedTime(file);
+        Files.writeString(file, edited);
+        Files.setLastModifiedTime(file, mtime);
+
+        assertTrue(store.findByPayerIdAndEnvironment("PAYER-A", Environment.SANDBOX).isEmpty());
+        assertTrue(store.findByPayerIdAndEnvironment("PAYER-B", Environment.SANDBOX).isPresent());
+    }
+
+    @Test
+    void externallyDeletedFileYieldsEmptyList(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        store.save(record("PAYER-A"));
+        assertEquals(1, store.findAll().size());
+
+        Files.delete(file);
+
+        assertTrue(store.findAll().isEmpty());
+        assertTrue(store.findByPayerId("PAYER-A").isEmpty());
+    }
+
+    @Test
+    void externallyCorruptedFileThrowsInsteadOfServingCache(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        store.save(record("PAYER-A"));
+        assertEquals(1, store.findAll().size());
+
+        Files.writeString(file, "- payerId: [unterminated\n");
+
+        assertThrows(UncheckedIOException.class, store::findAll);
+        assertThrows(UncheckedIOException.class,
+                () -> store.findByPayerIdAndEnvironment("PAYER-A", Environment.SANDBOX));
     }
 }
