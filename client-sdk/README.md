@@ -158,6 +158,17 @@ cached. If the payer returns 401 on an OAuth2 connection, the cached token is
 dropped and the request is retried exactly once with a fresh token. Concurrent
 fetches for the same cache key share one token request.
 
+For both OAuth2 auth types, the client secret or private key is looked up from
+the `CredentialProvider` only when a token request is actually sent: on a cold
+cache, after expiry, or after a 401. A call served from a cached token does not
+resolve it, so an audited provider records no `credential.resolve.*` event for
+it. As a result, a secret that is missing from the provider, or removed after a
+token was issued, is reported when the next token request needs it, not on calls
+that a still-valid cached token serves. Removing a local secret does not revoke
+a token at the payer. Concurrent callers that share one token request share one
+secret lookup, and a lookup failure fails every caller waiting on that request.
+`API_KEY` and `CDS_HOOKS_JWT` resolve their secret on every request.
+
 ### Signed JWTs
 
 `CDS_HOOKS_JWT` and `OAUTH2_PRIVATE_KEY_JWT` both sign short-lived JWTs:

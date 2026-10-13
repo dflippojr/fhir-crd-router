@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OAuth2TokenClientTest {
 
@@ -91,6 +93,72 @@ class OAuth2TokenClientTest {
         clock.advance(Duration.ofSeconds(1));
         assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"));
         assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
+    void secretSupplierRunsOnlyWhenTokenRequestIsSent() {
+        ConnectionRecord record = record(List.of());
+        AtomicInteger lookups = new AtomicInteger();
+        Supplier<String> secret = () -> {
+            lookups.incrementAndGet();
+            return "secret";
+        };
+        HttpClient http = HttpClient.newHttpClient();
+
+        assertEquals("token-1", tokenClient.fetchAccessToken(http, record, secret, 1));
+        assertEquals("token-1", tokenClient.fetchAccessToken(http, record, secret, 1));
+        assertEquals(1, lookups.get());
+
+        tokenClient.invalidate(record);
+        assertEquals("token-2", tokenClient.fetchAccessToken(http, record, secret, 2));
+        assertEquals(2, lookups.get());
+    }
+
+    @Test
+    void secretSupplierFailureReachesWaitersAndIsNotCached() throws Exception {
+        ConnectionRecord record = record(List.of());
+        CountDownLatch leaderInSupplier = new CountDownLatch(1);
+        CountDownLatch releaseLeader = new CountDownLatch(1);
+        AtomicInteger lookups = new AtomicInteger();
+        RouterException missing = new RouterException("synthetic missing secret");
+        Supplier<String> failing = () -> {
+            lookups.incrementAndGet();
+            leaderInSupplier.countDown();
+            try {
+                if (!releaseLeader.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("leader was never released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw missing;
+        };
+        HttpClient http = HttpClient.newHttpClient();
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Throwable> leader = pool.submit(() ->
+                    assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(http, record, failing, 1)));
+            assertTrue(leaderInSupplier.await(10, TimeUnit.SECONDS));
+            AtomicReference<Thread> waiterThread = new AtomicReference<>();
+            Future<Throwable> waiter = pool.submit(() -> {
+                waiterThread.set(Thread.currentThread());
+                return assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(http, record, failing, 1));
+            });
+            // The waiter parks on the leader's flight; it must not run the supplier itself.
+            while (waiterThread.get() == null || waiterThread.get().getState() != Thread.State.WAITING) {
+                Thread.sleep(5);
+            }
+            releaseLeader.countDown();
+            assertSame(missing, leader.get(10, TimeUnit.SECONDS));
+            assertSame(missing, waiter.get(10, TimeUnit.SECONDS));
+        } finally {
+            releaseLeader.countDown();
+            pool.shutdownNow();
+        }
+        assertEquals(1, lookups.get());
+        assertEquals(0, tokenRequests.get());
+
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
     }
 
     @Test
