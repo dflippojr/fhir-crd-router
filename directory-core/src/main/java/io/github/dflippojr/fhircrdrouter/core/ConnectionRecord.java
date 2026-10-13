@@ -108,6 +108,16 @@ public record ConnectionRecord(
         return payerId + ":" + environment;
     }
 
+    /**
+     * A copy with only {@code lastVerifiedAt} changed; {@code updatedAt} is kept as is.
+     * Save it after a successful connection check.
+     */
+    public ConnectionRecord withLastVerifiedAt(Instant verifiedAt) {
+        return new ConnectionRecord(payerId, displayName, environment, baseUrl, authType,
+                tokenEndpoint, clientId, keyId, jwksUrl, tenant, scopes, credentialRef, mtlsCredentialRef, igVersion,
+                status, verifiedAt, contactInfo, createdAt, updatedAt);
+    }
+
     public static Builder builder() {
         return new Builder();
     }
