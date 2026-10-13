@@ -45,6 +45,46 @@ Unknown properties, custom hooks, payer-specific prefetch keys and IDs repeated
 across hooks are accepted. Nonblank checks follow the SDK's diagnostic convention;
 this does not execute FHIR queries, expand templates or validate full FHIR profiles.
 
+## Verifying a connection
+
+`verify(record)` answers "does this connection work?" in one call that returns a
+`ConnectionVerification` report instead of throwing:
+
+```java
+ConnectionVerification report = client.verify(record);
+System.out.println(report.ok() + " " + report.hooks() + " " + report.failureReason());
+if (report.ok()) {
+    store.save(record.withLastVerifiedAt(report.checkedAt()));
+}
+```
+
+It makes exactly the discovery exchange (plus the token exchange and configured
+retries when they apply) through the same pipeline as `discoverServicesRaw`, so the
+exchange listener sees it as usual. It never calls a hook. `ok` is true only when
+discovery returns 2xx, parses as JSON and `CdsDiscoveryValidator` has no findings.
+
+| Outcome | `findings` | `failurePhase` | `failureStatus` |
+| --- | --- | --- | --- |
+| Valid catalog | empty | empty | empty |
+| Invalid catalog, e.g. `{}` | validator findings | empty | empty |
+| Payer HTTP error on discovery | empty | `DISCOVERY` | the status |
+| Token endpoint error (OAuth2) | empty | `TOKEN` | the status |
+| Refused connection or timeout | empty | the phase | empty |
+| Missing credential | empty | `TOKEN` for OAuth2, else `DISCOVERY` | empty |
+
+The report also carries `payerId`, `environment`, `checkedAt`, `elapsed`,
+`serviceCount` and the sorted, deduplicated set of advertised `hooks`.
+`failureReason` is short text such as `discovery request returned HTTP 401`, built
+from the failure type, phase and status only. It never includes response bodies,
+headers, credential contents or exception messages, and neither does `toString()`.
+Other connection setup errors, such as an unreadable signing key, are reported as
+`connection could not be verified: <exception type>` with no phase. A `null` record
+still throws.
+
+The SDK does not write to a store. Save `record.withLastVerifiedAt(report.checkedAt())`
+yourself when the report is `ok`. Verification does not change `ConnectionStatus`,
+run on a schedule or check every record in a store.
+
 ## CRD requests and responses
 
 Typed hook contexts follow the CRD 2.2.1 logical models, in

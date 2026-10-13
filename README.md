@@ -47,8 +47,9 @@ so far.
     `PemKeys` reads keys and certificates.
   - **Diagnostics and resilience**: typed `PayerCallException` errors with
     configurable timeouts, an opt-in `Retry-After` retry policy, redacted and
-    metadata-only `PayerExchangeListener`s, and `discoverServicesRaw` with
-    `CdsDiscoveryValidator`. See the [client-sdk README](./client-sdk/README.md).
+    metadata-only `PayerExchangeListener`s, `discoverServicesRaw` with
+    `CdsDiscoveryValidator`, and `verify(record)` connection checks that
+    report instead of throwing. See the [client-sdk README](./client-sdk/README.md).
   - **Mutual TLS** is a transport setting rather than an auth type: a record
     with an `mtlsCredentialRef` (PEM certificate chain plus key) gets its own
     TLS 1.2+ client, combinable with any of the auth types above.

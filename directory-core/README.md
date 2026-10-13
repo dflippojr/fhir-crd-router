@@ -34,6 +34,24 @@ store.save(ConnectionRecord.builder()
 PayerRouter router = new PayerRouter(store);
 ConnectionRecord record = router.resolve("PAYER-1");
 ```
+
+## Recording a verified connection
+
+`lastVerifiedAt` records when a connection last passed a check. Nothing sets it
+automatically. `record.withLastVerifiedAt(instant)` returns a copy with only that
+field changed (`updatedAt` keeps its value); save the copy to record it. The
+`client-sdk` README's "Verifying a connection" section shows the check that
+produces the instant:
+
+```java
+ConnectionVerification report = client.verify(record);
+if (report.ok()) {
+    store.save(record.withLastVerifiedAt(report.checkedAt()));
+}
+```
+
+Through `AuditedConnectionStore`, that save is recorded as `connection.update`
+with `lastVerifiedAt` as the only changed field.
 ## Audit foundation
 
 Optional actor-attributed JSONL history and the owner read/export API are documented
