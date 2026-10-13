@@ -87,6 +87,51 @@ To give the payer access to your FHIR server as well, use
 (`deviceRequestBundle`, `coverageBundle`, ...). Build prefetch from what the
 payer's discovery response lists.
 
+### Expanding prefetch templates
+
+`PrefetchTemplates.expand(templates, request)` fills a service's prefetch
+templates from the request's context, so you can run them against your own
+FHIR server:
+
+```java
+CdsServiceDescriptor service = client.discoverServices(record).stream()
+        .filter(s -> s.id().equals(serviceId)).findFirst().orElseThrow();
+CdsHookRequest draft = CdsHookRequest.of(context, null);
+
+PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(service.prefetch(), draft);
+CrdPrefetch.Builder prefetch = CrdPrefetch.builder();
+expansion.queries().forEach((key, query) ->
+        prefetch.put(key, myFhirServer.search(query))); // e.g. Coverage?patient=pat-1&status=active
+expansion.unresolved().forEach((key, reason) ->
+        log.debug("not prefetching {}: {}", key, reason)); // e.g. context.encounterId is absent
+
+CdsHookResponse response = client.callHook(record, serviceId, CdsHookRequest.of(context, prefetch.build()));
+```
+
+Only keys in `queries()` may go into the prefetch map. CDS Hooks says a client
+"MUST NOT send any prefetch template key that it chooses not to satisfy", so
+leave every `unresolved()` key out (the payer can still query `fhirServer` for
+it, if you grant access).
+
+Supported tokens follow [CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#prefetch-tokens):
+- `{{context.<field>}}` for root-level string, number or boolean context
+  fields. Works for every `CrdHookContext` record and for `Map` contexts.
+- `{{userPractitionerId}}`, `{{userPractitionerRoleId}}`, `{{userPatientId}}`
+  and `{{userRelatedPersonId}}`, taken from `context.userId` when it is a
+  reference of that type (`Practitioner/prac-1` gives `userPractitionerId` =
+  `prac-1`; the other three are then unresolved).
+
+A key is unresolved, with a short reason, when a field is absent or not a
+primitive (`draftOrders`), the token is a nested path such as the reference
+implementation's `{{context.draftOrders.DeviceRequest.id}}`, the token is
+unknown or a FHIRPath expression, or a `{{` is never closed. Reasons name
+fields, never their values, so logging them does not leak patient
+identifiers. Values matching the FHIR id pattern are inserted as is; anything
+else is percent-encoded (UTF-8, space as `%20`) so it cannot add query
+parameters. `expand` never throws for template content. Both maps are
+immutable and keep the template key order. It does not run queries, fetch
+resources, evaluate FHIRPath or cache discovery.
+
 **Coverage information shows up in more than one place.** CRD 2.x returns it
 as an `update` system action carrying the `ext-coverage-information`
 extension. The reference implementation puts it inside card suggestion
