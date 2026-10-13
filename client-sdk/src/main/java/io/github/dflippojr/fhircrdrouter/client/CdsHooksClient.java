@@ -261,7 +261,7 @@ public final class CdsHooksClient {
             case NONE -> { /* no-op */ }
             case API_KEY -> builder.header("Authorization", "Bearer " + requireSecret(record));
             case OAUTH2_CLIENT_CREDENTIALS, OAUTH2_PRIVATE_KEY_JWT -> builder.header("Authorization",
-                    "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, requireSecret(record), attempt));
+                    "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
                     "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
         }

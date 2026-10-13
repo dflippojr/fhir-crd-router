@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * OAuth2 client-credentials token fetch for
@@ -108,6 +109,20 @@ public final class OAuth2TokenClient {
 
     /** Carries the payer attempt number through a token refresh after a 401. */
     public String fetchAccessToken(HttpClient client, ConnectionRecord record, String secret, int attempt) {
+        return fetchAccessToken(client, record, () -> secret, attempt);
+    }
+
+    /**
+     * Same as {@link #fetchAccessToken(HttpClient, ConnectionRecord, String, int)}, but
+     * resolves the secret only when a token request is actually sent. Calls served
+     * from the cache, and callers that join another caller's in-flight fetch, never
+     * invoke {@code secret}. A failure thrown by {@code secret} fails that fetch for
+     * every caller waiting on it.
+     *
+     * @param secret supplies the client secret, or the PEM private key for {@code OAUTH2_PRIVATE_KEY_JWT}
+     */
+    public String fetchAccessToken(HttpClient client, ConnectionRecord record, Supplier<String> secret, int attempt) {
+        Objects.requireNonNull(secret, "secret");
         CacheKey key = cacheKey(record);
         CachedToken cached = cache.get(key);
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
@@ -125,7 +140,7 @@ public final class OAuth2TokenClient {
             if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
                 result = cached;
             } else {
-                result = requestToken(client, record, secret, attempt);
+                result = requestToken(client, record, secret.get(), attempt);
                 // invalidate() during the flight detaches it: its result must not repopulate the cache.
                 if (inFlight.get(key) == mine) {
                     if (result.refreshAt() != null) {
