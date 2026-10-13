@@ -23,6 +23,12 @@ so far.
   (see [AUDIT.md](./directory-core/AUDIT.md)).
 - **`credential-store-encrypted-local`**: the default `CredentialProvider`,
   an AES-GCM encrypted local file keyed by a locally generated secret.
+  It caches the parsed ciphertext (never plaintext) and checks only the
+  file's last-modified time, size and file key on each `resolve`, reading
+  the file again only when those change. The file bytes are also compared
+  at least every 30 seconds (configurable with the `Duration` constructor
+  argument; `Duration.ZERO` compares on every call), so an outside edit
+  that keeps the same size and modified time shows up within that interval.
 - **`client-sdk`**: `CdsHooksClient`. Given a resolved `ConnectionRecord`, it
   calls the payer's `GET {baseUrl}/cds-services` discovery endpoint and
   invokes a named hook, with a typed (`callHook`) and a raw JSON
