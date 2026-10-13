@@ -18,10 +18,13 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
@@ -33,6 +36,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.LongSupplier;
 
 /**
  * Default, dependency-free {@link CredentialProvider}: each secret is
@@ -47,10 +51,14 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *   <li>{@code secrets.properties} — {@code credentialRef -> base64(iv || ciphertext)}</li>
  * </ul>
  *
- * <p>The parsed ciphertext map is cached together with the raw file bytes it came from. Each
- * {@code resolve} re-reads the file bytes and re-parses only when they differ, so edits by another
- * process stay visible on the next read. Decryption still happens on every call: plaintext is
- * never cached.
+ * <p>The parsed ciphertext map is cached together with the raw file bytes and file metadata
+ * (last-modified time, size and, where the filesystem has one, file key) it came from. Each
+ * {@code resolve} compares only the metadata; when it differs, or when the cache has gone
+ * unverified for the full-compare interval (default {@link #DEFAULT_FULL_COMPARE_INTERVAL}), the
+ * file bytes are re-read and the map is re-parsed only if they differ. A same-size external
+ * rewrite that keeps the old last-modified time (coarse timestamp granularity, a restore that
+ * preserves times) is therefore picked up within at most that interval. Decryption still happens
+ * on every call: plaintext is never cached.
  */
 public final class EncryptedLocalCredentialProvider implements ContextualCredentialProvider {
 
@@ -61,28 +69,41 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private static final int KEY_BITS = 256;
     private static final SecureRandom IV_RANDOM = new SecureRandom();
 
+    /** Default upper bound on how long a cached map is trusted on metadata alone. */
+    public static final Duration DEFAULT_FULL_COMPARE_INTERVAL = Duration.ofSeconds(30);
+
     private final Path keyFile;
     private final Path secretsFile;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final AuditSink auditSink;
     private final String storeId;
+    private final long fullCompareIntervalNanos;
+    private final LongSupplier nanoClock;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
+
+    /** File metadata that, when unchanged, lets {@code resolve} skip reading the file. */
+    private record FileStamp(FileTime lastModified, long size, Object fileKey) {
+    }
 
     /**
      * Ciphertext entries parsed from the raw file content they came from. {@link #ABSENT} stands
      * for a missing file. Plaintext is never held here.
      */
     private static final class Snapshot {
-        static final Snapshot ABSENT = new Snapshot(null, Map.of());
+        static final Snapshot ABSENT = new Snapshot(null, Map.of(), null, 0L);
 
         private final byte[] bytes;
         final Map<String, String> entries;
+        final FileStamp stamp;
+        final long verifiedAtNanos;
 
-        Snapshot(byte[] bytes, Map<String, String> entries) {
+        Snapshot(byte[] bytes, Map<String, String> entries, FileStamp stamp, long verifiedAtNanos) {
             this.bytes = bytes;
             this.entries = entries;
+            this.stamp = stamp;
+            this.verifiedAtNanos = verifiedAtNanos;
         }
 
         boolean matches(byte[] content) {
@@ -101,6 +122,25 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
      * Loading an existing key is not an event. Without a sink behavior is unchanged.
      */
     public EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink) {
+        this(baseDir, auditSink, DEFAULT_FULL_COMPARE_INTERVAL);
+    }
+
+    /**
+     * As {@link #EncryptedLocalCredentialProvider(Path, AuditSink)}, with the longest time a cached
+     * map is trusted on file metadata alone before the file bytes are compared again.
+     * {@link Duration#ZERO} compares the bytes on every {@code resolve}.
+     */
+    public EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval) {
+        this(baseDir, auditSink, fullCompareInterval, System::nanoTime);
+    }
+
+    EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
+                                     LongSupplier nanoClock) {
+        if (fullCompareInterval.isNegative()) {
+            throw new IllegalArgumentException("fullCompareInterval must not be negative");
+        }
+        this.fullCompareIntervalNanos = fullCompareInterval.toNanos();
+        this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         this.keyFile = baseDir.resolve("key.bin");
         this.secretsFile = baseDir.resolve("secrets.properties");
         this.auditSink = auditSink;
@@ -258,27 +298,37 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     }
 
     /**
-     * Returns the cached snapshot when the file bytes are unchanged, otherwise parses and caches
-     * the current content. Concurrent readers may both re-parse; each publishes an immutable,
-     * equivalent snapshot, so the race is harmless.
+     * Returns the cached snapshot when the file metadata is unchanged and the cache was verified
+     * within the full-compare interval. Otherwise reads the bytes and re-parses only if they differ.
+     * The stamp is read before the bytes, so a write landing in between changes the stamp and is
+     * re-checked on the next call. Concurrent readers may both refresh; each publishes an
+     * immutable, equivalent snapshot, so the race is harmless.
      */
     private Snapshot currentSnapshot() {
-        byte[] bytes;
         try {
-            bytes = Files.readAllBytes(secretsFile);
+            FileStamp stamp = readStamp();
+            long now = nanoClock.getAsLong();
+            Snapshot cached = snapshot;
+            if (cached != null && stamp.equals(cached.stamp)
+                    && now - cached.verifiedAtNanos < fullCompareIntervalNanos) {
+                return cached;
+            }
+            byte[] bytes = Files.readAllBytes(secretsFile);
+            Map<String, String> entries = cached != null && cached.matches(bytes) ? cached.entries : parse(bytes);
+            Snapshot fresh = new Snapshot(bytes, entries, stamp, now);
+            snapshot = fresh;
+            return fresh;
         } catch (NoSuchFileException e) {
             snapshot = Snapshot.ABSENT;
             return Snapshot.ABSENT;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed reading secrets file at " + secretsFile, e);
         }
-        Snapshot cached = snapshot;
-        if (cached != null && cached.matches(bytes)) {
-            return cached;
-        }
-        Snapshot parsed = new Snapshot(bytes, parse(bytes));
-        snapshot = parsed;
-        return parsed;
+    }
+
+    private FileStamp readStamp() throws IOException {
+        BasicFileAttributes attributes = Files.readAttributes(secretsFile, BasicFileAttributes.class);
+        return new FileStamp(attributes.lastModifiedTime(), attributes.size(), attributes.fileKey());
     }
 
     private Map<String, String> parse(byte[] bytes) {
@@ -308,7 +358,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             }
             Files.write(secretsFile, bytes);
             tryRestrictToOwnerOnly(secretsFile);
-            snapshot = new Snapshot(bytes, Map.copyOf(entries));
+            snapshot = new Snapshot(bytes, Map.copyOf(entries), readStamp(), nanoClock.getAsLong());
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing secrets file at " + secretsFile, e);
         }
