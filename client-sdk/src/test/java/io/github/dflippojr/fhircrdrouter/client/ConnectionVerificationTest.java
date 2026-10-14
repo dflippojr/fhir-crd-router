@@ -6,11 +6,19 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
+import io.github.dflippojr.fhircrdrouter.core.audit.AuditedCredentialProvider;
+import io.github.dflippojr.fhircrdrouter.core.audit.JsonlAuditTrail;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
+import java.time.Clock;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.time.Duration;
@@ -194,6 +202,53 @@ class ConnectionVerificationTest {
     }
 
     @Test
+    void providerFailureIsReportedByTypeOnly() {
+        ConnectionRecord noPhase = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
+                .environment(Environment.SANDBOX).baseUrl(baseUrl()).mtlsCredentialRef("cert").build();
+        for (RuntimeException failure : List.of(new IllegalStateException("MESSAGE-MARKER"),
+                new UncheckedIOException("MESSAGE-MARKER", new IOException("MESSAGE-MARKER")))) {
+            CdsHooksClient failing = new CdsHooksClient(failingCredentials(failure), Duration.ofSeconds(2),
+                    Duration.ofSeconds(2), exchanges::add);
+            String type = failure.getClass().getSimpleName();
+            assertCredentialFailure(failing.verify(connection(AuthType.OAUTH2_CLIENT_CREDENTIALS)),
+                    PayerCallPhase.TOKEN, type);
+            assertCredentialFailure(failing.verify(keyed(AuthType.OAUTH2_PRIVATE_KEY_JWT)),
+                    PayerCallPhase.TOKEN, type);
+            assertCredentialFailure(failing.verify(connection(AuthType.API_KEY)), PayerCallPhase.DISCOVERY, type);
+            assertCredentialFailure(failing.verify(keyed(AuthType.CDS_HOOKS_JWT)),
+                    PayerCallPhase.DISCOVERY, type);
+            assertCredentialFailure(failing.verify(noPhase), PayerCallPhase.DISCOVERY, type);
+        }
+        assertTrue(exchanges.isEmpty());
+        assertEquals(0, discoveryCalls.get());
+    }
+
+    @Test
+    void providerFailureOnOtherCallsIsWrappedAsRouterExceptionWithCause() {
+        IllegalStateException failure = new IllegalStateException("Failed to decrypt credential");
+        CdsHooksClient failing = new CdsHooksClient(failingCredentials(failure));
+        ConnectionRecord record = connection(AuthType.API_KEY);
+
+        RouterException thrown = assertThrows(RouterException.class, () -> failing.discoverServices(record));
+        assertSame(failure, thrown.getCause());
+        assertFalse(thrown.getMessage().contains("decrypt"));
+        assertSame(failure, assertThrows(RouterException.class, () -> failing.discoverServicesRaw(record)).getCause());
+        assertSame(failure, assertThrows(RouterException.class, () -> failing.callHook(record, "order-sign",
+                new CdsHookRequest("order-sign", "instance-1", java.util.Map.of(), java.util.Map.of()))).getCause());
+    }
+
+    @Test
+    void auditPersistenceFailurePropagatesFromVerify(@TempDir Path dir) throws IOException {
+        secret = "synthetic-secret";
+        JsonlAuditTrail trail = new JsonlAuditTrail(dir.resolve("audit.jsonl"), Clock.systemUTC());
+        trail.close();
+        CdsHooksClient audited = new CdsHooksClient(new AuditedCredentialProvider(credentials(), trail));
+
+        assertThrows(AuditPersistenceException.class, () -> audited.verify(connection(AuthType.API_KEY)));
+        assertEquals(0, discoveryCalls.get());
+    }
+
+    @Test
     void unusableCredentialIsReportedByTypeOnly() {
         secret = "not-a-pem-SECRET-MARKER";
         ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
@@ -270,6 +325,25 @@ class ConnectionVerificationTest {
         assertTrue(report.findings().isEmpty());
         assertTrue(report.hooks().isEmpty());
         assertFalse(report.elapsed().isNegative());
+    }
+
+    private ConnectionRecord keyed(AuthType auth) {
+        return ConnectionRecord.builder().payerId("PAYER-SYNTHETIC").environment(Environment.SANDBOX)
+                .baseUrl(baseUrl()).authType(auth).credentialRef("synthetic-ref").clientId("synthetic-client")
+                .keyId("k1").tokenEndpoint(baseUrl() + "/token").build();
+    }
+
+    private static void assertCredentialFailure(ConnectionVerification report, PayerCallPhase phase, String type) {
+        assertFailure(report, phase, null, "credential could not be read: " + type);
+        assertFalse(report.toString().contains("MESSAGE-MARKER"));
+    }
+
+    private static CredentialProvider failingCredentials(RuntimeException failure) {
+        return new CredentialProvider() {
+            @Override public Optional<String> resolve(String ref) { throw failure; }
+            @Override public void put(String ref, String value) { }
+            @Override public void remove(String ref) { }
+        };
     }
 
     private String baseUrl() {
