@@ -238,8 +238,10 @@ separately (next section), so it can be combined with any of these.
 | `CDS_HOOKS_JWT` | A CDS Hooks 2.0 client JWT, signed per request | `clientId` (the `iss`), `keyId`, `jwksUrl`?, `tenant`? | PKCS#8 PEM private key |
 
 OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes)
-until 30 seconds before `expires_in`; responses without `expires_in` aren't
-cached. If the payer returns 401 on an OAuth2 connection, the cached token is
+until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours;
+responses without `expires_in` aren't cached. A token response whose
+`access_token` is missing, `null`, blank or not a string is rejected with a
+`RouterException` in the TOKEN phase, and nothing is cached. If the payer returns 401 on an OAuth2 connection, the cached token is
 dropped and the request is retried exactly once with a fresh token. Concurrent
 fetches for the same cache key share one token request.
 

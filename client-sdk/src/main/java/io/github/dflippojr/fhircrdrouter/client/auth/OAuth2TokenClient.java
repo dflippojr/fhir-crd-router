@@ -45,8 +45,10 @@ import java.util.function.Supplier;
  * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
  * <p>Tokens are cached in memory per (token endpoint, client ID, scopes)
- * until {@code expires_in} minus {@link #EXPIRY_SKEW}. A token response
- * without {@code expires_in} is not cached. Callers that get a 401 from the
+ * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
+ * capped at {@link #MAX_CACHE_LIFETIME}. A token response without
+ * {@code expires_in} is not cached, and one whose {@code access_token} is not
+ * a non-blank string is rejected with a {@link RouterException}. Callers that get a 401 from the
  * payer should {@link #invalidate} and fetch again, since a payer can revoke
  * a token before its advertised expiry.
  */
@@ -54,6 +56,9 @@ public final class OAuth2TokenClient {
 
     /** Refresh this long before the advertised expiry to avoid racing it. */
     static final Duration EXPIRY_SKEW = Duration.ofSeconds(30);
+
+    /** Longest a token is cached, whatever {@code expires_in} advertises. */
+    static final Duration MAX_CACHE_LIFETIME = Duration.ofHours(24);
 
     private final PayerExchangeListener exchangeListener;
     private final Duration requestTimeout;
@@ -223,18 +228,21 @@ public final class OAuth2TokenClient {
                 throw new RouterException("Token response for payerId=" + record.payerId() + " returned an unparseable body");
             }
             JsonNode accessToken = json == null ? null : json.get("access_token");
-            if (accessToken == null) {
+            // JSON null, objects, arrays and numbers would stringify to "null", "" or digits and be sent as a bearer token.
+            if (accessToken == null || !accessToken.isTextual() || accessToken.textValue().isBlank()) {
                 throw new RouterException("Token response for payerId=" + record.payerId()
-                        + " had no access_token field");
+                        + " had no usable access_token");
             }
 
             // Measure expiry from when the request was sent, not when it returned.
             JsonNode expiresIn = json.get("expires_in");
             Instant refreshAt = null;
             if (expiresIn != null && expiresIn.canConvertToLong() && expiresIn.asLong() > 0) {
-                refreshAt = requestedAt.plusSeconds(expiresIn.asLong()).minus(EXPIRY_SKEW);
+                // Clamp first: a huge value would overflow Instant and throw DateTimeException.
+                long seconds = Math.min(expiresIn.asLong(), MAX_CACHE_LIFETIME.toSeconds());
+                refreshAt = requestedAt.plusSeconds(seconds).minus(EXPIRY_SKEW);
             }
-            return new CachedToken(accessToken.asText(), refreshAt);
+            return new CachedToken(accessToken.textValue(), refreshAt);
         } catch (IOException e) {
             throw PayerCallException.transport("Token request I/O failure for payerId=" + record.payerId(),
                     PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
