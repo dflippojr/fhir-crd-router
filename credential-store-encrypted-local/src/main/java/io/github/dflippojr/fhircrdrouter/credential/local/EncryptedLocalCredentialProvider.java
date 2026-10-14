@@ -18,7 +18,6 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
@@ -228,11 +227,13 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     @Override
     public void put(AuditContext context, String credentialRef, String secretValue) {
         lock.writeLock().lock();
-        try (StoreLock ignored = lockStore()) {
-            Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
-            SecretKey writeKey = keyForPut(context, entries.isEmpty());
-            entries.put(credentialRef, encrypt(writeKey, secretValue));
-            saveSecrets(entries);
+        try {
+            withStoreLock(() -> {
+                Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
+                SecretKey writeKey = keyForPut(context, entries.isEmpty());
+                entries.put(credentialRef, encrypt(writeKey, secretValue));
+                saveSecrets(entries);
+            });
         } finally {
             lock.writeLock().unlock();
         }
@@ -250,69 +251,50 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             if (Files.notExists(secretsFile)) {
                 return;
             }
-            try (StoreLock ignored = lockStore()) {
+            withStoreLock(() -> {
                 Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
                 if (entries.remove(credentialRef) != null) {
                     saveSecrets(entries);
                 }
-            }
+            });
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /** Holds the in-JVM mutex and the OS file lock for one read-modify-write of the store. */
-    private static final class StoreLock implements AutoCloseable {
-        private final ReentrantLock mutex;
-        private final FileChannel channel;
-        private final FileLock fileLock;
-
-        StoreLock(ReentrantLock mutex, FileChannel channel, FileLock fileLock) {
-            this.mutex = mutex;
-            this.channel = channel;
-            this.fileLock = fileLock;
-        }
-
-        @Override
-        public void close() {
-            try {
-                fileLock.release();
-                channel.close();
-            } catch (IOException ignored) {
-                // Closing the channel (or the process ending) releases the OS lock regardless.
-            } finally {
-                mutex.unlock();
-            }
-        }
-    }
-
     /**
-     * Blocks until this thread alone may change the store, across instances, threads and processes
-     * on this directory. Release by closing the result.
+     * Runs {@code body} while this thread alone may change the store, across instances, threads and
+     * processes on this directory: first the per-directory mutex, then the OS lock, which closing
+     * the lock channel releases.
      */
-    private StoreLock lockStore() {
+    private void withStoreLock(Runnable body) {
         ReentrantLock mutex = DIRECTORY_LOCKS.computeIfAbsent(lockFile.toAbsolutePath().normalize(),
                 ignored -> new ReentrantLock());
         mutex.lock();
-        FileChannel channel = null;
         try {
-            Path dir = lockFile.toAbsolutePath().getParent();
-            Files.createDirectories(dir);
-            channel = openLockChannel(dir);
-            return new StoreLock(mutex, channel, channel.lock());
-        } catch (IOException e) {
-            closeQuietly(channel);
+            FileChannel channel = null;
+            try {
+                Path dir = lockFile.toAbsolutePath().getParent();
+                Files.createDirectories(dir);
+                channel = openLockChannel(dir);
+                acquire(channel);
+                body.run();
+            } catch (IOException e) {
+                throw new UncheckedIOException("Failed to lock the credential store at " + lockFile, e);
+            } finally {
+                closeQuietly(channel);
+            }
+        } finally {
             mutex.unlock();
-            throw new UncheckedIOException("Failed to lock the credential store at " + lockFile, e);
+        }
+    }
+
+    private void acquire(FileChannel channel) throws IOException {
+        try {
+            channel.lock();
         } catch (OverlappingFileLockException e) {
-            closeQuietly(channel);
-            mutex.unlock();
             throw new IllegalStateException("The credential store at " + lockFile
                     + " is already being written by this thread; put and remove must not be called from inside a put or remove", e);
-        } catch (RuntimeException e) {
-            closeQuietly(channel);
-            mutex.unlock();
-            throw e;
         }
     }
 
