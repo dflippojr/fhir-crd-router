@@ -339,12 +339,14 @@ class EncryptedLocalCredentialProviderDurabilityTest {
         List<byte[]> winnerKey = new ArrayList<>();
         AuditContext context = new AuditContext(AuditContext.ActorKind.SYSTEM, "job-runner", "owner-1",
                 AuditContext.Source.JOB, UUID.randomUUID());
-        // The sink publishes a competing key between this instance's ATTEMPTED event and its own publish.
+        // The sink publishes a competing key.bin between this instance's ATTEMPTED event and its own
+        // publish. Another put cannot do that any more (writers hold the store lock), so the key is
+        // placed directly, as a process that does not take the lock would.
         AuditSink sink = (ctx, action, targetKind, targetId, environment, outcome, changedFields) -> {
             outcomes.add(outcome);
             if (outcome == AuditEvent.Outcome.ATTEMPTED) {
-                new EncryptedLocalCredentialProvider(dir).put("winner", "winner-secret");
                 try {
+                    Files.write(dir.resolve("key.bin"), new byte[32]);
                     winnerKey.add(Files.readAllBytes(dir.resolve("key.bin")));
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);

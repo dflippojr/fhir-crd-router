@@ -20,7 +20,16 @@ existing file, so two instances starting on a fresh directory end up sharing one
 `resolve` never creates a key. If `key.bin` is lost while entries remain, both `resolve`
 and `put` fail with "Local credential key is missing" until the original `key.bin` is
 restored; a `key.bin` that is not exactly 32 bytes and a malformed entry also fail with an
-`IllegalStateException` that names the problem. To audit key creation, credential
+`IllegalStateException` that names the problem.
+
+`put` and `remove` are safe across instances and processes on one directory: they hold an
+exclusive OS file lock on `secrets.lock` (a sidecar file, created empty and kept) while they
+re-read `secrets.properties`, change it and move the new file into place, so concurrent
+writers wait for each other and no write is lost. A writer waits without a timeout. Calling
+`put` or `remove` on the same directory from inside a `put` or `remove` (from an audit sink,
+say) fails with an `IllegalStateException` rather than deadlocking.
+
+To audit key creation, credential
 puts, removes and resolves, pass an `AuditSink` as a second constructor argument
 and wrap the provider in `AuditedCredentialProvider`; see
 [AUDIT.md](../directory-core/AUDIT.md).
