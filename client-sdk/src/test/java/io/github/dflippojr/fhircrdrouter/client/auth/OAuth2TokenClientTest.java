@@ -44,6 +44,7 @@ class OAuth2TokenClientTest {
     private HttpServer server;
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final AtomicReference<String> expiresInJson = new AtomicReference<>(",\"expires_in\":300");
+    private final AtomicReference<String> accessTokenJson = new AtomicReference<>();
     private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
     private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
     private final AtomicBoolean tokenEndpointFails = new AtomicBoolean();
@@ -71,7 +72,8 @@ class OAuth2TokenClientTest {
             lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             TestResponses.respond(exchange, 200,
-                    "{\"access_token\":\"token-" + n + "\",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}");
+                    "{\"access_token\":" + (accessTokenJson.get() != null ? accessTokenJson.get() : "\"token-" + n + "\"")
+                            + ",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}");
         });
         server.start();
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient(), clock);
@@ -170,6 +172,43 @@ class OAuth2TokenClientTest {
         tokenClient.fetchAccessToken(record, "secret");
 
         assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
+    void hugeExpiresInIsCappedInsteadOfOverflowing() {
+        ConnectionRecord record = record(List.of());
+        for (String huge : List.of("99999999999999999", String.valueOf(Long.MAX_VALUE))) {
+            expiresInJson.set(",\"expires_in\":" + huge);
+            tokenClient.invalidate(record);
+            tokenRequests.set(0);
+
+            assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+            clock.advance(OAuth2TokenClient.MAX_CACHE_LIFETIME.minus(OAuth2TokenClient.EXPIRY_SKEW).minusSeconds(1));
+            assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+
+            clock.advance(Duration.ofSeconds(1));
+            assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"));
+            assertEquals(2, tokenRequests.get());
+        }
+    }
+
+    @Test
+    void unusableAccessTokenIsRejectedAndNeverCached() {
+        ConnectionRecord record = record(List.of());
+        for (String bad : List.of("null", "\"\"", "\"  \"", "{}", "[]", "123", "true")) {
+            accessTokenJson.set(bad);
+            tokenClient.invalidate(record);
+            tokenRequests.set(0);
+
+            RouterException e = assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(record, "secret"), bad);
+            assertEquals("Token response for payerId=PAYER-OAUTH had no usable access_token", e.getMessage());
+            assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(record, "secret"), bad);
+            assertEquals(2, tokenRequests.get(), "nothing may be cached for " + bad);
+        }
+
+        accessTokenJson.set(null);
+        tokenRequests.set(0);
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
     }
 
     @Test
