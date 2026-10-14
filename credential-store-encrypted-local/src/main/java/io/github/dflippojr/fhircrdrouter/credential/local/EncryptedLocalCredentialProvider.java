@@ -14,13 +14,22 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -33,10 +42,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Default, dependency-free {@link CredentialProvider}: each secret is
@@ -50,6 +59,21 @@ import java.util.function.LongSupplier;
  *   <li>{@code key.bin} — raw 256-bit AES key (mode 600 where POSIX permissions apply)</li>
  *   <li>{@code secrets.properties} — {@code credentialRef -> base64(iv || ciphertext)}</li>
  * </ul>
+ *
+ * <p>Both files are created owner-only (mode 600 where POSIX permissions apply) and never
+ * rewritten in place. Each write of {@code secrets.properties} goes to a temporary file
+ * ({@code secrets.properties.*.tmp}) in the same directory, is forced to disk and is then moved
+ * over the target, so a reader sees either the old or the new complete file and a crash or full
+ * disk leaves the previous content intact. {@code key.bin} is only created by {@code put} on a
+ * store with no entries: the new key is written to a temporary file and then linked into place
+ * without ever replacing an existing file, so when instances race on first use exactly one key is
+ * published and every instance uses it. {@code resolve} never creates a key.
+ *
+ * <p>Damaged material fails with an {@link IllegalStateException} that names the problem and
+ * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
+ * {@code put} then writes nothing either, so secrets under two different keys never mix), a
+ * {@code key.bin} that is not exactly 256 bits, or an entry that is not valid
+ * {@code base64(iv || ciphertext || tag)}.
  *
  * <p>The parsed ciphertext map is cached together with the raw file bytes and file metadata
  * (last-modified time, size and, where the filesystem has one, file key) it came from. Each
@@ -67,6 +91,9 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private static final int GCM_TAG_BITS = 128;
     private static final int GCM_IV_BYTES = 12;
     private static final int KEY_BITS = 256;
+    private static final int KEY_BYTES = KEY_BITS / 8;
+    private static final String OWNER_ONLY = "rw-------";
+    private static final int REPLACE_ATTEMPTS = 25;
     private static final SecureRandom IV_RANDOM = new SecureRandom();
 
     /** Default upper bound on how long a cached map is trusted on metadata alone. */
@@ -79,6 +106,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private final String storeId;
     private final long fullCompareIntervalNanos;
     private final LongSupplier nanoClock;
+    private final UnaryOperator<OutputStream> outputWrapper;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
@@ -116,10 +144,12 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     }
 
     /**
-     * With a sink, first creation of {@code key.bin} is audited (ATTEMPTED before the file is
-     * written, SUCCEEDED after) against the caller's context. The target is the fixed kind
-     * {@code local-key-store} and an opaque digest of the store location, never a path or key bytes.
-     * Loading an existing key is not an event. Without a sink behavior is unchanged.
+     * With a sink, creation of {@code key.bin} is audited against the caller's context: ATTEMPTED
+     * before the key is generated, then SUCCEEDED once this instance has published it, or FAILED
+     * when the write failed or another instance or process published {@code key.bin} first (that
+     * key is then loaded and used). The target is the fixed kind {@code local-key-store} and an
+     * opaque digest of the store location, never a path or key bytes. Loading an existing key is
+     * not an event. Without a sink behavior is unchanged.
      */
     public EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink) {
         this(baseDir, auditSink, DEFAULT_FULL_COMPARE_INTERVAL);
@@ -136,11 +166,18 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
                                      LongSupplier nanoClock) {
+        this(baseDir, auditSink, fullCompareInterval, nanoClock, UnaryOperator.identity());
+    }
+
+    // Visible for tests, which wrap the temporary-file stream to make a write fail midway.
+    EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
+                                     LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper) {
         if (fullCompareInterval.isNegative()) {
             throw new IllegalArgumentException("fullCompareInterval must not be negative");
         }
         this.fullCompareIntervalNanos = fullCompareInterval.toNanos();
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+        this.outputWrapper = Objects.requireNonNull(outputWrapper, "outputWrapper");
         this.keyFile = baseDir.resolve("key.bin");
         this.secretsFile = baseDir.resolve("secrets.properties");
         this.auditSink = auditSink;
@@ -160,7 +197,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             if (encoded == null) {
                 return Optional.empty();
             }
-            return Optional.of(decrypt(context, encoded));
+            return Optional.of(decrypt(credentialRef, encoded));
         } finally {
             lock.readLock().unlock();
         }
@@ -176,7 +213,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         lock.writeLock().lock();
         try {
             Map<String, String> entries = new HashMap<>(currentSnapshot().entries);
-            entries.put(credentialRef, encrypt(context, secretValue));
+            SecretKey writeKey = keyForPut(context, entries.isEmpty());
+            entries.put(credentialRef, encrypt(writeKey, secretValue));
             saveSecrets(entries);
         } finally {
             lock.writeLock().unlock();
@@ -201,14 +239,14 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         }
     }
 
-    private String encrypt(AuditContext context, String plaintext) {
+    private static String encrypt(SecretKey secretKey, String plaintext) {
         try {
             byte[] iv = new byte[GCM_IV_BYTES];
             IV_RANDOM.nextBytes(iv);
 
             Cipher cipher = Cipher.getInstance(AES_GCM);
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey(context), new GCMParameterSpec(GCM_TAG_BITS, iv));
-            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, iv));
+            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
 
             byte[] combined = new byte[iv.length + ciphertext.length];
             System.arraycopy(iv, 0, combined, 0, iv.length);
@@ -219,54 +257,153 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         }
     }
 
-    private String decrypt(AuditContext context, String encoded) {
+    private String decrypt(String credentialRef, String encoded) {
+        byte[] combined;
         try {
-            byte[] combined = Base64.getDecoder().decode(encoded);
-            byte[] iv = new byte[GCM_IV_BYTES];
-            byte[] ciphertext = new byte[combined.length - GCM_IV_BYTES];
-            System.arraycopy(combined, 0, iv, 0, GCM_IV_BYTES);
-            System.arraycopy(combined, GCM_IV_BYTES, ciphertext, 0, ciphertext.length);
-
+            combined = Base64.getDecoder().decode(encoded);
+        } catch (IllegalArgumentException e) {
+            // The decoder's message quotes the offending character, so it is not chained.
+            throw corruptEntry(credentialRef);
+        }
+        if (combined.length < GCM_IV_BYTES + GCM_TAG_BITS / 8) {
+            throw corruptEntry(credentialRef);
+        }
+        SecretKey secretKey = loadKey();
+        try {
             Cipher cipher = Cipher.getInstance(AES_GCM);
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(context), new GCMParameterSpec(GCM_TAG_BITS, iv));
-            byte[] plaintext = cipher.doFinal(ciphertext);
-            return new String(plaintext, java.nio.charset.StandardCharsets.UTF_8);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, combined, 0, GCM_IV_BYTES));
+            byte[] plaintext = cipher.doFinal(combined, GCM_IV_BYTES, combined.length - GCM_IV_BYTES);
+            return new String(plaintext, StandardCharsets.UTF_8);
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("Failed to decrypt credential", e);
+            throw new IllegalStateException("Failed to decrypt credential '" + credentialRef + "'", e);
         }
     }
 
-    private SecretKey getOrCreateKey(AuditContext context) {
-        if (key != null) {
-            return key;
+    private IllegalStateException corruptEntry(String credentialRef) {
+        return new IllegalStateException("Corrupt credential entry '" + credentialRef + "' in " + secretsFile
+                + ": not base64(iv || ciphertext || tag)");
+    }
+
+    /** The key for decrypting; never creates one. */
+    private SecretKey loadKey() {
+        SecretKey cached = key;
+        if (cached != null) {
+            return cached;
         }
         synchronized (this) {
-            if (key != null) {
-                return key;
-            }
-            try {
-                if (Files.exists(keyFile)) {
-                    byte[] raw = Files.readAllBytes(keyFile);
-                    key = new SecretKeySpec(raw, AES);
-                } else {
-                    audit(context, AuditEvent.Outcome.ATTEMPTED);
-                    KeyGenerator keyGen = KeyGenerator.getInstance(AES);
-                    keyGen.init(KEY_BITS);
-                    SecretKey generated = keyGen.generateKey();
-                    if (keyFile.getParent() != null) {
-                        Files.createDirectories(keyFile.getParent());
-                    }
-                    Files.write(keyFile, generated.getEncoded());
-                    tryRestrictToOwnerOnly(keyFile);
-                    key = generated;
-                    audit(context, AuditEvent.Outcome.SUCCEEDED);
-                }
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to load/create local credential key at " + keyFile, e);
-            } catch (GeneralSecurityException e) {
-                throw new IllegalStateException("Failed to generate local credential key", e);
+            if (key == null) {
+                key = readKeyFile().orElseThrow(this::missingKey);
             }
             return key;
+        }
+    }
+
+    /**
+     * The key for encrypting a new entry. Creates {@code key.bin} only when it is absent and the
+     * store has no entries; entries without a key mean the key was lost, and a new one would make
+     * a later restore of the original key strand everything written in between.
+     */
+    private SecretKey keyForPut(AuditContext context, boolean storeEmpty) {
+        SecretKey cached = key;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (this) {
+            if (key == null) {
+                Optional<SecretKey> existing = readKeyFile();
+                if (existing.isPresent()) {
+                    key = existing.get();
+                } else if (storeEmpty) {
+                    key = createKey(context);
+                } else {
+                    throw missingKey();
+                }
+            }
+            return key;
+        }
+    }
+
+    private IllegalStateException missingKey() {
+        return new IllegalStateException("Local credential key is missing at " + keyFile + " but " + secretsFile
+                + " has entries; restore the key.bin that was used to write them");
+    }
+
+    /** Reads and validates {@code key.bin}; empty when the file does not exist. */
+    private Optional<SecretKey> readKeyFile() {
+        byte[] raw;
+        try {
+            raw = Files.readAllBytes(keyFile);
+        } catch (NoSuchFileException e) {
+            return Optional.empty();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to load local credential key at " + keyFile, e);
+        }
+        try {
+            if (raw.length != KEY_BYTES) {
+                throw new IllegalStateException("Local credential key at " + keyFile + " is not a 256-bit AES key ("
+                        + raw.length + " bytes instead of " + KEY_BYTES + ")");
+            }
+            return Optional.of(new SecretKeySpec(raw, AES));
+        } finally {
+            Arrays.fill(raw, (byte) 0);
+        }
+    }
+
+    /**
+     * Generates a key and publishes it as {@code key.bin} unless that file appeared meanwhile, in
+     * which case the published key wins and is returned instead.
+     */
+    private SecretKey createKey(AuditContext context) {
+        audit(context, AuditEvent.Outcome.ATTEMPTED);
+        Path tmp = null;
+        try {
+            KeyGenerator keyGen = KeyGenerator.getInstance(AES);
+            keyGen.init(KEY_BITS);
+            SecretKey generated = keyGen.generateKey();
+            Path dir = keyFile.toAbsolutePath().getParent();
+            Files.createDirectories(dir);
+            tmp = createOwnerOnlyTempFile(dir, keyFile);
+            writeDurably(tmp, generated.getEncoded());
+            if (publishWithoutReplacing(tmp)) {
+                audit(context, AuditEvent.Outcome.SUCCEEDED);
+                return generated;
+            }
+            // Another instance or process published key.bin first; this key was never used.
+            audit(context, AuditEvent.Outcome.FAILED);
+            return readKeyFile().orElseThrow(() -> new IllegalStateException(
+                    "Local credential key at " + keyFile + " disappeared while it was being created"));
+        } catch (IOException e) {
+            UncheckedIOException failure = new UncheckedIOException(
+                    "Failed to create local credential key at " + keyFile, e);
+            auditFailure(context, failure);
+            throw failure;
+        } catch (GeneralSecurityException e) {
+            IllegalStateException failure = new IllegalStateException("Failed to generate local credential key", e);
+            auditFailure(context, failure);
+            throw failure;
+        } finally {
+            deleteQuietly(tmp);
+        }
+    }
+
+    /**
+     * Makes {@code tmp} visible as {@code key.bin} in one step, failing rather than replacing an
+     * existing file. Returns false when {@code key.bin} already exists.
+     */
+    private boolean publishWithoutReplacing(Path tmp) throws IOException {
+        try {
+            Files.createLink(keyFile, tmp);
+            return true;
+        } catch (FileAlreadyExistsException e) {
+            return false;
+        } catch (UnsupportedOperationException | FileSystemException e) {
+            // No hard links on this filesystem; a move without REPLACE_EXISTING also refuses to overwrite.
+            try {
+                Files.move(tmp, keyFile);
+                return true;
+            } catch (FileAlreadyExistsException exists) {
+                return false;
+            }
         }
     }
 
@@ -277,12 +414,11 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         }
     }
 
-    private static void tryRestrictToOwnerOnly(Path path) {
+    private void auditFailure(AuditContext context, RuntimeException failure) {
         try {
-            Set<PosixFilePermission> ownerOnly = PosixFilePermissions.fromString("rw-------");
-            Files.setPosixFilePermissions(path, ownerOnly);
-        } catch (UnsupportedOperationException | IOException ignored) {
-            // Not a POSIX filesystem (e.g. plain Windows/NTFS without POSIX views) — best effort only.
+            audit(context, AuditEvent.Outcome.FAILED);
+        } catch (RuntimeException auditFailure) {
+            failure.addSuppressed(auditFailure);
         }
     }
 
@@ -349,18 +485,83 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private void saveSecrets(Map<String, String> entries) {
         Properties props = new Properties();
         props.putAll(entries);
+        Path tmp = null;
         try {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             props.store(buffer, "fhir-crd-router encrypted credential references — values are AES-GCM ciphertext, not raw secrets");
             byte[] bytes = buffer.toByteArray();
-            if (secretsFile.getParent() != null) {
-                Files.createDirectories(secretsFile.getParent());
-            }
-            Files.write(secretsFile, bytes);
-            tryRestrictToOwnerOnly(secretsFile);
+            Path dir = secretsFile.toAbsolutePath().getParent();
+            Files.createDirectories(dir);
+            tmp = createOwnerOnlyTempFile(dir, secretsFile);
+            writeDurably(tmp, bytes);
+            replace(tmp, secretsFile);
+            tmp = null;
             snapshot = new Snapshot(bytes, Map.copyOf(entries), readStamp(), nanoClock.getAsLong());
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing secrets file at " + secretsFile, e);
+        } finally {
+            deleteQuietly(tmp);
+        }
+    }
+
+    /** A {@code <target>.*.tmp} file next to the target, owner-only from creation where POSIX applies. */
+    private static Path createOwnerOnlyTempFile(Path dir, Path target) throws IOException {
+        String prefix = target.getFileName() + ".";
+        if (dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            return Files.createTempFile(dir, prefix, ".tmp",
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
+        }
+        return Files.createTempFile(dir, prefix, ".tmp");
+    }
+
+    private void writeDurably(Path file, byte[] bytes) throws IOException {
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+             OutputStream out = outputWrapper.apply(Channels.newOutputStream(channel))) {
+            out.write(bytes);
+            out.flush();
+            channel.force(true);
+        }
+    }
+
+    /**
+     * Moves {@code tmp} over {@code target}. Windows refuses to replace a file that another handle
+     * has open, and a reader holds it only for one read, so a refused replace is retried briefly.
+     */
+    private static void replace(Path tmp, Path target) throws IOException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                moveOver(tmp, target);
+                return;
+            } catch (AccessDeniedException e) {
+                if (attempt >= REPLACE_ATTEMPTS) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+    }
+
+    private static void moveOver(Path tmp, Path target) throws IOException {
+        try {
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void deleteQuietly(Path tmp) {
+        if (tmp == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(tmp);
+        } catch (IOException ignored) {
+            // Best effort; the original outcome is what matters.
         }
     }
 }
