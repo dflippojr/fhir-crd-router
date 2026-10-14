@@ -304,6 +304,36 @@ class EncryptedLocalCredentialProviderDurabilityTest {
     }
 
     @Test
+    void anUnreadableKeyFileIsAnIoErrorNotAMissingKey(@TempDir Path dir) throws Exception {
+        new EncryptedLocalCredentialProvider(dir).put("a", SECRET);
+        Files.delete(dir.resolve("key.bin"));
+        Files.createDirectory(dir.resolve("key.bin"));
+
+        var e = assertThrows(UncheckedIOException.class, () -> new EncryptedLocalCredentialProvider(dir).resolve("a"));
+        assertTrue(e.getMessage().contains("Failed to load local credential key"), e.getMessage());
+    }
+
+    @Test
+    void failedKeyWriteIsAuditedAndAnAuditErrorDoesNotHideTheWriteError(@TempDir Path dir) throws Exception {
+        List<AuditEvent.Outcome> outcomes = new ArrayList<>();
+        AuditSink sink = (ctx, action, targetKind, targetId, environment, outcome, changedFields) -> {
+            outcomes.add(outcome);
+            if (outcome == AuditEvent.Outcome.FAILED) {
+                throw new IllegalStateException("audit volume unavailable");
+            }
+            return null;
+        };
+        var provider = new EncryptedLocalCredentialProvider(dir, sink, Duration.ZERO, System::nanoTime,
+                EncryptedLocalCredentialProviderDurabilityTest::failingMidway);
+
+        var e = assertThrows(UncheckedIOException.class, () -> provider.put("a", SECRET));
+
+        assertEquals(List.of(AuditEvent.Outcome.ATTEMPTED, AuditEvent.Outcome.FAILED), outcomes);
+        assertEquals("audit volume unavailable", e.getSuppressed()[0].getMessage());
+        assertFalse(Files.exists(dir.resolve("key.bin")));
+    }
+
+    @Test
     void lostKeyRaceIsAuditedAsFailedAndUsesThePublishedKey(@TempDir Path dir) throws Exception {
         List<AuditEvent.Outcome> outcomes = new ArrayList<>();
         List<byte[]> winnerKey = new ArrayList<>();
