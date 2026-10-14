@@ -71,6 +71,7 @@ discovery returns 2xx, parses as JSON and `CdsDiscoveryValidator` has no finding
 | Token endpoint error (OAuth2) | empty | `TOKEN` | the status |
 | Refused connection or timeout | empty | the phase | empty |
 | Missing credential | empty | `TOKEN` for OAuth2, else `DISCOVERY` | empty |
+| Credential provider throws (key mismatch, unreadable secrets file) | empty | `TOKEN` for OAuth2, else `DISCOVERY` | empty |
 
 The report also carries `payerId`, `environment`, `checkedAt`, `elapsed`,
 `serviceCount` and the sorted, deduplicated set of advertised `hooks`.
@@ -78,8 +79,15 @@ The report also carries `payerId`, `environment`, `checkedAt`, `elapsed`,
 from the failure type, phase and status only. It never includes response bodies,
 headers, credential contents or exception messages, and neither does `toString()`.
 Other connection setup errors, such as an unreadable signing key, are reported as
-`connection could not be verified: <exception type>` with no phase. A `null` record
-still throws.
+`connection could not be verified: <exception type>` with no phase. A credential
+provider failure is reported as `credential could not be read: <exception type>`.
+A `null` record still throws, and so does an `AuditPersistenceException` from an
+`AuditedCredentialProvider`: the audit protocol says to stop and report, so `verify`
+does not swallow it.
+
+`callHook`, `discoverServices` and their raw forms wrap a credential provider's
+`RuntimeException` in a `RouterException` whose cause is the original; its message
+does not repeat the provider's. An `AuditPersistenceException` propagates unchanged.
 
 The SDK does not write to a store. Save `record.withLastVerifiedAt(report.checkedAt())`
 yourself when the report is `ok`. Verification does not change `ConnectionStatus`,

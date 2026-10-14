@@ -12,6 +12,7 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
 
 import java.io.IOException;
 import java.net.URI;
@@ -22,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -72,6 +74,21 @@ public final class CdsHooksClient {
 
         MissingCredentialException(String message, PayerCallPhase phase) {
             super(message);
+            this.phase = phase;
+        }
+    }
+
+    /**
+     * The credential provider threw while resolving a reference, for example a key mismatch or an
+     * unreadable secrets file. The provider's exception is kept as the cause; its message is not
+     * copied, since it may describe secret material. {@code phase} is null as for
+     * {@link MissingCredentialException}.
+     */
+    private static final class CredentialReadException extends RouterException {
+        private final transient PayerCallPhase phase;
+
+        CredentialReadException(String message, PayerCallPhase phase, RuntimeException cause) {
+            super(message, cause);
             this.phase = phase;
         }
     }
@@ -170,8 +187,11 @@ public final class CdsHooksClient {
      * Checks that a connection works: makes the discovery exchange (plus the token exchange and
      * configured retries when they apply) through the usual pipeline, so the exchange listener sees
      * it, and validates the catalog with {@link CdsDiscoveryValidator}. Never calls a hook. Payer
-     * HTTP, transport, timeout, token and credential failures are reported, not thrown. The reason
-     * text never includes response bodies, headers, credential contents or exception messages.
+     * HTTP, transport, timeout, token and credential failures are reported, not thrown, including a
+     * {@link CredentialProvider} that throws. The reason text never includes response bodies,
+     * headers, credential contents or exception messages. The one exception is an
+     * {@link AuditPersistenceException} from an audited provider, which propagates because the
+     * audit protocol says to stop and report; a null record throws {@link NullPointerException}.
      *
      * <p>The SDK does not write to a store: when {@link ConnectionVerification#ok()} is true, save
      * {@code record.withLastVerifiedAt(report.checkedAt())}.
@@ -213,6 +233,11 @@ public final class CdsHooksClient {
             PayerCallPhase phase = e.phase == null ? PayerCallPhase.DISCOVERY : e.phase;
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     phase, OptionalInt.empty(), "missing credential for " + describe(phase));
+        } catch (CredentialReadException e) {
+            PayerCallPhase phase = e.phase == null ? PayerCallPhase.DISCOVERY : e.phase;
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    phase, OptionalInt.empty(), "credential could not be read: "
+                            + e.getCause().getClass().getSimpleName());
         } catch (RouterException | IllegalArgumentException e) {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     null, OptionalInt.empty(), "connection could not be verified: " + e.getClass().getSimpleName());
@@ -370,7 +395,7 @@ public final class CdsHooksClient {
         if (record.mtlsCredentialRef() == null) {
             return httpClient;
         }
-        String pemBundle = credentialProvider.resolve(record.mtlsCredentialRef())
+        String pemBundle = resolveCredential(record, record.mtlsCredentialRef(), null)
                 .orElseThrow(() -> new MissingCredentialException("No mTLS credential found for ref="
                         + record.mtlsCredentialRef() + " (payerId=" + record.payerId() + ")", null));
         String fingerprint = sha256(pemBundle);
@@ -405,9 +430,24 @@ public final class CdsHooksClient {
             throw new MissingCredentialException("authType=" + record.authType()
                     + " but no credentialRef set for payerId=" + record.payerId(), phase);
         }
-        return credentialProvider.resolve(record.credentialRef())
+        return resolveCredential(record, record.credentialRef(), phase)
                 .orElseThrow(() -> new MissingCredentialException(
                         "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")", phase));
+    }
+
+    /**
+     * Resolves a reference, wrapping a provider failure in a {@link RouterException} that keeps the
+     * original as its cause. An {@link AuditPersistenceException} is not wrapped: callers must see it.
+     */
+    private Optional<String> resolveCredential(ConnectionRecord record, String ref, PayerCallPhase phase) {
+        try {
+            return credentialProvider.resolve(ref);
+        } catch (AuditPersistenceException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new CredentialReadException("Failed to read credential for ref=" + ref
+                    + " (payerId=" + record.payerId() + ")", phase, e);
+        }
     }
 
     private static Duration positiveTimeout(Duration timeout) {
