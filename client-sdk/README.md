@@ -153,6 +153,11 @@ Only keys in `queries()` may go into the prefetch map. CDS Hooks says a client
 leave every `unresolved()` key out (the payer can still query `fhirServer` for
 it, if you grant access).
 
+A key you did run but that found nothing is different: CDS Hooks says the
+template key "MUST have a value of null", so send it as no data rather than
+omitting it. Use `prefetch.putNoData("coverage")` (or `put(key, null)`), and
+`CdsHookRequest` serializes it as `"coverage":null`.
+
 Supported tokens follow [CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#prefetch-tokens):
 - `{{context.<field>}}` for root-level string, number or boolean context
   fields. Works for every `CrdHookContext` record and for `Map` contexts.

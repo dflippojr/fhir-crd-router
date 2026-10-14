@@ -36,9 +36,18 @@ public final class CrdPrefetch {
         public Builder encounter(JsonNode encounter) { return put(ENCOUNTER, encounter); }
         public Builder coverage(JsonNode coverageBundle) { return put(COVERAGE, coverageBundle); }
 
+        /** Adds a prefetch entry; a {@code null} resource means "no data" and is sent as {@code null}. */
         public Builder put(String key, JsonNode resource) {
-            entries.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(resource, key));
+            entries.put(Objects.requireNonNull(key, "key"), resource);
             return this;
+        }
+
+        /**
+         * Marks a template key as satisfied with no data (e.g. the search returned nothing).
+         * CDS Hooks requires a {@code null} value for this, not an omitted key.
+         */
+        public Builder putNoData(String key) {
+            return put(key, null);
         }
 
         public Map<String, Object> build() {

@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.dflippojr.fhircrdrouter.client.crd.CrdHookContext;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -30,7 +32,16 @@ public record CdsHookRequest(
         Objects.requireNonNull(hook, "hook");
         Objects.requireNonNull(hookInstance, "hookInstance");
         Objects.requireNonNull(context, "context");
-        prefetch = prefetch == null || prefetch.isEmpty() ? null : Map.copyOf(prefetch);
+        if (prefetch == null || prefetch.isEmpty()) {
+            prefetch = null;
+        } else {
+            // Not Map.copyOf: a null value means "no data" and must survive; null keys stay invalid.
+            Map<String, Object> copy = new LinkedHashMap<>(prefetch);
+            if (copy.containsKey(null)) {
+                throw new NullPointerException("prefetch key");
+            }
+            prefetch = Collections.unmodifiableMap(copy);
+        }
     }
 
     /** Untyped form, for hooks or context shapes this library doesn't model. */
