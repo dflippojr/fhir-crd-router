@@ -86,4 +86,31 @@ class CrdHookContextTest {
         assertEquals("Organization/lab1", json.get("performer").asText());
         assertFalse(json.has("fulfillmentTasks"));
     }
+
+    @Test
+    void nullPrefetchValueSerializesAsNullNotOmitted() throws Exception {
+        CdsHookRequest request = CdsHookRequest.of(
+                new CrdHookContext.OrderSign("Practitioner/doc1", "p1", null, mapper.readTree("{\"resourceType\":\"Bundle\"}")),
+                CrdPrefetch.builder().putNoData("coverage").put("patient", null).build());
+
+        JsonNode prefetch = mapper.readTree(mapper.writeValueAsString(request)).get("prefetch");
+
+        assertTrue(prefetch.has("coverage") && prefetch.get("coverage").isNull());
+        assertTrue(prefetch.has("patient") && prefetch.get("patient").isNull());
+        assertEquals(List.of("coverage", "patient"), List.copyOf(request.prefetch().keySet()));
+    }
+
+    @Test
+    void rawMapWithNullValueIsAcceptedButNullKeyIsStillRejected() throws Exception {
+        java.util.Map<String, Object> prefetch = new java.util.HashMap<>();
+        prefetch.put("coverage", null);
+        CdsHookRequest request = new CdsHookRequest("order-sign", "i", java.util.Map.of("patientId", "p"), prefetch);
+        assertEquals("{\"coverage\":null}", mapper.writeValueAsString(request.prefetch()));
+
+        java.util.Map<String, Object> nullKey = new java.util.HashMap<>();
+        nullKey.put(null, "x");
+        assertThrows(NullPointerException.class,
+                () -> new CdsHookRequest("order-sign", "i", java.util.Map.of("patientId", "p"), nullKey));
+        assertThrows(NullPointerException.class, () -> CrdPrefetch.builder().put(null, null));
+    }
 }
