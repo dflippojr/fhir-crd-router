@@ -29,7 +29,9 @@ names. Collections are immutable.
 
 Create the protected parent directory yourself. Configure a persistent path,
 not a quickstart temporary directory. One writer/process may own the file;
-the writer takes an exclusive file lock and serializes in-process appends.
+the writer takes an exclusive lock on a sentinel byte past the end of any data (not on the
+history itself, because Windows byte-range locks are mandatory and would block every reader)
+and serializes in-process appends. A second writer on the same file is refused.
 
 ```java
 var context = new AuditContext(AuditContext.ActorKind.SYSTEM, "host-app", null,
@@ -52,7 +54,8 @@ completion could not be confirmed. Never retry the side effect because of this
 error. Errors carry no underlying exception text or sensitive cause. A failed
 append/force may nevertheless have persisted bytes, so durability remains uncertain.
 The writer is poisoned after failure and will reject further appends. Construction
-and close failures use IOException (corrupt history uses AuditReadException).
+and close failures use IOException (corrupt history uses AuditReadException; a trail that
+cannot be opened or read uses AuditUnreadableException).
 
 The action and audit file are not an atomic transaction. A lone ATTEMPTED means
 unknown completion, not failure. Crashes before attempt, between attempt and action,
@@ -98,7 +101,15 @@ The writer refuses to reopen an incomplete tail or corrupt file; it never trunca
 or repairs history. The owner must preserve the damaged file in a protected archive,
 inspect/reconcile the gap, then configure a new file. Readers should inspect a
 quiescent file or backup: a live reader can observe an in-progress append as a tail.
-Missing files return empty results; read errors are reported.
+Missing files return empty results.
+
+Two different failures are reported, never one for the other. `AuditReadException` means
+the content is invalid at `lineNumber()` (corrupt history; follow the archive procedure
+above). `AuditUnreadableException` means the file could not be opened or read at all (for
+example the path is a directory, permissions deny access, or the OS locks it); it carries
+no line number, path or cause, says nothing about the content, and the file must not be
+archived or replaced because of it. Fix access and retry. An open writer does not make
+the history unreadable on any OS, so a live read returns the committed events so far.
 
 ## Permissions, retention, backup and integrity
 
