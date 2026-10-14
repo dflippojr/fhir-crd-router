@@ -11,7 +11,16 @@ wherever this one would otherwise be wired in — `ConnectionRecord` never
 knows or cares which provider resolved its `credentialRef`.
 
 Files under the base directory: `key.bin` (the AES key) and `secrets.properties`
-(`credentialRef -> base64(iv || ciphertext)`). To audit key creation, credential
+(`credentialRef -> base64(iv || ciphertext)`). Both are created owner-only (mode 600
+where POSIX permissions apply). `secrets.properties` is never rewritten in place: each
+write goes to a temporary file in the same directory and is moved over the old one, so
+readers see the old or the new complete file and a crash keeps the previous content.
+`key.bin` is created only by a `put` on a store with no entries and never replaces an
+existing file, so two instances starting on a fresh directory end up sharing one key.
+`resolve` never creates a key. If `key.bin` is lost while entries remain, both `resolve`
+and `put` fail with "Local credential key is missing" until the original `key.bin` is
+restored; a `key.bin` that is not exactly 32 bytes and a malformed entry also fail with an
+`IllegalStateException` that names the problem. To audit key creation, credential
 puts, removes and resolves, pass an `AuditSink` as a second constructor argument
 and wrap the provider in `AuditedCredentialProvider`; see
 [AUDIT.md](../directory-core/AUDIT.md).
