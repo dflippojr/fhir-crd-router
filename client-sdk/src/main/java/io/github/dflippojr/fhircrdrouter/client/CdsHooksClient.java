@@ -159,7 +159,11 @@ public final class CdsHooksClient {
             List<CdsServiceDescriptor> services = new ArrayList<>();
             if (servicesNode != null && servicesNode.isArray()) {
                 for (JsonNode node : servicesNode) {
-                    services.add(mapper.treeToValue(node, CdsServiceDescriptor.class));
+                    CdsServiceDescriptor descriptor = mapper.treeToValue(node, CdsServiceDescriptor.class);
+                    if (descriptor == null) {
+                        throw new RouterException(context + " returned a null entry in services");
+                    }
+                    services.add(descriptor);
                 }
             }
             return services;
@@ -272,6 +276,7 @@ public final class CdsHooksClient {
 
     /** Invokes a named hook (raw passthrough form). */
     public JsonNode callHookRaw(ConnectionRecord record, String serviceId, CdsHookRequest request) {
+        String segment = encodeServiceId(serviceId);
         String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
         String body;
         try {
@@ -280,7 +285,7 @@ public final class CdsHooksClient {
             throw new RouterException(context + " could not serialize request", e);
         }
         HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, () -> HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + serviceId))
+                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + segment))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
         try {
@@ -300,15 +305,47 @@ public final class CdsHooksClient {
     }
 
     private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type) {
+        JsonNode array = raw.path(field);
+        if (!array.isMissingNode() && !array.isNull() && !array.isArray()) {
+            throw new RouterException("Expected " + field + " to be an array for payerId=" + record.payerId());
+        }
         List<T> items = new ArrayList<>();
-        for (JsonNode node : raw.path(field)) {
+        for (JsonNode node : array) {
             try {
-                items.add(mapper.treeToValue(node, type));
+                T item = mapper.treeToValue(node, type);
+                if (item == null) {
+                    throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId()
+                            + ": entry is null");
+                }
+                items.add(item);
             } catch (IOException e) {
                 throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(), e);
             }
         }
         return items;
+    }
+
+    /**
+     * Percent-encodes a service id as a single RFC 3986 path segment: every byte except the unreserved
+     * characters becomes {@code %XX}, so {@code ?}, {@code #} and {@code /} cannot change the request.
+     * Rejects ids that would not stay one segment under {@code /cds-services/}.
+     */
+    private static String encodeServiceId(String serviceId) {
+        if (serviceId == null || serviceId.isEmpty() || serviceId.equals(".") || serviceId.equals("..")) {
+            throw new IllegalArgumentException("serviceId must not be null, empty, \".\" or \"..\"");
+        }
+        StringBuilder encoded = new StringBuilder();
+        for (byte b : serviceId.getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '.' || c == '_' || c == '~') {
+                encoded.append((char) c);
+            } else {
+                encoded.append('%').append(Character.toUpperCase(Character.forDigit(c >> 4, 16)))
+                        .append(Character.toUpperCase(Character.forDigit(c & 0xF, 16)));
+            }
+        }
+        return encoded.toString();
     }
 
     /**
