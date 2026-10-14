@@ -18,6 +18,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -42,7 +43,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
@@ -69,6 +73,14 @@ import java.util.function.UnaryOperator;
  * without ever replacing an existing file, so when instances race on first use exactly one key is
  * published and every instance uses it. {@code resolve} never creates a key.
  *
+ * <p>{@code put} and {@code remove} are safe across instances and processes on one directory:
+ * each holds an exclusive OS file lock on {@code secrets.lock} (a sidecar file that is created
+ * empty and never deleted) while it re-reads {@code secrets.properties}, applies its change and
+ * moves the new file into place, so concurrent writers serialize and every write survives.
+ * Instances in one JVM also share a mutex per directory, because the JVM refuses to hand out two
+ * overlapping file locks. A writer waits for the lock without a timeout. {@code resolve} takes no
+ * file lock; the atomic replace already gives it a complete file.
+ *
  * <p>Damaged material fails with an {@link IllegalStateException} that names the problem and
  * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
  * {@code put} then writes nothing either, so secrets under two different keys never mix), a
@@ -94,6 +106,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private static final int KEY_BYTES = KEY_BITS / 8;
     private static final String OWNER_ONLY = "rw-------";
     private static final int REPLACE_ATTEMPTS = 25;
+    /** One mutex per lock file for this JVM; {@link FileChannel#lock()} fails instead of waiting inside one JVM. */
+    private static final Map<Path, ReentrantLock> DIRECTORY_LOCKS = new ConcurrentHashMap<>();
     private static final SecureRandom IV_RANDOM = new SecureRandom();
 
     /** Default upper bound on how long a cached map is trusted on metadata alone. */
@@ -101,6 +115,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     private final Path keyFile;
     private final Path secretsFile;
+    private final Path lockFile;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final AuditSink auditSink;
     private final String storeId;
@@ -180,6 +195,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         this.outputWrapper = Objects.requireNonNull(outputWrapper, "outputWrapper");
         this.keyFile = baseDir.resolve("key.bin");
         this.secretsFile = baseDir.resolve("secrets.properties");
+        this.lockFile = baseDir.resolve("secrets.lock");
         this.auditSink = auditSink;
         this.storeId = "enc-local-" + AuditTargets.digest(baseDir.toAbsolutePath().normalize().toString(), 16);
     }
@@ -212,10 +228,12 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     public void put(AuditContext context, String credentialRef, String secretValue) {
         lock.writeLock().lock();
         try {
-            Map<String, String> entries = new HashMap<>(currentSnapshot().entries);
-            SecretKey writeKey = keyForPut(context, entries.isEmpty());
-            entries.put(credentialRef, encrypt(writeKey, secretValue));
-            saveSecrets(entries);
+            withStoreLock(() -> {
+                Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
+                SecretKey writeKey = keyForPut(context, entries.isEmpty());
+                entries.put(credentialRef, encrypt(writeKey, secretValue));
+                saveSecrets(entries);
+            });
         } finally {
             lock.writeLock().unlock();
         }
@@ -230,12 +248,73 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     public void remove(AuditContext context, String credentialRef) {
         lock.writeLock().lock();
         try {
-            Map<String, String> entries = new HashMap<>(currentSnapshot().entries);
-            if (entries.remove(credentialRef) != null) {
-                saveSecrets(entries);
+            if (Files.notExists(secretsFile)) {
+                return;
             }
+            withStoreLock(() -> {
+                Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
+                if (entries.remove(credentialRef) != null) {
+                    saveSecrets(entries);
+                }
+            });
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Runs {@code body} while this thread alone may change the store, across instances, threads and
+     * processes on this directory: first the per-directory mutex, then the OS lock, which closing
+     * the lock channel releases.
+     */
+    private void withStoreLock(Runnable body) {
+        ReentrantLock mutex = DIRECTORY_LOCKS.computeIfAbsent(lockFile.toAbsolutePath().normalize(),
+                ignored -> new ReentrantLock());
+        mutex.lock();
+        try {
+            FileChannel channel = null;
+            try {
+                Path dir = lockFile.toAbsolutePath().getParent();
+                Files.createDirectories(dir);
+                channel = openLockChannel(dir);
+                acquire(channel);
+                body.run();
+            } catch (IOException e) {
+                throw new UncheckedIOException("Failed to lock the credential store at " + lockFile, e);
+            } finally {
+                closeQuietly(channel);
+            }
+        } finally {
+            mutex.unlock();
+        }
+    }
+
+    private void acquire(FileChannel channel) throws IOException {
+        try {
+            channel.lock();
+        } catch (OverlappingFileLockException e) {
+            throw new IllegalStateException("The credential store at " + lockFile
+                    + " is already being written by this thread; put and remove must not be called from inside a put or remove", e);
+        }
+    }
+
+    private FileChannel openLockChannel(Path dir) throws IOException {
+        Set<StandardOpenOption> options = Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        if (dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            return FileChannel.open(lockFile, options,
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
+        }
+        return FileChannel.open(lockFile, options);
+    }
+
+    private static void closeQuietly(FileChannel channel) {
+        if (channel == null) {
+            return;
+        }
+        try {
+            channel.close();
+        } catch (IOException ignored) {
+            // Best effort; the original failure is what matters.
         }
     }
 
@@ -441,11 +520,24 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
      * immutable, equivalent snapshot, so the race is harmless.
      */
     private Snapshot currentSnapshot() {
+        return loadSnapshot(false);
+    }
+
+    /**
+     * The file's current content, compared byte for byte. A writer uses this under the file lock:
+     * another process may have replaced the file since the cache was verified, within the same
+     * timestamp tick and size, so metadata alone cannot be trusted before a read-modify-write.
+     */
+    private Snapshot freshSnapshot() {
+        return loadSnapshot(true);
+    }
+
+    private Snapshot loadSnapshot(boolean forceCompare) {
         try {
             FileStamp stamp = readStamp();
             long now = nanoClock.getAsLong();
             Snapshot cached = snapshot;
-            if (cached != null && stamp.equals(cached.stamp)
+            if (!forceCompare && cached != null && stamp.equals(cached.stamp)
                     && now - cached.verifiedAtNanos < fullCompareIntervalNanos) {
                 return cached;
             }
