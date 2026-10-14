@@ -25,6 +25,8 @@ import java.util.UUID;
 
 /** Opt-in, one writer per file. No business actions are instrumented by this foundation. */
 public final class JsonlAuditTrail implements AuditSink, AutoCloseable {
+    private static final long LOCK_POSITION = Long.MAX_VALUE - 1;
+
     private final Clock clock;
     private final FileChannel channel;
     private final FileLock fileLock;
@@ -47,7 +49,9 @@ public final class JsonlAuditTrail implements AuditSink, AutoCloseable {
                 LinkOption.NOFOLLOW_LINKS);
         FileLock acquired = null;
         try {
-            acquired = channel.tryLock();
+            // Lock a sentinel byte past any data. A whole-file lock is mandatory on Windows and
+            // would stop every other handle, including AuditReader, from reading the history.
+            acquired = channel.tryLock(LOCK_POSITION, 1, false);
             if (acquired == null) throw new IOException("Audit trail already has a writer");
             try (var input = new BorrowedChannelInputStream(channel)) {
                 if (AuditReader.scan(input, AuditQuery.all(1)).incompleteFinalLine()) {

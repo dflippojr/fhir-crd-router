@@ -26,7 +26,7 @@ public final class AuditReader {
         try (var input = Files.newInputStream(path)) {
             return scan(input, query);
         } catch (IOException e) {
-            throw new AuditReadException(1);
+            throw new AuditUnreadableException();
         }
     }
 
@@ -43,7 +43,7 @@ public final class AuditReader {
                     line.write(value);
                     continue;
                 }
-                AuditEvent event = AuditJson.decode(line.toByteArray());
+                AuditEvent event = decodeLine(line.toByteArray(), lineNumber);
                 if (query.matches(event)) {
                     if (events.size() < query.limit()) events.add(event);
                     else limitReached = true;
@@ -52,6 +52,15 @@ public final class AuditReader {
                 lineNumber++;
             }
             return new Result(events, line.size() != 0, limitReached);
+        } catch (IOException e) {
+            // Open/read/close failures only: corrupt content is mapped in decodeLine.
+            throw new AuditUnreadableException();
+        }
+    }
+
+    private static AuditEvent decodeLine(byte[] bytes, long lineNumber) {
+        try {
+            return AuditJson.decode(bytes);
         } catch (IOException | IllegalArgumentException e) {
             throw new AuditReadException(lineNumber);
         }

@@ -148,7 +148,29 @@ class JsonlAuditTrailTest {
         assertThrows(AuditReadException.class, () -> new AuditReader(path).query(AuditQuery.all(1)));
         Files.writeString(path, "null\n");
         assertThrows(AuditReadException.class, () -> new AuditReader(path).query(AuditQuery.all(1)));
-        assertThrows(AuditReadException.class, () -> new AuditReader(dir).query(AuditQuery.all(1)));
+        assertThrows(AuditUnreadableException.class, () -> new AuditReader(dir).query(AuditQuery.all(1)));
+    }
+
+    @Test void liveReaderSeesHistoryWhileWriterIsOpenAndSecondWriterIsRefused() throws Exception {
+        Path path = dir.resolve("audit.jsonl");
+        try (var trail = new JsonlAuditTrail(path, CLOCK)) {
+            record(trail, context("client-1"), AuditEvent.Outcome.ATTEMPTED);
+            assertEquals(1, new AuditReader(path).query(AuditQuery.all(10)).events().size());
+            var out = new ByteArrayOutputStream();
+            assertEquals(1, new AuditReader(path).exportJsonl(AuditQuery.all(10), out).events().size());
+            record(trail, context("client-1"), AuditEvent.Outcome.SUCCEEDED);
+            assertEquals(2, new AuditReader(path).query(AuditQuery.all(10)).events().size());
+            assertEquals("Audit trail already has a writer",
+                    assertThrows(IOException.class, () -> new JsonlAuditTrail(path, CLOCK)).getMessage());
+        }
+    }
+
+    @Test void ioFailureIsNotReportedAsCorruption() {
+        var e = assertThrows(AuditUnreadableException.class,
+                () -> new AuditReader(dir).exportJsonl(AuditQuery.all(1), new ByteArrayOutputStream()));
+        assertFalse(e.getMessage().contains(dir.toString()));
+        assertNull(e.getCause());
+        assertFalse(AuditReadException.class.isInstance(e));
     }
 
     @Test void writeFailuresDistinguishOperationStateAndPoisonWriter() throws Exception {
