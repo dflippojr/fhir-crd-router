@@ -143,10 +143,11 @@ class PayerCallExceptionTest {
                 exchange.close();
             }
         });
+        CdsHooksClient client = shortTimeoutClient();
         PayerCallException error = assertTimeoutPreemptively(Duration.ofSeconds(2),
                 () -> assertThrows(PayerCallException.class, () -> {
-                    if (hook) { client().callHookRaw(record(oauth), "hook", REQUEST); }
-                    else { client().discoverServices(record(oauth)); }
+                    if (hook) { client.callHookRaw(record(oauth), "hook", REQUEST); }
+                    else { client.discoverServices(record(oauth)); }
                 }));
         assertEquals(phase, error.phase());
         assertTrue(error.timedOut());
@@ -213,6 +214,12 @@ class PayerCallExceptionTest {
     private CdsHooksClient client() {
         return new CdsHooksClient(HttpClient.newHttpClient(), CREDENTIALS, null,
                 Duration.ofMillis(300), Duration.ofSeconds(1));
+    }
+
+    // The handler never answers in the timeout tests, so a short timeout cannot cause a spurious failure.
+    private CdsHooksClient shortTimeoutClient() {
+        return new CdsHooksClient(HttpClient.newHttpClient(), CREDENTIALS, null,
+                Duration.ofMillis(50), Duration.ofSeconds(1));
     }
 
     private ConnectionRecord record(boolean oauth) {

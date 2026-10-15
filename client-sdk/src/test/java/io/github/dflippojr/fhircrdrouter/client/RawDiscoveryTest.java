@@ -174,7 +174,7 @@ class RawDiscoveryTest {
     @ValueSource(booleans = {true, false})
     void sharesRequestTimeoutAndTransportListener(boolean raw) {
         blockResponse = true;
-        CdsHooksClient client = new CdsHooksClient(null, Duration.ofMillis(200),
+        CdsHooksClient client = new CdsHooksClient(null, Duration.ofMillis(50),
                 Duration.ofSeconds(2), exchanges::add);
         PayerCallException failure = assertThrows(PayerCallException.class, () -> discover(client, raw));
         assertTrue(failure.timedOut());

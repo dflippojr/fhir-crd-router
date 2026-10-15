@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -42,9 +43,11 @@ class PayerExchangeMetadataTest {
     private final List<PayerExchangeMetadata> seen = new ArrayList<>();
     private HttpServer server;
     private String base;
+    private final CountDownLatch release = new CountDownLatch(1);
 
     @AfterEach
     void stop() {
+        release.countDown();
         if (server != null) {
             server.stop(0);
         }
@@ -202,16 +205,18 @@ class PayerExchangeMetadataTest {
         start();
         server.createContext("/cds-services/x", e -> {
             try {
-                Thread.sleep(250);
-                respond(e, 200, "{\"cards\":[]}");
-            } catch (Exception ignored) {
+                release.await();
+            } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+            } finally {
+                e.close();
             }
         });
         CdsHooksClient slow = client(PayerExchangeListener.metadataOnly(seen::add), Duration.ofMillis(50));
         ConnectionRecord record = record(AuthType.NONE);
         assertThrows(PayerCallException.class, () -> slow.callHook(record, "x", REQUEST));
         assertEquals(Outcome.TIMEOUT, seen.get(0).outcome());
+        release.countDown();
         server.stop(0);
         seen.clear();
         assertThrows(PayerCallException.class, () -> slow.callHook(record, "x", REQUEST));
