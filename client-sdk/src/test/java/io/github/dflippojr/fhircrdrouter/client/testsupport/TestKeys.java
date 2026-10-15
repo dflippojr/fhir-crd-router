@@ -14,6 +14,7 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -24,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 public final class TestKeys {
 
     private static final String PASSWORD = "test-only";
+    private static final ConcurrentHashMap<String, Identity> IDENTITIES = new ConcurrentHashMap<>();
 
     private TestKeys() { }
 
@@ -47,12 +49,26 @@ public final class TestKeys {
         }
     }
 
+    /** One shared RSA-2048 pair, generated only when a test first needs it. */
+    public static KeyPair rsa2048() {
+        return Rsa2048.KEYS;
+    }
+
+    private static final class Rsa2048 {
+        private static final KeyPair KEYS = rsa(2048);
+    }
+
     public static String privateKeyPem(KeyPair pair) {
         return PemKeys.toPem("PRIVATE KEY", pair.getPrivate().getEncoded());
     }
 
     /** A self-signed P-384 certificate valid for localhost and 127.0.0.1, with its private key. */
     public static Identity selfSigned(Path dir, String commonName) {
+        // Keep the parsed identity in memory after the first caller's temp directory is deleted.
+        return IDENTITIES.computeIfAbsent(commonName, name -> generateSelfSigned(dir, name));
+    }
+
+    private static Identity generateSelfSigned(Path dir, String commonName) {
         Path store = dir.resolve(commonName + ".p12");
         String keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
         run(keytool, "-genkeypair", "-alias", "id", "-keyalg", "EC", "-groupname", "secp384r1",

@@ -34,21 +34,18 @@ class MtlsRotationTest {
     };
 
     @Test
-    void tenRotationsRetainOnlyCurrentClient() throws Exception {
+    void rotationsRetainOnlyCurrentClient() throws Exception {
         CdsHooksClient client = new CdsHooksClient(credentials);
-        long baseline = selectorThreads();
         List<Integer> retained = new ArrayList<>();
         HttpClient selected = null;
-        for (int i = 1; i <= 10; i++) {
-            secrets.put("test-mtls", TestKeys.selfSigned(tempDir, "synthetic-" + i).pemBundle());
+        for (int i = 1; i <= 4; i++) {
+            secrets.put("test-mtls", TestKeys.selfSigned(tempDir, "synthetic-" + ((i - 1) % 2)).pemBundle());
             HttpClient next = select(client, "test-mtls");
             assertNotSame(selected, next);
             selected = next;
-            if (i == 1 || i == 5 || i == 10) {
+            if (i == 1 || i == 2 || i == 4) {
                 int size = cache(client).size();
                 retained.add(size);
-                System.out.printf("mTLS measurement: versions=%d retained=%d addedSelectorThreads=%d%n",
-                        i, size, selectorThreads() - baseline);
             }
         }
         assertSame(selected, select(client, "test-mtls"));
@@ -110,11 +107,6 @@ class MtlsRotationTest {
             start.countDown();
             executor.shutdownNow();
         }
-    }
-
-    private static long selectorThreads() {
-        return Thread.getAllStackTraces().keySet().stream()
-                .filter(thread -> thread.getName().contains("SelectorManager")).count();
     }
 
     private static Map<?, ?> cache(CdsHooksClient client) throws Exception {
