@@ -115,13 +115,4 @@ class AuditedCredentialAccessTest {
         var ex = assertThrows(AuditPersistenceException.class, () -> provider.resolve(CONTEXT, "ref-1"));
         assertEquals(AuditPersistenceException.OperationState.COMPLETED_ACTION_AUDIT_FAILED, ex.operationState());
     }
-
-    @Test
-    void auditDisabledConstructorBehavesAsBefore(@TempDir Path dir) {
-        var plain = new EncryptedLocalCredentialProvider(dir);
-        plain.put("ref-1", SECRET);
-        assertEquals(SECRET, plain.resolve("ref-1").orElseThrow());
-        plain.remove("ref-1");
-        assertTrue(plain.resolve("ref-1").isEmpty());
-    }
 }

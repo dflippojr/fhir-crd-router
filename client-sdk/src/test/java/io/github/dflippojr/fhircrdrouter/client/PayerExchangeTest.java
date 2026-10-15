@@ -3,6 +3,7 @@ package io.github.dflippojr.fhircrdrouter.client;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.PayerExchangeMetadata.Outcome;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -77,6 +78,11 @@ class PayerExchangeTest {
             assertEquals(Environment.SANDBOX, exchange.environment());
             assertEquals(1, exchange.attempt());
             assertEquals(200, exchange.statusCode().orElseThrow());
+            PayerExchangeMetadata metadata = PayerExchangeMetadata.from(exchange);
+            assertEquals(Outcome.HTTP_SUCCESS, metadata.outcome());
+            for (String value : sensitive) {
+                assertFalse(metadata.toString().contains(value), metadata.toString());
+            }
             assertNull(exchange.error());
             assertFalse(exchange.elapsed().isNegative());
             assertFalse(exchange.startedAt().isAfter(Instant.now()));
@@ -117,6 +123,8 @@ class PayerExchangeTest {
                 exchanges.stream().map(PayerExchange::phase).toList());
         assertEquals(List.of(1, 1, 2, 2), exchanges.stream().map(PayerExchange::attempt).toList());
         assertEquals(List.of(200, 401, 200, 200), exchanges.stream().map(e -> e.statusCode().orElseThrow()).toList());
+        assertEquals(List.of(Outcome.HTTP_SUCCESS, Outcome.HTTP_ERROR, Outcome.HTTP_SUCCESS, Outcome.HTTP_SUCCESS),
+                exchanges.stream().map(e -> PayerExchangeMetadata.from(e).outcome()).toList());
         client.callHook(record, "x", REQUEST);
         assertEquals(5, exchanges.size());
         assertEquals(2, tokens.get());

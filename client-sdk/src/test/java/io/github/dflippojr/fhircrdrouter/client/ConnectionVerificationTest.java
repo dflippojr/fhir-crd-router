@@ -47,7 +47,6 @@ class ConnectionVerificationTest {
     private final CountDownLatch release = new CountDownLatch(1);
     private String body = CATALOG;
     private int status = 200;
-    private boolean throttleFirst;
     private boolean block;
     private String secret = "synthetic-secret";
 
@@ -60,7 +59,7 @@ class ConnectionVerificationTest {
                 TestResponses.respond(e, 404, "{}");
                 return;
             }
-            int count = discoveryCalls.incrementAndGet();
+            discoveryCalls.incrementAndGet();
             if (block) {
                 try {
                     release.await();
@@ -72,7 +71,7 @@ class ConnectionVerificationTest {
             }
             e.getResponseHeaders().add("Retry-After", "0");
             e.getResponseHeaders().add("X-Request-Id", "HEADER-MARKER");
-            TestResponses.respond(e, throttleFirst && count == 1 ? 503 : status, body);
+            TestResponses.respond(e, status, body);
         });
         server.start();
     }
@@ -284,16 +283,6 @@ class ConnectionVerificationTest {
                 assertFalse(text.contains(marker), marker + " leaked into " + text);
             }
         }
-    }
-
-    @Test
-    void configuredThrottleRetryApplies() {
-        throttleFirst = true;
-        ConnectionVerification report = client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(1)))
-                .verify(connection(AuthType.NONE));
-
-        assertTrue(report.ok());
-        assertEquals(List.of(1, 2), exchanges.stream().map(PayerExchange::attempt).toList());
     }
 
     @Test

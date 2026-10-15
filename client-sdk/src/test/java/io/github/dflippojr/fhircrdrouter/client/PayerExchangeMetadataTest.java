@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeMetadata.Outcome;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -12,8 +11,6 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -132,44 +129,6 @@ class PayerExchangeMetadataTest {
                 "GET", 1, now, Duration.ZERO, OptionalInt.empty(), Outcome.HTTP_SUCCESS));
         assertThrows(NullPointerException.class, () -> new PayerExchangeMetadata(PayerCallPhase.HOOK, "p",
                 Environment.SANDBOX, "GET", 1, now, Duration.ZERO, null, Outcome.HTTP_SUCCESS));
-    }
-
-    @ParameterizedTest
-    @EnumSource(AuthType.class)
-    void everyAuthTypeReportsMetadata(AuthType auth) throws Exception {
-        start();
-        server.createContext("/token", e -> respond(e, 200, "{\"access_token\":\"" + SENTINEL + "t\",\"expires_in\":300}"));
-        server.createContext("/cds-services/x", e -> respond(e, 200, "{\"cards\":[]}"));
-        String secret = auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT
-                ? TestKeys.privateKeyPem(TestKeys.ec("secp384r1")) : "client-secret-unique";
-        client(secret, PayerExchangeListener.metadataOnly(seen::add), Duration.ofSeconds(2)).callHook(record(auth), "x", REQUEST);
-        boolean oauth = auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT;
-        assertEquals(oauth ? 2 : 1, seen.size());
-        assertEquals(PayerCallPhase.HOOK, seen.get(seen.size() - 1).phase());
-        seen.forEach(m -> {
-            assertEquals(Outcome.HTTP_SUCCESS, m.outcome());
-            assertFalse(m.toString().contains(SENTINEL));
-        });
-    }
-
-    @Test
-    void oauth401OrderAndCacheHitsArePreserved() throws Exception {
-        start();
-        AtomicInteger tokens = new AtomicInteger();
-        AtomicInteger hooks = new AtomicInteger();
-        server.createContext("/token", e -> respond(e, 200, "{\"access_token\":\"t" + tokens.incrementAndGet() + "\",\"expires_in\":300}"));
-        server.createContext("/cds-services/x", e -> respond(e, hooks.incrementAndGet() == 1 ? 401 : 200, "{\"cards\":[]}"));
-        CdsHooksClient client = client(PayerExchangeListener.metadataOnly(seen::add), Duration.ofSeconds(2));
-        ConnectionRecord record = record(AuthType.OAUTH2_CLIENT_CREDENTIALS);
-        client.callHook(record, "x", REQUEST);
-        assertEquals(List.of(PayerCallPhase.TOKEN, PayerCallPhase.HOOK, PayerCallPhase.TOKEN, PayerCallPhase.HOOK),
-                seen.stream().map(PayerExchangeMetadata::phase).toList());
-        assertEquals(List.of(1, 1, 2, 2), seen.stream().map(PayerExchangeMetadata::attempt).toList());
-        assertEquals(List.of(Outcome.HTTP_SUCCESS, Outcome.HTTP_ERROR, Outcome.HTTP_SUCCESS, Outcome.HTTP_SUCCESS),
-                seen.stream().map(PayerExchangeMetadata::outcome).toList());
-        client.callHook(record, "x", REQUEST);
-        assertEquals(5, seen.size());
-        assertEquals(2, tokens.get());
     }
 
     @Test
