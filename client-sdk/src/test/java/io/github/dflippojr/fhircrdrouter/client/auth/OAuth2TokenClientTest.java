@@ -262,7 +262,7 @@ class OAuth2TokenClientTest {
     @Test
     void concurrentColdCallersShareOneSignedAssertionRequest() throws Exception {
         tokenDelayMillis = 50;
-        String pem = TestKeys.privateKeyPem(TestKeys.rsa(2048));
+        String pem = TestKeys.privateKeyPem(TestKeys.rsa2048());
         ConnectionRecord record = ConnectionRecord.builder()
                 .payerId("PAYER-PKJWT")
                 .environment(Environment.SANDBOX)

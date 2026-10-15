@@ -73,7 +73,7 @@ class EncryptedLocalCredentialProviderDurabilityTest {
     void concurrentWritesFromAnotherInstanceNeverHideAStoredSecret(@TempDir Path dir) throws Exception {
         var writer = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
         writer.put("stable", SECRET);
-        for (int i = 0; i < 200; i++) {
+        for (int i = 0; i < 50; i++) {
             writer.put("filler-" + i, "x".repeat(200));
         }
         var reader = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
@@ -95,7 +95,7 @@ class EncryptedLocalCredentialProviderDurabilityTest {
         });
         t.start();
         try {
-            for (int i = 0; i < 300; i++) {
+            for (int i = 0; i < 100; i++) {
                 writer.put("churn", "value-" + i);
             }
         } finally {

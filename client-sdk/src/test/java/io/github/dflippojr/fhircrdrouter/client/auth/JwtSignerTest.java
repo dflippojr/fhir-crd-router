@@ -73,7 +73,7 @@ class JwtSignerTest {
 
     @Test
     void clientAssertionWithRs384() throws Exception {
-        KeyPair keys = TestKeys.rsa(2048);
+        KeyPair keys = TestKeys.rsa2048();
         ConnectionRecord record = record(AuthType.OAUTH2_PRIVATE_KEY_JWT, "client-123", null);
 
         SignedJWT jwt = SignedJWT.parse(signer.clientAssertion(record, keys.getPrivate()));
@@ -99,7 +99,7 @@ class JwtSignerTest {
     @Test
     void jwksPublishesPublicPartsOnly() throws Exception {
         KeyPair ec = TestKeys.ec("secp384r1");
-        KeyPair rsa = TestKeys.rsa(2048);
+        KeyPair rsa = TestKeys.rsa2048();
 
         JsonNode jwks = new ObjectMapper().readTree(Jwks.builder()
                 .add("ec-1", PemKeys.readPublicKey(PemKeys.toPem("PUBLIC KEY", ec.getPublic().getEncoded())))
