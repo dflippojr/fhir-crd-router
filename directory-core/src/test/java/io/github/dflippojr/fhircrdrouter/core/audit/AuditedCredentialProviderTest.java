@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Instant;
@@ -149,6 +148,5 @@ class AuditedCredentialProviderTest {
         assertFalse(hashed.contains("PEM"));
         assertEquals(hashed, AuditTargets.opaque("-----BEGIN PEM-----"));
         assertTrue(AuditTargets.opaque(null).startsWith("ref-"));
-        assertEquals(Environment.SANDBOX, Environment.valueOf("SANDBOX"));
     }
 }

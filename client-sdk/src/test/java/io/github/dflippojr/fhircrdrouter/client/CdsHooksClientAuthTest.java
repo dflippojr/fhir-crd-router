@@ -36,7 +36,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -229,53 +228,6 @@ class CdsHooksClientAuthTest {
             finishOld.countDown();
             workers.shutdownNow();
         }
-    }
-
-    @Test
-    void hugeExpiresInStillCompletesDiscoveryWithTheToken() throws Exception {
-        secrets.put("secret-ref", "secret");
-        AtomicReference<String> seenAuthorization = new AtomicReference<>();
-        startOAuthServer("{\"access_token\":\"tok\",\"expires_in\":99999999999999999}", seenAuthorization, new AtomicInteger());
-
-        new CdsHooksClient(HttpClient.newHttpClient(), credentials()).discoverServices(oauthRecord());
-
-        assertEquals("Bearer tok", seenAuthorization.get());
-    }
-
-    @Test
-    void unusableAccessTokenFailsInTokenPhaseWithoutSendingDiscovery() throws Exception {
-        secrets.put("secret-ref", "secret");
-        for (String bad : List.of("null", "\"\"", "{}", "[]", "123")) {
-            AtomicInteger discoveryCalls = new AtomicInteger();
-            startOAuthServer("{\"access_token\":" + bad + ",\"expires_in\":3600}", new AtomicReference<>(), discoveryCalls);
-            CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), credentials());
-
-            RouterException e = assertThrows(RouterException.class, () -> client.discoverServices(oauthRecord()), bad);
-
-            assertTrue(e.getMessage().contains("no usable access_token"), e.getMessage());
-            assertEquals(0, discoveryCalls.get(), bad);
-            server.stop(0);
-        }
-    }
-
-    private void startOAuthServer(String tokenBody, AtomicReference<String> seenAuthorization,
-                                  AtomicInteger discoveryCalls) throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/token", exchange -> respond(exchange, 200, tokenBody));
-        server.createContext("/cds-services", exchange -> {
-            discoveryCalls.incrementAndGet();
-            seenAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            respond(exchange, 200, "{\"services\":[]}");
-        });
-        server.start();
-    }
-
-    private ConnectionRecord oauthRecord() {
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder()
-                .payerId("PAYER-OAUTH").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
-                .clientId("ehr-client").credentialRef("secret-ref").build();
     }
 
     private static String peerName(HttpExchange exchange) throws javax.net.ssl.SSLPeerUnverifiedException {

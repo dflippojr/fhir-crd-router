@@ -24,40 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** #63: writers on one directory serialize on an OS file lock, so no write is lost. */
 class EncryptedLocalCredentialProviderLockTest {
 
-    private static final int RUNS = 40;
-
-    @Test
-    void twoInstancesPuttingConcurrentlyKeepBothSecrets(@TempDir Path root) throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(2);
-        try {
-            for (int run = 0; run < RUNS; run++) {
-                Path dir = root.resolve("run-" + run);
-                var a = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
-                var b = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
-                CountDownLatch start = new CountDownLatch(1);
-                Future<?> putA = pool.submit(() -> {
-                    start.await();
-                    a.put("a", "secret-a");
-                    return null;
-                });
-                Future<?> putB = pool.submit(() -> {
-                    start.await();
-                    b.put("b", "secret-b");
-                    return null;
-                });
-                start.countDown();
-                putA.get();
-                putB.get();
-
-                var fresh = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
-                assertEquals(Optional.of("secret-a"), fresh.resolve("a"), "run " + run);
-                assertEquals(Optional.of("secret-b"), fresh.resolve("b"), "run " + run);
-            }
-        } finally {
-            pool.shutdownNow();
-        }
-    }
-
     @Test
     void manyInstancesPuttingAndRemovingConcurrentlyLoseNothing(@TempDir Path dir) throws Exception {
         int writers = 4;

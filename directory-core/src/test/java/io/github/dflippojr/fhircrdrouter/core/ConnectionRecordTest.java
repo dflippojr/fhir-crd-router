@@ -1,9 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 
@@ -34,27 +32,6 @@ class ConnectionRecordTest {
         assertDoesNotThrow(() -> base(AuthType.NONE).mtlsCredentialRef("cert").build());
         assertDoesNotThrow(() -> base(AuthType.OAUTH2_CLIENT_CREDENTIALS).mtlsCredentialRef("cert")
                 .tokenEndpoint("https://payer.test/token").clientId("c").build());
-    }
-
-    @Test
-    void newFieldsSurviveYamlRoundTrip(@TempDir Path tempDir) {
-        Path file = tempDir.resolve("connections.yaml");
-        new FileBasedConnectionStore(file).save(base(AuthType.CDS_HOOKS_JWT)
-                .clientId("https://ehr.test/cds-client")
-                .keyId("key-2026-09")
-                .jwksUrl("https://ehr.test/.well-known/jwks.json")
-                .tenant("clinic-7")
-                .credentialRef("signing-key")
-                .mtlsCredentialRef("client-cert")
-                .build());
-
-        ConnectionRecord reloaded = new FileBasedConnectionStore(file).findAll().get(0);
-
-        assertEquals(AuthType.CDS_HOOKS_JWT, reloaded.authType());
-        assertEquals("key-2026-09", reloaded.keyId());
-        assertEquals("https://ehr.test/.well-known/jwks.json", reloaded.jwksUrl());
-        assertEquals("clinic-7", reloaded.tenant());
-        assertEquals("client-cert", reloaded.mtlsCredentialRef());
     }
 
     @Test

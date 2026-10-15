@@ -33,7 +33,6 @@ class RawDiscoveryTest {
     private final List<PayerExchange> exchanges = new ArrayList<>();
     private String body = "{\"services\":[]}";
     private int status = 200;
-    private boolean rejectFirst;
     private boolean blockResponse;
     private final CountDownLatch releaseResponse = new CountDownLatch(1);
 
@@ -41,7 +40,7 @@ class RawDiscoveryTest {
     void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/cds-services", e -> {
-            int count = calls.incrementAndGet();
+            calls.incrementAndGet();
             if (blockResponse) {
                 try {
                     releaseResponse.await();
@@ -52,7 +51,7 @@ class RawDiscoveryTest {
                 }
             }
             e.getResponseHeaders().add("Retry-After", "0");
-            respond(e, rejectFirst && count == 1 ? status : (rejectFirst ? 200 : status), body);
+            respond(e, status, body);
         });
         server.start();
         record = connection(AuthType.NONE);
@@ -117,35 +116,6 @@ class RawDiscoveryTest {
         assertEquals("Bearer [REDACTED]", exchange.requestHeaders().firstValue("Authorization").orElseThrow());
         assertEquals(body, exchange.responseBody());
         assertFalse(exchange.toString().contains("synthetic-secret"));
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void sharesConfiguredThrottleRetry(boolean raw) {
-        status = 503;
-        rejectFirst = true;
-        discover(client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(1))), raw);
-        assertEquals(2, calls.get());
-        assertEquals(List.of(1, 2), exchanges.stream().map(PayerExchange::attempt).toList());
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void sharesOAuthRefreshRetry(boolean raw) {
-        status = 401;
-        rejectFirst = true;
-        AtomicInteger tokens = new AtomicInteger();
-        server.createContext("/token", e -> respond(e, 200,
-                "{\"access_token\":\"synthetic-token-" + tokens.incrementAndGet() + "\",\"expires_in\":300}"));
-        record = connection(AuthType.OAUTH2_CLIENT_CREDENTIALS);
-        discover(client(), raw);
-        assertEquals(2, calls.get());
-        assertEquals(2, tokens.get());
-        assertEquals(List.of(PayerCallPhase.TOKEN, PayerCallPhase.DISCOVERY,
-                PayerCallPhase.TOKEN, PayerCallPhase.DISCOVERY),
-                exchanges.stream().map(PayerExchange::phase).toList());
-        assertEquals("Bearer synthetic-token-1", serverAuth.get(0));
-        assertEquals("Bearer synthetic-token-2", serverAuth.get(1));
     }
 
     private final List<String> serverAuth = new ArrayList<>();

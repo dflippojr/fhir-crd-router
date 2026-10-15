@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -157,7 +158,6 @@ class EncryptedLocalCredentialProviderDurabilityTest {
 
     @Test
     void concurrentFirstUsePublishesExactlyOneKey(@TempDir Path root) throws Exception {
-        int undecryptable = 0;
         List<String> keyEvents = Collections.synchronizedList(new ArrayList<>());
         AuditSink sink = (context, action, targetKind, targetId, environment, outcome, changedFields) -> {
             if (action.equals("credential.key.create")) {
@@ -180,17 +180,11 @@ class EncryptedLocalCredentialProviderDurabilityTest {
             tb.join();
 
             var check = new EncryptedLocalCredentialProvider(dir);
-            for (String ref : List.of("a", "b")) {
-                try {
-                    check.resolve(ref);
-                } catch (IllegalStateException e) {
-                    undecryptable++;
-                }
-            }
+            assertEquals(Optional.of("secret-a"), check.resolve("a"), "run " + run);
+            assertEquals(Optional.of("secret-b"), check.resolve("b"), "run " + run);
             assertEquals(0, tmpFileCount(dir));
         }
 
-        assertEquals(0, undecryptable);
         assertEquals(runs, Collections.frequency(keyEvents, "SUCCEEDED"));
         assertEquals(Collections.frequency(keyEvents, "ATTEMPTED"),
                 Collections.frequency(keyEvents, "SUCCEEDED") + Collections.frequency(keyEvents, "FAILED"));

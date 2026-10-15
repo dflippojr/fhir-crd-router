@@ -38,8 +38,13 @@ class FileBasedConnectionStoreTest {
                 .displayName("Example Payer")
                 .environment(Environment.SANDBOX)
                 .baseUrl("https://sandbox.example-payer.test/cds")
-                .authType(AuthType.API_KEY)
+                .authType(AuthType.CDS_HOOKS_JWT)
+                .clientId("https://ehr.test/cds-client")
+                .keyId("key-2026-09")
+                .jwksUrl("https://ehr.test/.well-known/jwks.json")
+                .tenant("clinic-7")
                 .credentialRef("payer-1-sandbox-key")
+                .mtlsCredentialRef("client-cert")
                 .igVersion("crd-2.0.1")
                 .build();
 
@@ -50,7 +55,15 @@ class FileBasedConnectionStoreTest {
         List<ConnectionRecord> all = reloaded.findAll();
 
         assertEquals(1, all.size());
-        assertEquals("PAYER-1", all.get(0).payerId());
+        ConnectionRecord loaded = all.get(0);
+        assertEquals("PAYER-1", loaded.payerId());
+        assertEquals(AuthType.CDS_HOOKS_JWT, loaded.authType());
+        assertEquals("https://ehr.test/cds-client", loaded.clientId());
+        assertEquals("key-2026-09", loaded.keyId());
+        assertEquals("https://ehr.test/.well-known/jwks.json", loaded.jwksUrl());
+        assertEquals("clinic-7", loaded.tenant());
+        assertEquals("payer-1-sandbox-key", loaded.credentialRef());
+        assertEquals("client-cert", loaded.mtlsCredentialRef());
         assertTrue(reloaded.findByPayerIdAndEnvironment("PAYER-1", Environment.SANDBOX).isPresent());
         assertTrue(reloaded.findByPayerIdAndEnvironment("PAYER-1", Environment.PRODUCTION).isEmpty());
     }
