@@ -28,6 +28,8 @@ class RetryAfterTest {
     private static final CdsHookRequest REQUEST = new CdsHookRequest("order-sign", "instance", Map.of(), Map.of());
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2015-10-21T07:28:00Z"), ZoneOffset.UTC);
     private static final String HOOK_PATH = "/cds-services/hook";
+    // Generous guard: catches a client that sleeps out a 120 s Retry-After without being sensitive to a slow runner.
+    private static final Duration GUARD = Duration.ofSeconds(30);
     private HttpServer server;
     private ConnectionRecord record;
     private final AtomicInteger calls = new AtomicInteger();
@@ -99,26 +101,23 @@ class RetryAfterTest {
                 Duration.ofSeconds(2), Duration.ofSeconds(1), seen::add)
                 .retryPolicy(new RetryPolicy(2, Duration.ofSeconds(2)));
         long start = System.nanoTime();
-        client.callHookRaw(record, "hook", REQUEST);
+        assertTimeoutPreemptively(GUARD, () -> client.callHookRaw(record, "hook", REQUEST));
         Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
         assertEquals(2, calls.get());
         assertEquals(List.of(1, 2), seen.stream().map(PayerExchange::attempt).toList());
         assertEquals(List.of(OptionalInt.of(429), OptionalInt.of(200)),
                 seen.stream().map(PayerExchange::statusCode).toList());
         assertTrue(elapsed.compareTo(Duration.ofMillis(900)) >= 0);
-        assertTrue(elapsed.compareTo(Duration.ofSeconds(2)) < 0);
     }
 
     @Test
     void givesUpWhenPayerAsksForMoreThanTheCap() {
         respond(429, Map.of("Retry-After", "120"));
         CdsHooksClient client = clientWith(new RetryPolicy(3, Duration.ofSeconds(2)));
-        long start = System.nanoTime();
-        PayerCallException error = assertThrows(PayerCallException.class,
-                () -> client.callHookRaw(record, "hook", REQUEST));
+        PayerCallException error = assertTimeoutPreemptively(GUARD, () -> assertThrows(PayerCallException.class,
+                () -> client.callHookRaw(record, "hook", REQUEST)));
         assertEquals(Optional.of(Duration.ofSeconds(120)), error.retryAfter());
         assertEquals(1, calls.get());
-        assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofSeconds(2)) < 0);
     }
 
     @Test

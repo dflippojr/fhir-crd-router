@@ -29,6 +29,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -38,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class OAuth2TokenClientTest {
 
@@ -147,9 +149,8 @@ class OAuth2TokenClientTest {
                 return assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(http, record, failing, 1));
             });
             // The waiter parks on the leader's flight; it must not run the supplier itself.
-            while (waiterThread.get() == null || waiterThread.get().getState() != Thread.State.WAITING) {
-                Thread.sleep(5);
-            }
+            awaitUntil(() -> waiterThread.get() != null && waiterThread.get().getState() == Thread.State.WAITING,
+                    "waiter never parked on the leader's flight");
             releaseLeader.countDown();
             assertSame(missing, leader.get(10, TimeUnit.SECONDS));
             assertSame(missing, waiter.get(10, TimeUnit.SECONDS));
@@ -316,9 +317,7 @@ class OAuth2TokenClientTest {
         ExecutorService pool = Executors.newSingleThreadExecutor();
         try {
             Future<String> old = pool.submit(() -> tokenClient.fetchAccessToken(record, "secret"));
-            while (tokenRequests.get() == 0) {
-                Thread.sleep(5);
-            }
+            awaitUntil(() -> tokenRequests.get() > 0, "first token request never reached the endpoint");
             tokenClient.invalidate(record);
             String fresh = tokenClient.fetchAccessToken(record, "secret");
             assertEquals("token-1", old.get(10, TimeUnit.SECONDS));
@@ -326,6 +325,16 @@ class OAuth2TokenClientTest {
             assertEquals(2, tokenRequests.get());
         } finally {
             pool.shutdownNow();
+        }
+    }
+
+    private static void awaitUntil(BooleanSupplier condition, String failure) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() - deadline >= 0) {
+                fail(failure + " within 10 s");
+            }
+            Thread.sleep(5);
         }
     }
 

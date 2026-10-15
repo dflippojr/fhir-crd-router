@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,9 +37,11 @@ class PayerExchangeTest {
     private final List<PayerExchange> exchanges = new ArrayList<>();
     private HttpServer server;
     private String base;
+    private final CountDownLatch release = new CountDownLatch(1);
 
     @AfterEach
     void stop() {
+        release.countDown();
         if (server != null) {
             server.stop(0);
         }
@@ -157,10 +160,11 @@ class PayerExchangeTest {
         start();
         server.createContext("/cds-services/x", e -> {
             try {
-                Thread.sleep(250);
-                respond(e, 200, RESPONSE);
+                release.await();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+            } finally {
+                e.close();
             }
         });
         CdsHooksClient client = client("secret", exchanges::add, Duration.ofMillis(50));

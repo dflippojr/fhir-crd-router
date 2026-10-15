@@ -166,7 +166,7 @@ class ConnectionVerificationTest {
     @Test
     void timeoutIsReported() {
         block = true;
-        CdsHooksClient client = new CdsHooksClient(credentials(), Duration.ofMillis(200),
+        CdsHooksClient client = new CdsHooksClient(credentials(), Duration.ofMillis(50),
                 Duration.ofSeconds(2), exchanges::add);
         assertFailure(client.verify(connection(AuthType.NONE)), PayerCallPhase.DISCOVERY, null,
                 "discovery request timed out");
