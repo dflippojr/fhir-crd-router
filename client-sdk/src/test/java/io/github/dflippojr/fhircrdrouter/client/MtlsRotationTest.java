@@ -8,7 +8,6 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.InvocationTargetException;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -44,7 +43,7 @@ class MtlsRotationTest {
             assertNotSame(selected, next);
             selected = next;
             if (i == 1 || i == 2 || i == 4) {
-                int size = cache(client).size();
+                int size = client.mtlsClientCount();
                 retained.add(size);
             }
         }
@@ -62,16 +61,17 @@ class MtlsRotationTest {
         HttpClient first = select(client, "first");
         HttpClient second = select(client, "second");
         assertNotSame(first, second);
-        Map<?, ?> before = Map.copyOf(cache(client));
+        assertEquals(2, client.mtlsClientCount());
         secrets.put("first", "invalid PEM");
         assertThrows(IllegalArgumentException.class, () -> select(client, "first"));
-        assertEquals(before, cache(client));
+        assertEquals(2, client.mtlsClientCount());
         secrets.put("first", original);
         assertSame(first, select(client, "first"));
+        assertSame(second, select(client, "second"));
         secrets.put("first", TestKeys.selfSigned(tempDir, "replacement").pemBundle());
         assertNotSame(first, select(client, "first"));
         assertSame(second, select(client, "second"));
-        assertEquals(2, cache(client).size());
+        assertEquals(2, client.mtlsClientCount());
     }
 
     @Test
@@ -102,31 +102,16 @@ class MtlsRotationTest {
             }
             assertEquals(Optional.of(Duration.ofSeconds(2)), replacement.connectTimeout());
             assertArrayEquals(new String[] {"TLSv1.3", "TLSv1.2"}, replacement.sslParameters().getProtocols());
-            assertEquals(1, cache(client).size());
+            assertEquals(1, client.mtlsClientCount());
         } finally {
             start.countDown();
             executor.shutdownNow();
         }
     }
 
-    private static Map<?, ?> cache(CdsHooksClient client) throws Exception {
-        var field = CdsHooksClient.class.getDeclaredField("mtlsClients");
-        field.setAccessible(true);
-        return (Map<?, ?>) field.get(client);
-    }
-
-    private static HttpClient select(CdsHooksClient client, String ref) throws Exception {
-        var method = CdsHooksClient.class.getDeclaredMethod("httpClientFor", ConnectionRecord.class);
-        method.setAccessible(true);
+    private static HttpClient select(CdsHooksClient client, String ref) {
         var record = ConnectionRecord.builder().payerId("SYNTHETIC").environment(Environment.SANDBOX)
                 .baseUrl("https://payer.invalid").authType(AuthType.NONE).mtlsCredentialRef(ref).build();
-        try {
-            return (HttpClient) method.invoke(client, record);
-        } catch (InvocationTargetException e) {
-            if (e.getCause() instanceof RuntimeException cause) {
-                throw cause;
-            }
-            throw e;
-        }
+        return client.httpClientFor(record);
     }
 }
