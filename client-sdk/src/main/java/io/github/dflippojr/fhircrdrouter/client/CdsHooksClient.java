@@ -428,7 +428,7 @@ public final class CdsHooksClient {
     }
 
     /** The shared client, or one bound to this record's client certificate when mutual TLS is configured. */
-    private HttpClient httpClientFor(ConnectionRecord record) {
+    HttpClient httpClientFor(ConnectionRecord record) {
         if (record.mtlsCredentialRef() == null) {
             return httpClient;
         }
@@ -449,6 +449,11 @@ public final class CdsHooksClient {
                     .build();
             return new MtlsClient(fingerprint, replacement);
         }).client();
+    }
+
+    /** Number of retained mTLS clients, exposed within the package for retention tests. */
+    int mtlsClientCount() {
+        return mtlsClients.size();
     }
 
     private static String sha256(String value) {
