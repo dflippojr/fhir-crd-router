@@ -39,9 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Corrupt {@code key.bin} or {@code secrets.properties} contents give a documented error (an
  * {@link IllegalStateException} or {@link UncheckedIOException} that leaks no secret material),
  * never a {@link NegativeArraySizeException} or {@link IllegalArgumentException}, never a wrong
- * secret and never a silently replaced key (the #65 class). Arbitrary edits to the whole
- * {@code secrets.properties} file are #112: a malformed unicode escape in it still fails with an
- * {@link IllegalArgumentException}.
+ * secret and never a silently replaced key (the #65 class), including a {@code secrets.properties}
+ * that is no longer a valid properties file (#112).
  */
 class CorruptCredentialFilePropertiesTest {
 
@@ -131,6 +130,11 @@ class CorruptCredentialFilePropertiesTest {
     @Property(seed = SEED)
     void corruptKeyFileIsADocumentedError(@ForAll("edits") List<Edit> edits) throws IOException {
         checkStore(apply(pristineKey, edits), pristineSecrets);
+    }
+
+    @Property(seed = SEED)
+    void corruptSecretsFileIsADocumentedError(@ForAll("edits") List<Edit> edits) throws IOException {
+        checkStore(pristineKey, apply(pristineSecrets, edits));
     }
 
     @Property(seed = SEED)
