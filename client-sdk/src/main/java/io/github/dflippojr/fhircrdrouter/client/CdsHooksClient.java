@@ -6,6 +6,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.JwtSigner;
 import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
+import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -414,7 +415,7 @@ public final class CdsHooksClient {
     private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt) {
         switch (record.authType()) {
             case NONE -> { /* no-op */ }
-            case API_KEY -> builder.header("Authorization", "Bearer " + requireSecret(record));
+            case API_KEY -> builder.header("Authorization", "Bearer " + requireApiKey(record));
             case OAUTH2_CLIENT_CREDENTIALS, OAUTH2_PRIVATE_KEY_JWT -> builder.header("Authorization",
                     "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
@@ -463,6 +464,17 @@ public final class CdsHooksClient {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    /** The stored key, which must be a b64token: anything else, e.g. a trailing newline, is not a legal header value. */
+    private String requireApiKey(ConnectionRecord record) {
+        String key = requireSecret(record);
+        if (!BearerTokens.isB64Token(key)) {
+            // Never echo the key: it is the credential.
+            throw new RouterException("Credential for ref=" + record.credentialRef() + " (payerId="
+                    + record.payerId() + ") is not a usable bearer token");
+        }
+        return key;
     }
 
     private String requireSecret(ConnectionRecord record) {
