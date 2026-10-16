@@ -61,8 +61,15 @@ import java.util.function.UnaryOperator;
  * <p>Directory layout under the given base directory:
  * <ul>
  *   <li>{@code key.bin} — raw 256-bit AES key (mode 600 where POSIX permissions apply)</li>
- *   <li>{@code secrets.properties} — {@code credentialRef -> base64(iv || ciphertext)}</li>
+ *   <li>{@code secrets.properties} — {@code credentialRef -> v2:base64(iv || ciphertext || tag)}</li>
  * </ul>
+ *
+ * <p>Each entry is encrypted with its {@code credentialRef} (UTF-8) as GCM associated data, so an
+ * entry copied or moved under another reference fails to decrypt instead of resolving to another
+ * reference's secret. The {@code v2:} prefix marks that format. An entry without it was written
+ * before references were bound: it still decrypts, without associated data, and the next
+ * {@code put} or {@code remove} rewrites every such entry in the bound format under the store
+ * lock. One that cannot be decrypted is left as it is, for {@code resolve} to report.
  *
  * <p>Both files are created owner-only (mode 600 where POSIX permissions apply) and never
  * rewritten in place. Each write of {@code secrets.properties} goes to a temporary file
@@ -85,8 +92,9 @@ import java.util.function.UnaryOperator;
  * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
  * {@code put} then writes nothing either, so secrets under two different keys never mix), a
  * {@code key.bin} that is not exactly 256 bits, a {@code secrets.properties} that is not a valid
- * properties file (a {@code put} then writes nothing), or an entry that is not valid
- * {@code base64(iv || ciphertext || tag)}.
+ * properties file (a {@code put} then writes nothing), an entry that is not valid
+ * {@code [v2:]base64(iv || ciphertext || tag)}, or an entry that does not decrypt under this key
+ * and its reference.
  *
  * <p>The parsed ciphertext map is cached together with the raw file bytes and file metadata
  * (last-modified time, size and, where the filesystem has one, file key) it came from. Each
@@ -107,6 +115,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private static final int KEY_BYTES = KEY_BITS / 8;
     private static final String OWNER_ONLY = "rw-------";
     private static final int REPLACE_ATTEMPTS = 25;
+    /** Marks an entry encrypted with its reference as associated data. */
+    private static final String BOUND_PREFIX = "v2:";
     /** One mutex per lock file for this JVM; {@link FileChannel#lock()} fails instead of waiting inside one JVM. */
     private static final Map<Path, ReentrantLock> DIRECTORY_LOCKS = new ConcurrentHashMap<>();
     private static final SecureRandom IV_RANDOM = new SecureRandom();
@@ -232,7 +242,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             withStoreLock(() -> {
                 Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
                 SecretKey writeKey = keyForPut(context, entries.isEmpty());
-                entries.put(credentialRef, encrypt(writeKey, secretValue));
+                entries.put(credentialRef, encrypt(writeKey, credentialRef, secretValue));
+                bindLegacyEntries(entries);
                 saveSecrets(entries);
             });
         } finally {
@@ -254,7 +265,9 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             }
             withStoreLock(() -> {
                 Map<String, String> entries = new HashMap<>(freshSnapshot().entries);
-                if (entries.remove(credentialRef) != null) {
+                boolean removed = entries.remove(credentialRef) != null;
+                boolean bound = bindLegacyEntries(entries);
+                if (removed || bound) {
                     saveSecrets(entries);
                 }
             });
@@ -319,28 +332,53 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         }
     }
 
-    private static String encrypt(SecretKey secretKey, String plaintext) {
+    /**
+     * Rewrites each entry written before references were bound in the bound format. An entry that
+     * cannot be decrypted (corrupt, or no usable key) is left as it is; {@code resolve} reports it.
+     * Returns whether any entry changed.
+     */
+    private boolean bindLegacyEntries(Map<String, String> entries) {
+        boolean changed = false;
+        for (Map.Entry<String, String> entry : entries.entrySet()) {
+            if (entry.getValue().startsWith(BOUND_PREFIX)) {
+                continue;
+            }
+            try {
+                String plaintext = decrypt(entry.getKey(), entry.getValue());
+                entry.setValue(encrypt(loadKey(), entry.getKey(), plaintext));
+                changed = true;
+            } catch (IllegalStateException e) {
+                // Left unchanged so that this write does not fail on an unrelated entry.
+            }
+        }
+        return changed;
+    }
+
+    private static String encrypt(SecretKey secretKey, String credentialRef, String plaintext) {
         try {
             byte[] iv = new byte[GCM_IV_BYTES];
             IV_RANDOM.nextBytes(iv);
 
             Cipher cipher = Cipher.getInstance(AES_GCM);
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, iv));
+            cipher.updateAAD(credentialRef.getBytes(StandardCharsets.UTF_8));
             byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
 
             byte[] combined = new byte[iv.length + ciphertext.length];
             System.arraycopy(iv, 0, combined, 0, iv.length);
             System.arraycopy(ciphertext, 0, combined, iv.length, ciphertext.length);
-            return Base64.getEncoder().encodeToString(combined);
+            return BOUND_PREFIX + Base64.getEncoder().encodeToString(combined);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Failed to encrypt credential", e);
         }
     }
 
-    private String decrypt(String credentialRef, String encoded) {
+    /** Decrypts a bound ({@code v2:}) entry with its reference as associated data, a legacy one without. */
+    private String decrypt(String credentialRef, String stored) {
+        boolean bound = stored.startsWith(BOUND_PREFIX);
         byte[] combined;
         try {
-            combined = Base64.getDecoder().decode(encoded);
+            combined = Base64.getDecoder().decode(bound ? stored.substring(BOUND_PREFIX.length()) : stored);
         } catch (IllegalArgumentException e) {
             // The decoder's message quotes the offending character, so it is not chained.
             throw corruptEntry(credentialRef);
@@ -352,16 +390,20 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         try {
             Cipher cipher = Cipher.getInstance(AES_GCM);
             cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, combined, 0, GCM_IV_BYTES));
+            if (bound) {
+                cipher.updateAAD(credentialRef.getBytes(StandardCharsets.UTF_8));
+            }
             byte[] plaintext = cipher.doFinal(combined, GCM_IV_BYTES, combined.length - GCM_IV_BYTES);
             return new String(plaintext, StandardCharsets.UTF_8);
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("Failed to decrypt credential '" + credentialRef + "'", e);
+            throw new IllegalStateException("Failed to decrypt credential '" + credentialRef
+                    + "': wrong key, or the entry was altered or stored under another reference", e);
         }
     }
 
     private IllegalStateException corruptEntry(String credentialRef) {
         return new IllegalStateException("Corrupt credential entry '" + credentialRef + "' in " + secretsFile
-                + ": not base64(iv || ciphertext || tag)");
+                + ": not [v2:]base64(iv || ciphertext || tag)");
     }
 
     /** The key for decrypting; never creates one. */
