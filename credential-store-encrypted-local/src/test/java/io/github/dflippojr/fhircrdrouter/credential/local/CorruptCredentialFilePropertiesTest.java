@@ -18,6 +18,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -152,7 +153,11 @@ class CorruptCredentialFilePropertiesTest {
      * later put never replaces the key file, and when it succeeds its secret reads back.
      */
     private static void checkStore(byte[] key, byte[] secrets) throws IOException {
-        Files.write(store.resolve("key.bin"), key);
+        Path keyFile = Files.write(store.resolve("key.bin"), key);
+        if (keyFile.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            // Owner-only, as the store creates it; a key others can read would be restricted with a warning every try.
+            Files.setPosixFilePermissions(keyFile, PosixFilePermissions.fromString("rw-------"));
+        }
         Files.write(store.resolve("secrets.properties"), secrets);
         EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(store);
 
