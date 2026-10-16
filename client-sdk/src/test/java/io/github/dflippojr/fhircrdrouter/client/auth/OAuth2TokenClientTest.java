@@ -22,7 +22,9 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -236,6 +238,49 @@ class OAuth2TokenClientTest {
     }
 
     @Test
+    void cachesSeparatelyPerMtlsCredentialRef() {
+        String plain = tokenClient.fetchAccessToken(record("client", List.of(), null), "secret");
+        String certA = tokenClient.fetchAccessToken(record("client", List.of(), "cert-a"), "secret");
+        String certB = tokenClient.fetchAccessToken(record("client", List.of(), "cert-b"), "secret");
+
+        assertEquals(List.of("token-1", "token-2", "token-3"), List.of(plain, certA, certB));
+        assertEquals(certA, tokenClient.fetchAccessToken(record("client", List.of(), "cert-a"), "secret"),
+                "records with the same mtlsCredentialRef share a token");
+        assertEquals(plain, tokenClient.fetchAccessToken(record("client", List.of(), null), "secret"));
+        assertEquals(3, tokenRequests.get());
+    }
+
+    @Test
+    void invalidateLeavesOtherMtlsCredentialRefCached() {
+        ConnectionRecord plain = record("client", List.of(), null);
+        ConnectionRecord withCert = record("client", List.of(), "cert-b");
+        assertEquals("token-1", tokenClient.fetchAccessToken(plain, "secret"));
+        assertEquals("token-2", tokenClient.fetchAccessToken(withCert, "secret"));
+
+        tokenClient.invalidate(withCert);
+
+        assertEquals("token-1", tokenClient.fetchAccessToken(plain, "secret"));
+        assertEquals("token-3", tokenClient.fetchAccessToken(withCert, "secret"));
+        assertEquals(3, tokenRequests.get());
+    }
+
+    @Test
+    void concurrentColdCallersShareOneTokenRequestPerMtlsCredentialRef() throws Exception {
+        tokenDelayMillis = 50;
+        ConnectionRecord certA = record("client", List.of(), "cert-a");
+        ConnectionRecord certB = record("client", List.of(), "cert-b");
+        AtomicInteger calls = new AtomicInteger();
+
+        List<String> tokens = concurrently(32, () ->
+                tokenClient.fetchAccessToken(calls.getAndIncrement() % 2 == 0 ? certA : certB, "secret"));
+
+        assertEquals(2, tokenRequests.get());
+        assertEquals(Set.of(tokenClient.fetchAccessToken(certA, "secret"), tokenClient.fetchAccessToken(certB, "secret")),
+                new HashSet<>(tokens));
+        assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
     void sendsFormEncodedClientSecretBasicCredentials() {
         tokenClient.fetchAccessToken(record("client id", List.of()), "p@ss:word");
 
@@ -367,6 +412,10 @@ class OAuth2TokenClientTest {
     }
 
     private ConnectionRecord record(String clientId, List<String> scopes) {
+        return record(clientId, scopes, null);
+    }
+
+    private ConnectionRecord record(String clientId, List<String> scopes, String mtlsCredentialRef) {
         return ConnectionRecord.builder()
                 .payerId("PAYER-OAUTH")
                 .environment(Environment.SANDBOX)
@@ -376,6 +425,7 @@ class OAuth2TokenClientTest {
                 .clientId(clientId)
                 .scopes(scopes)
                 .credentialRef("ref")
+                .mtlsCredentialRef(mtlsCredentialRef)
                 .build();
     }
 

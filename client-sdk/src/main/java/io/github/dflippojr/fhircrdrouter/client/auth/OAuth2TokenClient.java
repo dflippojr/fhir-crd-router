@@ -45,7 +45,10 @@ import java.util.function.Supplier;
  * resolves to a PEM private key, and the client authenticates with a signed
  * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
- * <p>Tokens are cached in memory per (token endpoint, client ID, scopes)
+ * <p>Tokens are cached in memory per (token endpoint, client ID, scopes,
+ * mTLS credential ref), so records that reach the token endpoint under different
+ * client certificates, or one with and one without mTLS, never share a
+ * (possibly certificate-bound, RFC 8705) token. Entries last
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
  * capped at {@link #MAX_CACHE_LIFETIME}. A token response without
  * {@code expires_in} is not cached, and one whose {@code access_token} is not
@@ -274,14 +277,15 @@ public final class OAuth2TokenClient {
 
     // tokenEndpoint and clientId presence are already enforced by ConnectionRecord for this authType.
     private static CacheKey cacheKey(ConnectionRecord record) {
-        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes());
+        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef());
     }
 
     private static String formEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes) { }
+    /** {@code mtlsCredentialRef} is null for records without mTLS. */
+    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef) { }
 
     private record CachedToken(String accessToken, Instant refreshAt) { }
 }
