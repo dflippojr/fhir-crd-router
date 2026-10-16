@@ -8,10 +8,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-permissions:
-  contents: read
-  pull-requests: read
-
 # A new push to a PR cancels that PR's older run. Runs on master are never
 # cancelled: each commit gets its own group, so every master commit is built
 # and analyzed.
@@ -22,6 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         java: ['17', '21']
@@ -41,6 +39,9 @@ jobs:
   # quality gate fails. Org/project keys live in the parent pom.
   sonar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     # Secrets are not passed to pull requests from forks; skip rather than fail.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
@@ -87,6 +88,7 @@ jobs:
   # exception is `sonar` skipped on a fork PR, which gets no secrets.
   gate:
     runs-on: ubuntu-latest
+    permissions: {}
     needs: [build, sonar]
     if: always()
     steps:
