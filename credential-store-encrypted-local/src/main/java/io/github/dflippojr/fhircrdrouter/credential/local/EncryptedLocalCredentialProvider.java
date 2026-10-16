@@ -16,9 +16,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.OverlappingFileLockException;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -70,6 +74,12 @@ import java.util.function.UnaryOperator;
  * before references were bound: it still decrypts, without associated data, and the next
  * {@code put} or {@code remove} rewrites every such entry in the bound format under the store
  * lock. One that cannot be decrypted is left as it is, for {@code resolve} to report.
+ *
+ * <p>A reference must be non-empty and valid Unicode (no unpaired surrogates) to be bound:
+ * {@code put} rejects any other with an {@link IllegalArgumentException}, migration leaves a
+ * legacy entry under one unbound, and {@code resolve} of a {@code v2:} entry under one fails.
+ * Empty associated data would be the same as none, and a lenient UTF-8 encoding would map
+ * distinct references to the same bytes.
  *
  * <p>Both files are created owner-only (mode 600 where POSIX permissions apply) and never
  * rewritten in place. Each write of {@code secrets.properties} goes to a temporary file
@@ -237,6 +247,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     @Override
     public void put(AuditContext context, String credentialRef, String secretValue) {
+        referenceAad(credentialRef);
         lock.writeLock().lock();
         try {
             withStoreLock(() -> {
@@ -340,7 +351,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private boolean bindLegacyEntries(Map<String, String> entries) {
         boolean changed = false;
         for (Map.Entry<String, String> entry : entries.entrySet()) {
-            if (entry.getValue().startsWith(BOUND_PREFIX)) {
+            if (entry.getValue().startsWith(BOUND_PREFIX) || !isBindable(entry.getKey())) {
                 continue;
             }
             try {
@@ -354,6 +365,37 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         return changed;
     }
 
+    /**
+     * The associated data that binds an entry to {@code credentialRef}: its UTF-8 bytes, encoded
+     * strictly so that distinct references never share them. Rejects an empty reference, whose
+     * associated data would be the same as none, and one with an unpaired surrogate.
+     */
+    private static byte[] referenceAad(String credentialRef) {
+        if (credentialRef.isEmpty()) {
+            throw new IllegalArgumentException("credentialRef must not be empty");
+        }
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(credentialRef));
+            byte[] aad = new byte[encoded.remaining()];
+            encoded.get(aad);
+            return aad;
+        } catch (CharacterCodingException e) {
+            throw new IllegalArgumentException("credentialRef is not valid Unicode (it has an unpaired surrogate)");
+        }
+    }
+
+    private static boolean isBindable(String credentialRef) {
+        try {
+            referenceAad(credentialRef);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     private static String encrypt(SecretKey secretKey, String credentialRef, String plaintext) {
         try {
             byte[] iv = new byte[GCM_IV_BYTES];
@@ -361,7 +403,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
             Cipher cipher = Cipher.getInstance(AES_GCM);
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, iv));
-            cipher.updateAAD(credentialRef.getBytes(StandardCharsets.UTF_8));
+            cipher.updateAAD(referenceAad(credentialRef));
             byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
 
             byte[] combined = new byte[iv.length + ciphertext.length];
@@ -386,12 +428,21 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         if (combined.length < GCM_IV_BYTES + GCM_TAG_BITS / 8) {
             throw corruptEntry(credentialRef);
         }
+        byte[] aad = null;
+        if (bound) {
+            try {
+                aad = referenceAad(credentialRef);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalStateException("Credential entry '" + credentialRef + "' in " + secretsFile
+                        + " is bound, but its reference cannot be: " + e.getMessage());
+            }
+        }
         SecretKey secretKey = loadKey();
         try {
             Cipher cipher = Cipher.getInstance(AES_GCM);
             cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_BITS, combined, 0, GCM_IV_BYTES));
-            if (bound) {
-                cipher.updateAAD(credentialRef.getBytes(StandardCharsets.UTF_8));
+            if (aad != null) {
+                cipher.updateAAD(aad);
             }
             byte[] plaintext = cipher.doFinal(combined, GCM_IV_BYTES, combined.length - GCM_IV_BYTES);
             return new String(plaintext, StandardCharsets.UTF_8);

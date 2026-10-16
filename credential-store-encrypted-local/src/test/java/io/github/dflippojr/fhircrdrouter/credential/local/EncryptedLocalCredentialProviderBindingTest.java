@@ -168,6 +168,74 @@ class EncryptedLocalCredentialProviderBindingTest {
         assertThrows(IllegalStateException.class, () -> new EncryptedLocalCredentialProvider(dir).resolve("ref-a"));
     }
 
+    @Test
+    void putRejectsAnEmptyReference(@TempDir Path dir) {
+        EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(dir);
+
+        var e = assertThrows(IllegalArgumentException.class, () -> provider.put("", "secret-b"));
+        assertTrue(e.getMessage().contains("must not be empty"), e.getMessage());
+        assertFalse(Files.exists(dir.resolve("secrets.properties")));
+        assertFalse(Files.exists(dir.resolve("key.bin")));
+    }
+
+    @Test
+    void putRejectsAReferenceWithAnUnpairedSurrogate(@TempDir Path dir) {
+        EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(dir);
+
+        var e = assertThrows(IllegalArgumentException.class, () -> provider.put("payer-\uD800", "secret-a"));
+        assertTrue(e.getMessage().contains("unpaired surrogate"), e.getMessage());
+        assertFalse(Files.exists(dir.resolve("secrets.properties")));
+    }
+
+    @Test
+    void aBoundEntryUnderAnEmptyReferenceDoesNotResolve(@TempDir Path dir) throws Exception {
+        // Empty associated data is the same as none: with the prefix stripped, this entry would
+        // resolve as a legacy one under any reference.
+        legacyStore(dir, Map.of("ref-a", "secret-a"));
+        Properties properties = entries(dir);
+        properties.setProperty("", "v2:" + encryptEntry(dir, "secret-b", new byte[0]));
+        store(dir, properties);
+
+        EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(dir);
+        var e = assertThrows(IllegalStateException.class, () -> provider.resolve(""));
+        assertTrue(e.getMessage().contains("is bound, but its reference cannot be"), e.getMessage());
+        assertFalse(e.getMessage().contains("secret-b"));
+    }
+
+    @Test
+    void aBoundEntryUnderAReferenceWithAnUnpairedSurrogateDoesNotResolve(@TempDir Path dir) throws Exception {
+        // A lenient encoder maps both lone surrogates to the same replacement byte, so this entry
+        // would authenticate under either reference.
+        legacyStore(dir, Map.of("ref-a", "secret-a"));
+        byte[] lenient = "payer-\uD800".getBytes(StandardCharsets.UTF_8);
+        assertArrayEquals(lenient, "payer-\uD801".getBytes(StandardCharsets.UTF_8));
+        Properties properties = entries(dir);
+        properties.setProperty("payer-\uD801", "v2:" + encryptEntry(dir, "secret-b", lenient));
+        store(dir, properties);
+
+        EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(dir);
+        var e = assertThrows(IllegalStateException.class, () -> provider.resolve("payer-\uD801"));
+        assertTrue(e.getMessage().contains("is bound, but its reference cannot be"), e.getMessage());
+        assertEquals("secret-a", provider.resolve("ref-a").orElseThrow());
+    }
+
+    @Test
+    void migrationLeavesLegacyEntriesUnderUnbindableReferencesUnbound(@TempDir Path dir) throws Exception {
+        legacyStore(dir, Map.of("", "secret-empty", "payer-\uD800", "secret-surrogate", "ref-a", "secret-a"));
+        Properties before = entries(dir);
+
+        new EncryptedLocalCredentialProvider(dir).put("ref-c", "secret-c");
+
+        Properties after = entries(dir);
+        assertEquals(before.getProperty(""), after.getProperty(""));
+        assertEquals(before.getProperty("payer-\uD800"), after.getProperty("payer-\uD800"));
+        assertTrue(after.getProperty("ref-a").startsWith("v2:"));
+        EncryptedLocalCredentialProvider reopened = new EncryptedLocalCredentialProvider(dir);
+        assertEquals("secret-empty", reopened.resolve("").orElseThrow());
+        assertEquals("secret-surrogate", reopened.resolve("payer-\uD800").orElseThrow());
+        assertEquals("secret-a", reopened.resolve("ref-a").orElseThrow());
+    }
+
     private static void assertAllBound(Path dir, Map<String, String> expected) throws IOException {
         Properties properties = entries(dir);
         assertEquals(expected.keySet(), properties.stringPropertyNames());
@@ -182,20 +250,28 @@ class EncryptedLocalCredentialProviderBindingTest {
     private static Path legacyStore(Path dir, Map<String, String> secrets) throws Exception {
         // A put creates key.bin; its entry is then replaced by the legacy entries.
         new EncryptedLocalCredentialProvider(dir).put("seed", "seed");
-        SecretKeySpec key = new SecretKeySpec(Files.readAllBytes(dir.resolve("key.bin")), "AES");
         Properties properties = new Properties();
         for (Map.Entry<String, String> secret : secrets.entrySet()) {
-            byte[] iv = new byte[12];
-            new SecureRandom().nextBytes(iv);
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
-            byte[] ciphertext = cipher.doFinal(secret.getValue().getBytes(StandardCharsets.UTF_8));
-            byte[] combined = new byte[iv.length + ciphertext.length];
-            System.arraycopy(iv, 0, combined, 0, iv.length);
-            System.arraycopy(ciphertext, 0, combined, iv.length, ciphertext.length);
-            properties.setProperty(secret.getKey(), Base64.getEncoder().encodeToString(combined));
+            properties.setProperty(secret.getKey(), encryptEntry(dir, secret.getValue(), null));
         }
         return store(dir, properties);
+    }
+
+    /** base64(iv || ciphertext || tag) under the store's key, with {@code aad} as associated data unless null. */
+    private static String encryptEntry(Path dir, String plaintext, byte[] aad) throws Exception {
+        SecretKeySpec key = new SecretKeySpec(Files.readAllBytes(dir.resolve("key.bin")), "AES");
+        byte[] iv = new byte[12];
+        new SecureRandom().nextBytes(iv);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
+        if (aad != null) {
+            cipher.updateAAD(aad);
+        }
+        byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+        byte[] combined = new byte[iv.length + ciphertext.length];
+        System.arraycopy(iv, 0, combined, 0, iv.length);
+        System.arraycopy(ciphertext, 0, combined, iv.length, ciphertext.length);
+        return Base64.getEncoder().encodeToString(combined);
     }
 
     private static String tamper(String encoded) {

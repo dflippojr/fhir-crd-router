@@ -28,6 +28,8 @@ restore) fails with "Failed to decrypt credential" instead of resolving to anoth
 reference's secret. The `v2:` prefix marks that format. Entries written by earlier versions
 have no prefix and no binding: they still resolve, and the next `put` or `remove` rewrites
 all of them in the bound format. An old entry that cannot be decrypted is left as it is.
+A reference must be non-empty and valid Unicode (no unpaired surrogates) to be bound: `put`
+rejects any other with an `IllegalArgumentException`, and an old entry under one stays unbound.
 
 `put` and `remove` are safe across instances and processes on one directory: they hold an
 exclusive OS file lock on `secrets.lock` (a sidecar file, created empty and kept) while they
