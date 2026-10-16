@@ -39,7 +39,8 @@
     <sonar.projectKey>dflippojr_fhir-crd-router</sonar.projectKey>
     <sonar.host.url>https://sonarcloud.io</sonar.host.url>
     <jackson.version>2.22.3</jackson.version>
-    <junit.version>5.10.3</junit.version>
+    <junit.version>5.14.4</junit.version>
+    <jqwik.version>1.10.1</jqwik.version>
     <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
   </properties>
 
@@ -65,10 +66,18 @@
         <artifactId>nimbus-jose-jwt</artifactId>
         <version>${nimbus-jose-jwt.version}</version>
       </dependency>
+      <!-- The BOM keeps every JUnit Platform artifact on one version, including the ones jqwik's engine pulls in. -->
       <dependency>
-        <groupId>org.junit.jupiter</groupId>
-        <artifactId>junit-jupiter</artifactId>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
         <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>net.jqwik</groupId>
+        <artifactId>jqwik</artifactId>
+        <version>${jqwik.version}</version>
         <scope>test</scope>
       </dependency>
     </dependencies>
