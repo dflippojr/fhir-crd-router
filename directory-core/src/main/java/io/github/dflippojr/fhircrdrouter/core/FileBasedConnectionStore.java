@@ -60,6 +60,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     private final Path path;
     private final ObjectMapper mapper;
+    private final Mover mover;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile Snapshot cache;
 
@@ -69,8 +70,20 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     // Visible for tests, which inject a mapper that fails mid-write or counts parses.
     FileBasedConnectionStore(Path path, ObjectMapper mapper) {
+        this(path, mapper, FileBasedConnectionStore::move);
+    }
+
+    // Visible for tests, which inject a move that is refused the way Windows refuses it.
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover) {
         this.path = path;
         this.mapper = mapper;
+        this.mover = mover;
+    }
+
+    /** Moves a written temporary file over the store file. */
+    @FunctionalInterface
+    interface Mover {
+        void move(Path tmp, Path target) throws IOException;
     }
 
     private static ObjectMapper defaultMapper() {
@@ -191,7 +204,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     private void replace(Path tmp) throws IOException {
         for (int attempt = 1; ; attempt++) {
             try {
-                move(tmp);
+                mover.move(tmp, path);
                 return;
             } catch (AccessDeniedException e) {
                 if (attempt >= REPLACE_ATTEMPTS) {
@@ -207,11 +220,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    private void move(Path tmp) throws IOException {
+    private static void move(Path tmp, Path target) throws IOException {
         try {
-            Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
