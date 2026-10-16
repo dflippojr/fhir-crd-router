@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -34,6 +35,13 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * directory, is flushed to disk, and is then moved over the target, so a
  * crash or full disk never leaves a truncated file behind.
  *
+ * <p>Windows refuses to replace a file that any other handle has open, even a
+ * read-only one, so on Windows a {@link #save} or {@link #delete} waits briefly
+ * (about 0.3 s in total) for another process's read to finish. If a reader keeps
+ * the file open longer than that, the write fails with an
+ * {@link UncheckedIOException} caused by an {@link AccessDeniedException} and the
+ * file keeps its previous contents.
+ *
  * <p>Reads are served from an in-memory copy of the parsed records, kept with
  * the raw file bytes it was parsed from. Every read still reads the file and
  * compares its bytes with the cached ones, re-parsing only when they differ,
@@ -47,6 +55,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Threads sharing one instance are safe.
  */
 public final class FileBasedConnectionStore implements ConnectionStore {
+
+    private static final int REPLACE_ATTEMPTS = 25;
 
     private final Path path;
     private final ObjectMapper mapper;
@@ -153,7 +163,12 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             try (FileChannel ch = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
                 ch.force(true);
             }
-            move(tmp);
+            try {
+                replace(tmp);
+            } catch (AccessDeniedException e) {
+                throw new UncheckedIOException("Failed writing connection store at " + path
+                        + ": the file is open in another process or access is denied", e);
+            }
             tmp = null;
             cache = new Snapshot(bytes, List.copyOf(records));
         } catch (IOException e) {
@@ -164,6 +179,29 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                     Files.deleteIfExists(tmp);
                 } catch (IOException ignored) {
                     // Best effort; the original failure is what matters.
+                }
+            }
+        }
+    }
+
+    /**
+     * Moves {@code tmp} over the store file. Windows refuses to replace a file that another handle
+     * has open, and a reader holds it only for one read, so a refused replace is retried briefly.
+     */
+    private void replace(Path tmp) throws IOException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                move(tmp);
+                return;
+            } catch (AccessDeniedException e) {
+                if (attempt >= REPLACE_ATTEMPTS) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
                 }
             }
         }
