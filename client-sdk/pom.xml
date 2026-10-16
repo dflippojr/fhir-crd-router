@@ -42,4 +42,21 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!-- The loopback test servers write headers and body separately; without TCP_NODELAY, Linux
+                 delays each response about 40 ms (Nagle plus delayed ACK), which the property tests'
+                 thousands of requests turn into minutes. Read once, when the first HttpServer starts. -->
+            <sun.net.httpserver.nodelay>true</sun.net.httpserver.nodelay>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>
