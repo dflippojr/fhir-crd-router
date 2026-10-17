@@ -250,8 +250,11 @@ separately (next section), so it can be combined with any of these.
 | `OAUTH2_PRIVATE_KEY_JWT` | Bearer token from the token endpoint, requested with a signed `client_assertion` (RFC 7523 / SMART Backend Services) | `tokenEndpoint`, `clientId`, `keyId`, `jwksUrl`?, `scopes` | PKCS#8 PEM private key |
 | `CDS_HOOKS_JWT` | A CDS Hooks 2.0 client JWT, signed per request | `clientId` (the `iss`), `keyId`, `jwksUrl`?, `tenant`? | PKCS#8 PEM private key |
 
-OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes)
-until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours;
+OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes,
+`mtlsCredentialRef`), so connections that call the token endpoint under
+different client certificates, or one with and one without mTLS, never share a
+token (an RFC 8705 certificate-bound token only works with its own certificate).
+Entries last until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours;
 responses without `expires_in` aren't cached. A token response whose
 `access_token` is missing, `null`, blank or not a string is rejected with a
 `RouterException` in the TOKEN phase, and nothing is cached. If the payer returns 401 on an OAuth2 connection, the cached token is
