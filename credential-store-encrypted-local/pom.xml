@@ -18,6 +18,12 @@
     Secrets Manager, etc.) required to get started.
   </description>
 
+  <properties>
+    <!-- JaCoCo floor (see the parent pom): measured 2026-10-16 on Linux at 0.8828 line, 0.8333 branch (Windows skips POSIX permission branches). -->
+    <jacoco.minimum.line>0.87</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.82</jacoco.minimum.branch>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
