@@ -18,6 +18,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -33,15 +34,14 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Corrupt {@code key.bin} or {@code secrets.properties} contents give a documented error (an
  * {@link IllegalStateException} or {@link UncheckedIOException} that leaks no secret material),
  * never a {@link NegativeArraySizeException} or {@link IllegalArgumentException}, never a wrong
- * secret and never a silently replaced key (the #65 class). Arbitrary edits to the whole
- * {@code secrets.properties} file are #112: a malformed unicode escape in it still fails with an
- * {@link IllegalArgumentException}.
+ * secret and never a silently replaced key (the #65 class), including a {@code secrets.properties}
+ * that is no longer a valid properties file (#112) and an entry copied under another reference
+ * (#113).
  */
 class CorruptCredentialFilePropertiesTest {
 
@@ -134,6 +134,11 @@ class CorruptCredentialFilePropertiesTest {
     }
 
     @Property(seed = SEED)
+    void corruptSecretsFileIsADocumentedError(@ForAll("edits") List<Edit> edits) throws IOException {
+        checkStore(pristineKey, apply(pristineSecrets, edits));
+    }
+
+    @Property(seed = SEED)
     void corruptEntryValueIsADocumentedError(@ForAll("entryValues") Map<String, String> values) throws IOException {
         Properties properties = new Properties();
         properties.load(new ByteArrayInputStream(pristineSecrets));
@@ -144,20 +149,22 @@ class CorruptCredentialFilePropertiesTest {
     }
 
     /**
-     * Each stored reference resolves to a stored secret, to nothing, or to a documented error; a
-     * later put never replaces the key file, and when it succeeds its secret reads back. "A stored
-     * secret", not "its own secret": ciphertext is not bound to its reference, so an entry copied
-     * under another reference decrypts there (#113).
+     * Each stored reference resolves to its own secret, to nothing, or to a documented error; a
+     * later put never replaces the key file, and when it succeeds its secret reads back.
      */
     private static void checkStore(byte[] key, byte[] secrets) throws IOException {
-        Files.write(store.resolve("key.bin"), key);
+        Path keyFile = Files.write(store.resolve("key.bin"), key);
+        if (keyFile.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            // Owner-only, as the store creates it; a key others can read would be restricted with a warning every try.
+            Files.setPosixFilePermissions(keyFile, PosixFilePermissions.fromString("rw-------"));
+        }
         Files.write(store.resolve("secrets.properties"), secrets);
         EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(store);
 
         for (Map.Entry<String, String> secret : SECRETS.entrySet()) {
             documented(() -> provider.resolve(secret.getKey()))
                     .flatMap(resolved -> resolved)
-                    .ifPresent(value -> assertTrue(SECRETS.containsValue(value), "not a stored secret: " + value));
+                    .ifPresent(value -> assertEquals(secret.getValue(), value, "wrong secret for " + secret.getKey()));
         }
         boolean stored = documented(() -> {
             provider.put("new-ref", "new-secret");
@@ -210,22 +217,26 @@ class CorruptCredentialFilePropertiesTest {
         return edit.list().ofMinSize(1).ofMaxSize(4);
     }
 
-    /** Replacement ciphertext for some stored entries: re-encoded byte edits, or any text. */
+    /**
+     * Replacement ciphertext for some stored entries: re-encoded byte edits with or without the
+     * {@code v2:} prefix, another reference's entry verbatim, or any text.
+     */
     @Provide
     Arbitrary<Map<String, String>> entryValues() throws IOException {
         Properties properties = new Properties();
         properties.load(new ByteArrayInputStream(pristineSecrets));
         List<String> refs = new ArrayList<>(SECRETS.keySet());
         Arbitrary<String> ref = Arbitraries.of(refs);
-        Arbitrary<String> value = Combinators.combine(ref, edits(), Arbitraries.of(true, false))
-                .as((r, edits, base64) -> {
-                    byte[] decoded = Base64.getDecoder().decode(properties.getProperty(r));
+        Arbitrary<String> value = Combinators.combine(ref, edits(), Arbitraries.of(true, false), Arbitraries.of("v2:", ""))
+                .as((r, edits, base64, prefix) -> {
+                    byte[] decoded = Base64.getDecoder().decode(properties.getProperty(r).substring("v2:".length()));
                     byte[] edited = apply(decoded, edits);
-                    return base64 ? Base64.getEncoder().encodeToString(edited)
-                            : HexFormat.of().formatHex(edited);
+                    return prefix + (base64 ? Base64.getEncoder().encodeToString(edited)
+                            : HexFormat.of().formatHex(edited));
                 });
+        Arbitrary<String> copied = ref.map(properties::getProperty);
         Arbitrary<String> text = Arbitraries.strings().ofMaxLength(40);
-        return Arbitraries.maps(ref, Arbitraries.frequencyOf(Tuple.of(4, value), Tuple.of(1, text)))
+        return Arbitraries.maps(ref, Arbitraries.frequencyOf(Tuple.of(4, value), Tuple.of(2, copied), Tuple.of(1, text)))
                 .ofMinSize(1).ofMaxSize(refs.size());
     }
 }

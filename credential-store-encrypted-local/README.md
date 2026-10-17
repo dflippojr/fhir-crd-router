@@ -11,7 +11,7 @@ wherever this one would otherwise be wired in — `ConnectionRecord` never
 knows or cares which provider resolved its `credentialRef`.
 
 Files under the base directory: `key.bin` (the AES key) and `secrets.properties`
-(`credentialRef -> base64(iv || ciphertext)`). Both are created owner-only (mode 600
+(`credentialRef -> v2:base64(iv || ciphertext || tag)`). Both are created owner-only (mode 600
 where POSIX permissions apply). `secrets.properties` is never rewritten in place: each
 write goes to a temporary file in the same directory and is moved over the old one, so
 readers see the old or the new complete file and a crash keeps the previous content.
@@ -21,6 +21,15 @@ existing file, so two instances starting on a fresh directory end up sharing one
 and `put` fail with "Local credential key is missing" until the original `key.bin` is
 restored; a `key.bin` that is not exactly 32 bytes and a malformed entry also fail with an
 `IllegalStateException` that names the problem.
+
+Each entry is encrypted with its `credentialRef` as AES-GCM associated data, so an entry
+that is copied or moved under another reference (a hand edit, a bad merge, a mixed-up
+restore) fails with "Failed to decrypt credential" instead of resolving to another
+reference's secret. The `v2:` prefix marks that format. Entries written by earlier versions
+have no prefix and no binding: they still resolve, and the next `put` or `remove` rewrites
+all of them in the bound format. An old entry that cannot be decrypted is left as it is.
+A reference must be non-empty and valid Unicode (no unpaired surrogates) to be bound: `put`
+rejects any other with an `IllegalArgumentException`, and an old entry under one stays unbound.
 
 `put` and `remove` are safe across instances and processes on one directory: they hold an
 exclusive OS file lock on `secrets.lock` (a sidecar file, created empty and kept) while they

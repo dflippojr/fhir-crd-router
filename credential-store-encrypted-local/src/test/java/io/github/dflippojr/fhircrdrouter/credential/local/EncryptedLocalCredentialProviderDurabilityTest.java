@@ -287,6 +287,26 @@ class EncryptedLocalCredentialProviderDurabilityTest {
         assertArrayEquals(secretsBefore, Files.readAllBytes(dir.resolve("secrets.properties")));
     }
 
+    // #112
+
+    @Test
+    void aMalformedUnicodeEscapeInTheSecretsFileFailsWithAClearErrorAndNoContent(@TempDir Path dir) throws Exception {
+        new EncryptedLocalCredentialProvider(dir).put("a", SECRET);
+        Path secretsFile = dir.resolve("secrets.properties");
+        String damaged = "a=\\uZZZZ-file-content\n";
+        Files.writeString(secretsFile, damaged);
+
+        var resolveError = assertThrows(IllegalStateException.class,
+                () -> new EncryptedLocalCredentialProvider(dir).resolve("a"));
+        var putError = assertThrows(IllegalStateException.class,
+                () -> new EncryptedLocalCredentialProvider(dir).put("b", "v"));
+        for (IllegalStateException e : List.of(resolveError, putError)) {
+            assertEquals("Secrets file at " + secretsFile + " is not a valid properties file", e.getMessage());
+            assertNull(e.getCause());
+        }
+        assertEquals(damaged, Files.readString(secretsFile));
+    }
+
     @Test
     void aWrongKeyStillReportsADecryptFailureForTheRef(@TempDir Path dir) throws Exception {
         new EncryptedLocalCredentialProvider(dir).put("a", SECRET);

@@ -103,6 +103,11 @@
           <version>3.6.0</version>
         </plugin>
         <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+        <plugin>
           <groupId>org.sonarsource.scanner.maven</groupId>
           <artifactId>sonar-maven-plugin</artifactId>
           <version>5.8.0.7211</version>
@@ -110,6 +115,19 @@
       </plugins>
     </pluginManagement>
     <plugins>
+      <!-- *IT classes (the kill -9 crash tests, which start child JVMs) run in the integration-test phase of verify. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
       <!-- Coverage for SonarCloud, and the coverage floor. check skips a
            module with no tests (no execution data). -->
       <plugin>
