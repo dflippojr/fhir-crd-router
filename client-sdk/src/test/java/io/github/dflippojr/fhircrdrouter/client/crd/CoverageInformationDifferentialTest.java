@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,7 +64,7 @@ class CoverageInformationDifferentialTest {
             assertEquals(known.path("ours").asText(), oursValid ? "valid" : "invalid",
                     () -> name + " is a known difference with our verdict " + known.path("ours").asText()
                             + ", but we now say otherwise: " + ours);
-            assertTrue(oursValid != officialValid, () -> name + " now agrees with the official validator; "
+            assertNotEquals(officialValid, oursValid, () -> name + " now agrees with the official validator; "
                     + "remove it from known-differences.json (and close its issue or DECISIONS.md entry)");
             return;
         }
