@@ -84,7 +84,8 @@ import java.util.function.UnaryOperator;
  * <p>Damaged material fails with an {@link IllegalStateException} that names the problem and
  * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
  * {@code put} then writes nothing either, so secrets under two different keys never mix), a
- * {@code key.bin} that is not exactly 256 bits, or an entry that is not valid
+ * {@code key.bin} that is not exactly 256 bits, a {@code secrets.properties} that is not a valid
+ * properties file (a {@code put} then writes nothing), or an entry that is not valid
  * {@code base64(iv || ciphertext || tag)}.
  *
  * <p>The parsed ciphertext map is cached together with the raw file bytes and file metadata
@@ -566,6 +567,9 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             props.load(new ByteArrayInputStream(bytes));
         } catch (IOException e) {
             throw new UncheckedIOException("Failed parsing secrets file at " + secretsFile, e);
+        } catch (IllegalArgumentException e) {
+            // A malformed unicode escape. No cause: a future JDK's message might quote file content.
+            throw new IllegalStateException("Secrets file at " + secretsFile + " is not a valid properties file");
         }
         Map<String, String> entries = new HashMap<>();
         for (String name : props.stringPropertyNames()) {
