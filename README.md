@@ -101,9 +101,29 @@ hooks are named in the output and still checked for discovery conformance.
   These requests use a synthetic device code outside the RI rule catalog.
   Each absent hook is skipped with its name in the output.
 
+### Testing against the Inferno CRD client suite
+
+`InfernoCrdClientSuiteTest` runs the client against the Da Vinci CRD Client
+v2.2.1 suite of the [Inferno CRD test kit](https://github.com/inferno-framework/davinci-crd-test-kit).
+There, Inferno plays the payer and judges each request: request shape,
+prefetch, `fhirAuthorization` scopes and the CDS Hooks JWT. The test is
+skipped unless `INFERNO_BASE_URL` is set:
+
+```sh
+tools/inferno/start.sh
+INFERNO_BASE_URL=http://localhost:18080 ./mvnw -pl client-sdk -am test \
+    -Dtest=InfernoCrdClientSuiteTest -Dsurefire.failIfNoSpecifiedTests=false
+tools/inferno/stop.sh
+```
+
+Each Inferno verdict is compared with
+`client-sdk/src/test/resources/inferno/expected-results.json`.
+[docs/inferno.md](./docs/inferno.md) lists every test as pass, fail or not
+applicable to a library, with the reasons.
+
 ### CI
 
-GitHub Actions runs two workflows:
+GitHub Actions runs three workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
   push to `master`, with three jobs:
@@ -122,6 +142,9 @@ GitHub Actions runs two workflows:
   builds the reference server image, starts it, and runs the `client-sdk`
   tests against it. The server build is slow, so it runs weekly (Mondays
   12:00 UTC) and on manual dispatch instead of on every push.
+- **Inferno CRD client suite** (`.github/workflows/inferno-crd-client.yml`):
+  runs `InfernoCrdClientSuiteTest` against the Inferno Da Vinci CRD test kit
+  (see below). Manual dispatch only.
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub
 Actions weekly and opens at most 3 pull requests per ecosystem, labeled

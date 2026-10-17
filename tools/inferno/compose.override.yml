@@ -1,0 +1,44 @@
+# Overrides for the Inferno CRD test kit's docker-compose.yml, used by
+# tools/inferno/start.sh and docs/inferno.md. They pin the kit's helper
+# images (its compose file uses :latest), serve Inferno on 127.0.0.1:18080
+# instead of port 80, keep redis and fhirpath off the host network, and
+# bound the HL7 validator's memory.
+services:
+  inferno:
+    environment:
+      INFERNO_HOST: http://localhost:18080
+      # By default Inferno warms a validator session for every suite in the
+      # image (each US Core version, CRD 2.0.1 and 2.2.1) at boot, which grew
+      # the validator past 9 GB and got it OOM-killed. Create sessions on use.
+      INITIALIZE_VALIDATOR_SESSIONS: "false"
+    # Inferno exits at boot if redis does not resolve yet.
+    depends_on:
+      - redis
+    restart: on-failure
+  worker:
+    environment:
+      INFERNO_HOST: http://localhost:18080
+    restart: on-failure
+  nginx:
+    image: nginx@sha256:332d0beea97cff8c0d5d27976c0778a4b00345b9d74c2feaaf8efde548314948
+    # nginx exits if its upstream "inferno" does not resolve yet; the kit's
+    # compose file does not order the two.
+    depends_on:
+      - inferno
+    restart: on-failure
+    ports: !override
+      - "127.0.0.1:18080:80"
+  redis:
+    image: redis@sha256:2c2dff791878316e3b083188be0d578423b24813cdda5de0e80ea4f7b3e6bfd6
+    ports: !reset []
+    # The kit mounts ./data/redis with append-only persistence, which the
+    # redis user cannot write on a fresh checkout. A test run needs no persistence.
+    volumes: !reset []
+    command: redis-server
+  fhirpath:
+    image: infernocommunity/fhirpath-service@sha256:8bfdd53894e6708ad4e663175c0805281c968777ac732a9688780c275df71636
+    ports: !reset []
+  hl7_validator_service:
+    image: infernocommunity/inferno-resource-validator@sha256:92ec7a22e3c6f4cdf5eed9db210150a93531034e100c7521e4930c975b3c9058
+    # The JVM sizes its heap from this limit.
+    mem_limit: 8g
