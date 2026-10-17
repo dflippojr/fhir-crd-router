@@ -17,6 +17,12 @@
     contracts, and the PayerRouter resolver.
   </description>
 
+  <properties>
+    <!-- JaCoCo floor (see the parent pom): measured 2026-10-16 at 0.9317 line, 0.9059 branch. -->
+    <jacoco.minimum.line>0.92</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.89</jacoco.minimum.branch>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
