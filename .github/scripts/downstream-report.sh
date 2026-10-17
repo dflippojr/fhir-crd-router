@@ -29,7 +29,8 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
 short() { printf '%s' "${1:0:12}"; }
 
-if [ "$INSTALL_OUTCOME" = success ] && [ "$VERIFY_OUTCOME" = success ] && [ "$DEMO_OUTCOME" = success ]; then
+if [[ "$INSTALL_OUTCOME" = success ]] && [[ "$VERIFY_OUTCOME" = success ]] && [[ "$DEMO_OUTCOME" = success ]]; then
+  passed="$(mktemp)"
   {
     echo "## Downstream: workbench passes against master"
     echo
@@ -37,14 +38,18 @@ if [ "$INSTALL_OUTCOME" = success ] && [ "$VERIFY_OUTCOME" = success ] && [ "$DE
     echo "- payer-onboarding-workbench: \`$WORKBENCH_SHA\`"
     echo
     echo "\`./mvnw verify\` and \`node scripts/demo.mjs\` passed in the workbench."
-  } >> "$SUMMARY"
+  } > "$passed"
+  cat "$passed" >> "$SUMMARY"
+  # Also in the step log, which gh run view --log can read.
+  [[ "$SUMMARY" = /dev/stdout ]] || cat "$passed"
+  rm -f "$passed"
   exit 0
 fi
 
 # Matches surefire failures, compile errors and the failed goal, in log order.
 failure_lines() {
   local log="$1"
-  [ -f "$log" ] || return 0
+  [[ -f "$log" ]] || return 0
   sed -e 's/\x1b\[[0-9;]*m//g' "$log" \
     | grep -E '<<< (FAILURE|ERROR)!|^\[ERROR\]   [^ ]|^\[ERROR\] .*\.java:\[[0-9]+,[0-9]+\]|^\[ERROR\] Failed to execute goal|^\[ERROR\] Tests run:' \
     | sed -e "s#${GITHUB_WORKSPACE:-/nonexistent}/##g" \
@@ -53,7 +58,7 @@ failure_lines() {
 
 # "<run id> <head sha>" of the newest successful scheduled or dispatched run on master.
 last_good_run() {
-  if [ -n "${LAST_GOOD_RUN:-}" ]; then
+  if [[ -n "${LAST_GOOD_RUN:-}" ]]; then
     printf '%s\n' "$LAST_GOOD_RUN"
     return
   fi
@@ -66,7 +71,7 @@ workbench_sha_of_run() {
   local tmp
   tmp="$(mktemp -d)"
   if gh run download "$1" -R "$REPO" -n downstream-tested -D "$tmp" > /dev/null 2>&1 \
-    && [ -f "$tmp/workbench-sha.txt" ]; then
+    && [[ -f "$tmp/workbench-sha.txt" ]]; then
     tr -d '[:space:]' < "$tmp/workbench-sha.txt"
   fi
   rm -rf "$tmp"
@@ -87,7 +92,7 @@ body="$(mktemp)"
 
   for step in install verify; do
     lines="$(failure_lines "$LOG_DIR/$step.log")"
-    if [ -n "$lines" ]; then
+    if [[ -n "$lines" ]]; then
       echo "### Failing tests and errors (\`$step\`)"
       echo
       echo '```'
@@ -96,7 +101,7 @@ body="$(mktemp)"
       echo
     fi
   done
-  if [ "$DEMO_OUTCOME" = failure ] && [ -f "$LOG_DIR/demo.log" ]; then
+  if [[ "$DEMO_OUTCOME" = failure ]] && [[ -f "$LOG_DIR/demo.log" ]]; then
     echo "### Demo output (last 40 lines)"
     echo
     echo '```'
@@ -108,10 +113,10 @@ body="$(mktemp)"
   echo "### First failing commit range"
   echo
   read -r good_run good_sha <<< "$(last_good_run)" || true
-  if [ -z "${good_sha:-}" ]; then
+  if [[ -z "${good_sha:-}" ]]; then
     echo "No earlier successful run of \`$WORKFLOW_FILE\` on \`master\`, so there is no known-good commit."
     echo "The range is everything up to \`$(short "$ROUTER_SHA")\`."
-  elif [ "$good_sha" = "$ROUTER_SHA" ]; then
+  elif [[ "$good_sha" = "$ROUTER_SHA" ]]; then
     echo "fhir-crd-router is unchanged since the [last passing run](https://github.com/$REPO/actions/runs/$good_run) (\`$(short "$good_sha")\`)."
   else
     echo "fhir-crd-router [\`$(short "$good_sha")...$(short "$ROUTER_SHA")\`](https://github.com/$REPO/compare/$good_sha...$ROUTER_SHA): \`$(short "$good_sha")\` passed in the [last passing run](https://github.com/$REPO/actions/runs/$good_run)."
@@ -121,12 +126,12 @@ body="$(mktemp)"
       || echo "(could not list the commits; see the compare link)"
     echo '```'
   fi
-  if [ -n "${good_run:-}" ]; then
+  if [[ -n "${good_run:-}" ]]; then
     good_workbench="$(workbench_sha_of_run "$good_run")"
     echo
-    if [ -z "$good_workbench" ]; then
+    if [[ -z "$good_workbench" ]]; then
       echo "The last passing run did not record which workbench commit it built."
-    elif [ "$good_workbench" = "$WORKBENCH_SHA" ]; then
+    elif [[ "$good_workbench" = "$WORKBENCH_SHA" ]]; then
       echo "The workbench is unchanged since the last passing run, so the cause is in this repo."
     else
       echo "The workbench also changed since the last passing run: [\`$(short "$good_workbench")...$(short "$WORKBENCH_SHA")\`](https://github.com/$WORKBENCH_REPO/compare/$good_workbench...$WORKBENCH_SHA)."
@@ -136,7 +141,7 @@ body="$(mktemp)"
   echo "The workbench pins an older commit in \`scripts/install-crd-router.sh\`; this check overrides that pin with \`master\`. Fix the break here, or record the API change so the workbench can follow it when it bumps the pin."
 } > "$body"
 
-if [ "${DRY_RUN:-false}" = true ]; then
+if [[ "${DRY_RUN:-false}" = true ]]; then
   {
     echo "## Downstream: workbench fails against master (dry run)"
     echo
@@ -146,14 +151,14 @@ if [ "${DRY_RUN:-false}" = true ]; then
     echo
     cat "$body"
   } >> "$SUMMARY"
-  [ "$SUMMARY" = /dev/stdout ] || cat "$body"
+  [[ "$SUMMARY" = /dev/stdout ]] || cat "$body"
   rm -f "$body"
   exit 0
 fi
 
 existing="$(gh issue list -R "$REPO" --state open --search "in:title \"$ISSUE_TITLE\"" --json number,title \
   --jq "map(select(.title == \"$ISSUE_TITLE\")) | .[0].number // empty")"
-if [ -n "$existing" ]; then
+if [[ -n "$existing" ]]; then
   url="$(gh issue comment "$existing" -R "$REPO" --body-file "$body")"
   action="Commented on"
 else
