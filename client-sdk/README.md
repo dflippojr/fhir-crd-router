@@ -227,13 +227,14 @@ get `ERROR`s for missing `covered` and `date`, which 2.2.1 requires.
 `CrdReferenceServerTest` runs only when `CRD_RI_BASE_URL` is set:
 
 ```sh
-docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$(cat .github/crd-ri.ref)"
 docker run -d -p 18090:8090 crd-ri
 CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
 ```
 
-The `CRD reference server` GitHub Actions workflow does the same thing weekly
-and on demand. Use host port 18090, not 8090: 8090 is often taken by other
+CI does the same thing on every PR and push (the `crd-ri` job, part of
+`gate`), against the RI commit pinned in `.github/crd-ri.ref`. The weekly
+`CRD reference server drift` workflow runs the tests against RI `master`. Use host port 18090, not 8090: 8090 is often taken by other
 local services, and `localhost` can hit a different listener over IPv4 than
 over IPv6.
 
