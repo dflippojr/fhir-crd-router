@@ -82,7 +82,7 @@ bundled wrapper:
 It is skipped unless `CRD_RI_BASE_URL` is set. To run it locally with Docker:
 
 ```sh
-docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$(cat .github/crd-ri.ref)"
 docker run -d -p 18090:8090 crd-ri
 CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
 ```

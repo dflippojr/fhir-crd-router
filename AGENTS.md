@@ -18,15 +18,17 @@ is a useful loop while you work, but it is not proof.
    per module, set in each module's `pom.xml`). If the floor fails, add tests;
    never lower a floor. When coverage rises, raise the floor to the new value
    minus 0.01. On a PR, the required check is `gate`, which passes only when
-   the `build` matrix and the `sonar` quality gate both pass.
+   the `build` matrix, the `sonar` quality gate and the `crd-ri` reference
+   server job all pass.
 
 2. **Run the reference server** when a change touches the client SDK's wire
    behaviour: requests, responses, discovery, prefetch, auth or the CRD
    models. It runs the client against the HL7 Da Vinci CRD reference
-   implementation, at a pinned commit:
+   implementation, at the commit pinned in `.github/crd-ri.ref` (CI's
+   `crd-ri` job runs the same thing on every PR):
 
    ```sh
-   docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#43547c4e69052df4d3532972e4bd03f8d5317d13
+   docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$(cat .github/crd-ri.ref)"
    docker run -d --name crd-ri -p 18090:8090 crd-ri
    CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
    docker rm -f crd-ri
