@@ -41,7 +41,11 @@ so far.
     - `CDS_HOOKS_JWT`: the CDS Hooks 2.0 client JWT, signed per request.
 
     Tokens are cached in memory until shortly before `expires_in`, and a
-    401 triggers one retry with a fresh token. JWTs are signed with RS384
+    401 triggers one retry with a fresh token. An API key or OAuth2 access
+    token must be an RFC 6750 `b64token` (letters, digits, `-._~+/`, then
+    optional `=` padding); anything else, such as a key saved with a trailing
+    newline, fails with a `RouterException` before the payer is called, and an
+    access token like that is never cached. JWTs are signed with RS384
     (RSA 2048+) or ES384 (EC P-384), chosen from the key; private keys are
     PKCS#8 PEM. `Jwks` builds the public JWK Set to give a payer, and
     `PemKeys` reads keys and certificates.

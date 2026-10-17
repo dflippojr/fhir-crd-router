@@ -196,7 +196,9 @@ class OAuth2TokenClientTest {
     @Test
     void unusableAccessTokenIsRejectedAndNeverCached() {
         ConnectionRecord record = record(List.of());
-        for (String bad : List.of("null", "\"\"", "\"  \"", "{}", "[]", "123", "true")) {
+        // The last six are text but not RFC 6750 b64token: non-BMP, CRLF, NUL, space, Latin-1, leading "=" (#111).
+        for (String bad : List.of("null", "\"\"", "\"  \"", "{}", "[]", "123", "true",
+                "\"𐀀\"", "\"tok\\r\\n\"", "\"tok\\u0000\"", "\"a b\"", "\"café\"", "\"=abc\"")) {
             accessTokenJson.set(bad);
             tokenClient.invalidate(record);
             tokenRequests.set(0);
