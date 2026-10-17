@@ -46,6 +46,13 @@ import java.util.regex.Pattern;
  * {@code noauth}, which is not a pa-needed code, so {@code no-auth} is checked as intended;
  * {@code crd-ci-q3} says "if and only if" but its expression only requires {@code info-needed}
  * when something is {@code conditional}, and that one direction is what is checked.
+ * {@code crd-ci-q4}'s FHIRPath also evaluates to empty, so fails, for {@code withpa} with any other
+ * pa-needed; the official validator rejects those and this class follows the text.
+ *
+ * <p>Verdicts are compared with the official HL7 FHIR validator's on a corpus of cases
+ * ({@code CoverageInformationDifferentialTest}); the deliberate differences are in DECISIONS.md.
+ * Known gaps: unknown relative sub-extension urls are accepted (#125) and {@code detail} is not
+ * checked inside (#126).
  *
  * <p>Parsing via {@link CoverageInformation#fromResource(JsonNode)} stays lenient; this class
  * only reports.

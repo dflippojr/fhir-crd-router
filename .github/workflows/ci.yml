@@ -83,13 +83,45 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./mvnw -B -ntp verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true
 
+  # The official HL7 FHIR validator as an outside judge of the hand-written
+  # CoverageInformationValidator (#96). It validates the coverage-information
+  # corpus and the FHIR resources in the test fixtures against CRD 2.2.1, then
+  # fails if a recorded verdict changed. The pinned validator version and its
+  # SHA-256 live in fhir-validator/run.sh, so a change there misses the cache.
+  fhir-validator:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/fhir-validator
+            ~/.fhir/packages
+          key: fhir-validator-${{ hashFiles('fhir-validator/run.sh') }}
+      - run: bash fhir-validator/run.sh
+      - name: Fail if an official verdict changed
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git diff
+            echo "::error::The official validator's verdicts changed. Run fhir-validator/run.sh, review the diff, and fix the validator or record the difference (client-sdk/src/test/resources/coverage-information/README.md)."
+            exit 1
+          fi
+
   # The single check to require. It runs even when a needed job fails or is
   # cancelled, and fails unless every needed job succeeded. The one allowed
   # exception is `sonar` skipped on a fork PR, which gets no secrets.
   gate:
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [build, sonar]
+    needs: [build, sonar, fhir-validator]
     if: always()
     steps:
       - name: Require every needed job to succeed
