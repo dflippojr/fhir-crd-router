@@ -1,6 +1,8 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,13 +11,17 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -25,6 +31,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 class FileBasedConnectionStoreTest {
@@ -139,6 +146,137 @@ class FileBasedConnectionStoreTest {
         }
 
         assertEquals(n, new FileBasedConnectionStore(file).findAll().size());
+        assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    /** A move that is refused {@code refusals} times, as Windows refuses it while a reader has the file open. */
+    private static FileBasedConnectionStore.Mover refusing(int refusals, AtomicInteger attempts) {
+        return (tmp, target) -> {
+            if (attempts.incrementAndGet() <= refusals) {
+                throw new AccessDeniedException(tmp + " -> " + target);
+            }
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        };
+    }
+
+    private static FileBasedConnectionStore storeWithMover(Path file, FileBasedConnectionStore.Mover mover) {
+        return new FileBasedConnectionStore(file, new CountingMapper(), mover);
+    }
+
+    @Test
+    void refusedReplaceIsRetriedUntilItSucceeds(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        new FileBasedConnectionStore(file).save(record("KEEP-ME"));
+        AtomicInteger attempts = new AtomicInteger();
+
+        storeWithMover(file, refusing(3, attempts)).save(record("NEW"));
+
+        assertEquals(4, attempts.get());
+        assertEquals(2, new FileBasedConnectionStore(file).findAll().size());
+        assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    @Test
+    void replaceRefusedPastTheRetryBudgetFailsAndKeepsTheFile(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        new FileBasedConnectionStore(file).save(record("KEEP-ME"));
+        String before = Files.readString(file);
+        AtomicInteger attempts = new AtomicInteger();
+        FileBasedConnectionStore store = storeWithMover(file, refusing(Integer.MAX_VALUE, attempts));
+
+        UncheckedIOException e = assertThrows(UncheckedIOException.class,
+                () -> store.delete("KEEP-ME", Environment.SANDBOX));
+
+        assertInstanceOf(AccessDeniedException.class, e.getCause());
+        assertTrue(e.getMessage().contains("open in another process"), e.getMessage());
+        assertEquals(25, attempts.get());
+        assertEquals(before, Files.readString(file));
+        assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    @Test
+    void interruptStopsRetryingARefusedReplace(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        new FileBasedConnectionStore(file).save(record("KEEP-ME"));
+        AtomicInteger attempts = new AtomicInteger();
+        FileBasedConnectionStore store = storeWithMover(file, (tmp, target) -> {
+            attempts.incrementAndGet();
+            Thread.currentThread().interrupt();
+            throw new AccessDeniedException(tmp + " -> " + target);
+        });
+
+        try {
+            UncheckedIOException e = assertThrows(UncheckedIOException.class, () -> store.save(record("NEW")));
+
+            assertInstanceOf(AccessDeniedException.class, e.getCause());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(1, attempts.get());
+        assertEquals(0, tmpFileCount(tempDir));
+        assertTrue(new FileBasedConnectionStore(file).findByPayerId("NEW").isEmpty());
+    }
+
+    /**
+     * Opens {@code file} for reading on another thread, as a second process's read would, and
+     * closes it after {@code millis}. Returns once the handle is open.
+     */
+    private static Future<?> holdOpen(ExecutorService pool, Path file, long millis) throws InterruptedException {
+        CountDownLatch opened = new CountDownLatch(1);
+        Future<?> holder = pool.submit(() -> {
+            try (InputStream in = Files.newInputStream(file)) {
+                opened.countDown();
+                Thread.sleep(millis);
+            }
+            return null;
+        });
+        opened.await();
+        return holder;
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void saveWaitsForAShortLivedReaderToCloseTheFile(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        store.save(record("KEEP-ME"));
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> holder = holdOpen(pool, file, 100);
+
+            store.save(record("NEW"));
+
+            holder.get();
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(2, new FileBasedConnectionStore(file).findAll().size());
+        assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void saveFailsWhenAReaderKeepsTheFileOpenPastTheRetryBudget(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        store.save(record("KEEP-ME"));
+        String before = Files.readString(file);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> holder = holdOpen(pool, file, 2_000);
+
+            UncheckedIOException e = assertThrows(UncheckedIOException.class, () -> store.save(record("NEW")));
+
+            assertInstanceOf(AccessDeniedException.class, e.getCause());
+            assertTrue(e.getMessage().contains("open in another process"), e.getMessage());
+            holder.get();
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(before, Files.readString(file));
         assertEquals(0, tmpFileCount(tempDir));
     }
 
