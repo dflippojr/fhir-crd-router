@@ -17,6 +17,12 @@
     endpoint and invokes hooks directly (not through the router).
   </description>
 
+  <properties>
+    <!-- JaCoCo floor (see the parent pom): measured 2026-10-16 at 0.9618 line, 0.8830 branch. -->
+    <jacoco.minimum.line>0.95</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.87</jacoco.minimum.branch>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
