@@ -114,6 +114,11 @@ repo's author did not write, so it now runs on every PR and every push to
   PR opened by the workflow token does not start CI, so close and reopen it.
   If the drift issue is open instead, either fix the client (the RI is right)
   or record the RI difference in this file and adapt the test.
+- **RI quirk.** The pinned RI answers an `order-sign` context missing its
+  required fields with HTTP 500 (it crashes), but a context with the wrong
+  JSON type with 400. The error-semantics test uses the second, which CDS
+  Hooks 2.0 allows ("MAY return other HTTP statuses, specifically 4xx and
+  5xx").
 - **No new auth.** The tests call the RI with `AuthType.NONE`, plus
   `fhirServer`/`fhirAuthorization` in the request body, which the client
   already supports. CDS Hooks client JWTs stay a separate decision.
