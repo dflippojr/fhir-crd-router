@@ -93,6 +93,27 @@ The user chose each of these when asked:
 - **Tests generate throwaway keys and certificates at runtime** (JDK
   `KeyPairGenerator` and `keytool`), so no private keys are committed.
 
+## Inferno CRD client suite as a second judge (2026-10-17)
+
+- The Inferno Da Vinci CRD test kit (v0.14.2, pinned in
+  `tools/inferno/start.sh`) runs headlessly. `InfernoCrdClientSuiteTest`
+  drives its CRD 2.2.1 client suite through Inferno's JSON API, using the
+  kit's own conformant request bodies as fixtures. Evidence and per-test
+  results are in [docs/inferno.md](./docs/inferno.md).
+- The test asserts each Inferno verdict against a recorded expectation
+  (`expected-results.json`), not "all pass". Some tests can never pass for a
+  library run locally: card display to a user, the EHR's FHIR server, TLS on
+  a local kit. A recorded expectation still catches a regression in any test
+  that does pass.
+- Attestations are answered truthfully. Registration is attested "true",
+  because the `ConnectionRecord`s are the registration. Card display is
+  attested "false", because a library has no UI to show cards in.
+- It is manual dispatch only, not a gate. The kit build plus a cold HL7
+  validator takes many minutes, and the validator needs `tx.fhir.org`.
+- First finding: the SDK cannot send the request `extension` object, so it
+  cannot send `davinci-crd.requestedVersion` or `davinci-crd.configuration`
+  (#128).
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub

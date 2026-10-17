@@ -237,6 +237,13 @@ and on demand. Use host port 18090, not 8090: 8090 is often taken by other
 local services, and `localhost` can hit a different listener over IPv4 than
 over IPv6.
 
+## Testing against the Inferno CRD client suite
+
+`InfernoCrdClientSuiteTest` runs only when `INFERNO_BASE_URL` is set. Start
+the kit with `tools/inferno/start.sh` (from the repo root). See
+[docs/inferno.md](../docs/inferno.md) for what each Inferno test checks and
+how this library does.
+
 ## Authentication
 
 App-layer auth comes from `record.authType()`. Mutual TLS is configured
