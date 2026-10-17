@@ -1,0 +1,34 @@
+{
+  "resourceType": "ServiceRequest",
+  "id": "date-two-digit-year",
+  "status": "draft",
+  "intent": "order",
+  "subject": {
+    "reference": "Patient/pat-1"
+  },
+  "extension": [
+    {
+      "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+      "extension": [
+        {
+          "url": "coverage",
+          "valueReference": {
+            "reference": "Coverage/cov-1"
+          }
+        },
+        {
+          "url": "covered",
+          "valueCode": "covered"
+        },
+        {
+          "url": "date",
+          "valueDate": "26-09-15"
+        },
+        {
+          "url": "coverage-assertion-id",
+          "valueString": "assert-1"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,575 @@
+{
+  "validator": "7.0.2",
+  "ig": "hl7.fhir.us.davinci-crd#2.2.1",
+  "verdicts": {
+    "code-covered": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[1].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'yes' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[1].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('yes') was not found in the value set 'CRD Coverage Information Covered Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'yes' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1'; The provided code '#yes' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1')"
+        }
+      ]
+    },
+    "code-covered-case": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[1].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'Covered' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[1].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('Covered') was not found in the value set 'CRD Coverage Information Covered Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'Covered' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1'; The provided code '#Covered' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageInfo|2.2.1')"
+        }
+      ]
+    },
+    "code-doc-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[3].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'imaging' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/AdditionalDocumentation|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[3].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('imaging') was not found in the value set 'CRD Coverage Information Additional Documentation Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/AdditionalDocumentation|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'imaging' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/AdditionalDocumentation|2.2.1'; The provided code '#imaging' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/AdditionalDocumentation|2.2.1')"
+        }
+      ]
+    },
+    "code-doc-purpose": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[4].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'with-pa' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/DocReason|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[4].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('with-pa') was not found in the value set 'CRD Coverage Information Documentation Reason Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/DocReason|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'with-pa' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/DocReason|2.2.1'; The provided code '#with-pa' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/DocReason|2.2.1')"
+        }
+      ]
+    },
+    "code-info-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'provider' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/informationNeeded|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('provider') was not found in the value set 'CRD Information Needed Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/informationNeeded|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'provider' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/informationNeeded|2.2.1'; The provided code '#provider' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/informationNeeded|2.2.1')"
+        }
+      ]
+    },
+    "code-pa-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'required' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('required') was not found in the value set 'CRD Coverage Information Prior Authorization Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'required' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1'; The provided code '#required' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1')"
+        }
+      ]
+    },
+    "code-pa-needed-noauth": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'noauth' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('noauth') was not found in the value set 'CRD Coverage Information Prior Authorization Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'noauth' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1'; The provided code '#noauth' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coveragePaDetail|2.2.1')"
+        }
+      ]
+    },
+    "date-feb-30": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '2026-02-30'"
+        }
+      ]
+    },
+    "date-month-13": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '2026-13-01'"
+        }
+      ]
+    },
+    "date-slashes": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '09/15/2026'"
+        }
+      ]
+    },
+    "date-two-digit-year": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '26-09-15'"
+        }
+      ]
+    },
+    "date-with-time": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '2026-09-15T10:00:00Z'"
+        }
+      ]
+    },
+    "detail-missing-code": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[4]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension:detail.extension: minimum required = 3, but only found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[4]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:detail.extension:code': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "expiry-date-malformed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[9].value.ofType(date)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '2026-12-32'"
+        }
+      ]
+    },
+    "legacy-identifier": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:coverage-assertion-id': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[3][url='identifier']",
+          "messageId": "Extension_EXT_SubExtension_Invalid",
+          "message": "Sub-extension url 'identifier' is not defined by the Extension http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1"
+        }
+      ]
+    },
+    "missing-coverage": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension: minimum required = 4, but only found 3 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:coverage': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "missing-coverage-assertion-id": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension: minimum required = 4, but only found 3 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:coverage-assertion-id': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "missing-covered": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension: minimum required = 4, but only found 3 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:covered': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "missing-date": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension: minimum required = 4, but only found 3 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:date': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "q1-questionnaire-without-doc-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q1",
+          "message": "Constraint failed: crd-ci-q1: 'Questionnaire is only allowed when doc-needed exists' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q2-not-covered-with-pa-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q2",
+          "message": "Constraint failed: crd-ci-q2: 'If covered is set to 'not-covered', then 'pa-needed' must not exist.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q3-conditional-without-info-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q3",
+          "message": "Constraint failed: crd-ci-q3: ''info-needed' SHALL exist if and only if at least one of 'covered', 'pa-needed', or 'doc-needed' is set to 'conditional'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q3-info-needed-without-conditional": {
+      "valid": true,
+      "errors": []
+    },
+    "q4-auth-needed-with-withpa": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q4",
+          "message": "Constraint failed: crd-ci-q4: 'If 'pa-needed' is 'satisfied', 'noauth', or 'not-covered', then 'Doc-purpose' cannot be 'withpa'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q4-no-auth-with-withpa": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q4",
+          "message": "Constraint failed: crd-ci-q4: 'If 'pa-needed' is 'satisfied', 'noauth', or 'not-covered', then 'Doc-purpose' cannot be 'withpa'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q4-satisfied-with-withpa": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q4",
+          "message": "Constraint failed: crd-ci-q4: 'If 'pa-needed' is 'satisfied', 'noauth', or 'not-covered', then 'Doc-purpose' cannot be 'withpa'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q5-id-without-satisfied": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q5",
+          "message": "Constraint failed: crd-ci-q5: ''satisfied-pa-id' must exist if and only if 'pa-needed' is set to 'satisfied'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q5-satisfied-without-id": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q5",
+          "message": "Constraint failed: crd-ci-q5: ''satisfied-pa-id' must exist if and only if 'pa-needed' is set to 'satisfied'.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q6-oth-without-reason": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q6",
+          "message": "Constraint failed: crd-ci-q6: 'If 'info-needed' is OTH, then reason must be specified' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q7-reason-coding-without-text": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q7",
+          "message": "Constraint failed: crd-ci-q7: 'If reason.coding is present and is not from the extensible value set, then reason.text must be present' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q8-doc-purpose-without-reason": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q8",
+          "message": "Constraint failed: crd-ci-q8: 'If doc-purpose is present with a value other than 'conditional', then reason must be present' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "q9-indeterminate-without-reason": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q9",
+          "message": "Constraint failed: crd-ci-q9: 'If any of 'covered', 'pa-needed', or 'doc-needed' is set to 'indeterminate', then reason must be present to explain the issue that is preventing the payer from making a coverage determination.' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        }
+      ]
+    },
+    "root-value": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/StructureDefinition/Extension#ext-1",
+          "message": "Constraint failed: ext-1: 'Must have either extensions or value[x], not both' (defined in http://hl7.org/fhir/StructureDefinition/Extension)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.value[x]: max allowed = 0, but found 1 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Extension_EXT_Type",
+          "message": "The Extension 'http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information' definition allows for the types [] but found type string"
+        }
+      ]
+    },
+    "twice-coverage": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:coverage: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-coverage-assertion-id": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:coverage-assertion-id: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-covered": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:covered: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-date": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:date: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-expiry-date": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:expiry-date: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-pa-needed": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:pa-needed: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "twice-satisfied-pa-id": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:satisfied-pa-id: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "type-assertion-identifier": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[3].value.ofType(Identifier)",
+          "messageId": "Extension_PROF_Type",
+          "message": "The Profile 'http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1' definition allows for the type string but found type Identifier"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[3].value.ofType(Identifier)",
+          "messageId": "ILLEGAL_PROPERTY",
+          "message": "The property 'value' is invalid"
+        }
+      ]
+    },
+    "type-coverage-not-coverage": {
+      "valid": true,
+      "errors": []
+    },
+    "type-covered-string": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[1].value.ofType(string)",
+          "messageId": "Extension_PROF_Type",
+          "message": "The Profile 'http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1' definition allows for the type code but found type string"
+        }
+      ]
+    },
+    "type-date-datetime": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(dateTime)",
+          "messageId": "Type_Specific_Checks_DT_Date_Valid",
+          "message": "Not a valid date format: '2026-09-15T10:00:00Z'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(dateTime)",
+          "messageId": "Extension_PROF_Type",
+          "message": "The Profile 'http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1' definition allows for the type date but found type dateTime"
+        }
+      ]
+    },
+    "unknown-absolute-url": {
+      "valid": true,
+      "errors": []
+    },
+    "unknown-relative-url": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[4][url='note']",
+          "messageId": "Extension_EXT_SubExtension_Invalid",
+          "message": "Sub-extension url 'note' is not defined by the Extension http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1"
+        }
+      ]
+    },
+    "unknown-ri-coverage-info": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[4][url='coverageInfo']",
+          "messageId": "Extension_EXT_SubExtension_Invalid",
+          "message": "Sub-extension url 'coverageInfo' is not defined by the Extension http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1"
+        }
+      ]
+    },
+    "valid-auth-needed": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-conditional": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-full": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-indeterminate": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-info-oth": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-minimal": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-not-covered": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-satisfied": {
+      "valid": true,
+      "errors": []
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "_comment": "Corpus cases where CoverageInformationValidator and the official HL7 validator disagree on purpose or by a known bug. 'ours' is our verdict. Each entry is either a deliberate leniency or strictness recorded in DECISIONS.md ('Differential testing against the official validator') or an open bug issue. Do not add an entry to make a new disagreement pass without one of those.",
+  "legacy-identifier": {
+    "ours": "valid",
+    "why": "Deliberate leniency: the HL7 reference implementation sends the pre-2.x 'identifier' sub-extension in place of coverage-assertion-id. We report it as a WARNING, not an ERROR. DECISIONS.md."
+  },
+  "q4-auth-needed-with-withpa": {
+    "ours": "valid",
+    "why": "Deliberate: crd-ci-q4's FHIRPath ('A and B implies C') is empty, so failing, whenever pa-needed is not satisfied, which forbids withpa everywhere. We check the invariant's text, which only forbids withpa after satisfied or no-auth. DECISIONS.md."
+  },
+  "type-coverage-not-coverage": {
+    "ours": "invalid",
+    "why": "Deliberate strictness: the coverage valueReference must target a Coverage. The official validator does not check the type of an unresolved literal reference; 'Patient/pat-1' names a Patient, so we reject it. DECISIONS.md."
+  },
+  "unknown-relative-url": {
+    "ours": "valid",
+    "why": "Bug #125: a sub-extension with a relative url the profile does not define is invalid; only absolute-url extensions are allowed by the open slicing."
+  },
+  "unknown-ri-coverage-info": {
+    "ours": "valid",
+    "why": "Bug #125: the reference implementation's 'coverageInfo' is a relative url the profile does not define."
+  },
+  "detail-missing-code": {
+    "ours": "valid",
+    "why": "Bug #126: the detail sub-extension's own sub-extensions (category, code and value, each 1..1) are not checked."
+  }
+}
