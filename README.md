@@ -123,15 +123,21 @@ hooks are named in the output and still checked for discovery conformance.
 
 ### CI
 
-GitHub Actions runs three workflows:
+GitHub Actions runs two workflows:
 
-- **CI** (`.github/workflows/ci.yml`): `./mvnw verify` on JDK 17 and 21 for
-  every pull request and every push to `master`.
-- **SonarCloud** (`.github/workflows/sonar.yml`): the code analysis for this
-  repo. It builds and tests on JDK 21, uploads JaCoCo coverage, and fails
-  the check when the quality gate fails. It runs on pull requests from this
-  repo and on pushes to `master`, and needs the `SONAR_TOKEN` repo secret.
-  The organization and project keys are in the parent `pom.xml`.
+- **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
+  push to `master`, with three jobs:
+  - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
+    coverage floor (line and branch, per module; see the parent `pom.xml`).
+  - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
+    JDK 21, uploads JaCoCo coverage, and fails when the quality gate fails.
+    It needs the `SONAR_TOKEN` repo secret and is skipped on fork PRs. The
+    organization and project keys are in the parent `pom.xml`.
+  - `gate`: always runs, and passes only when `build` and `sonar` both
+    succeeded. It is the one check to require.
+
+  A new push to a PR cancels that PR's older run; runs on `master` are never
+  cancelled.
 - **CRD reference server** (`.github/workflows/crd-reference-server.yml`):
   builds the reference server image, starts it, and runs the `client-sdk`
   tests against it. The server build is slow, so it runs weekly (Mondays
@@ -143,11 +149,11 @@ Actions weekly and opens at most 3 pull requests per ecosystem, labeled
 Nothing auto-merges: CI and SonarCloud decide whether each update is safe, and
 the owner merges. Changes to the `--release 17` baseline or the JDK matrix are
 deliberate issues, not Dependabot pull requests. Dependabot-triggered runs do
-not receive repository secrets, so the SonarCloud job has no `SONAR_TOKEN` on
+not receive repository secrets, so the `sonar` job has no `SONAR_TOKEN` on
 these pull requests (see the PR checks for how it ends).
 
 A local SonarQube scan against a self-hosted server is optional and only for
-the maintainer. The SonarCloud workflow analyzes through the Maven scanner,
+the maintainer. The `sonar` job analyzes through the Maven scanner,
 which does not read the root `sonar-project.properties`.
 
 ## Status

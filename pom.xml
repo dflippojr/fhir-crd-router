@@ -33,7 +33,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <!-- SonarCloud (see .github/workflows/sonar.yml). Each module's JaCoCo XML report is picked up from its default path.
+    <!-- SonarCloud (the sonar job in .github/workflows/ci.yml). Each module's JaCoCo XML report is picked up from its default path.
          The tower-local scan (README) overrides the project key and host on the command line. -->
     <sonar.organization>dflippojr</sonar.organization>
     <sonar.projectKey>dflippojr_fhir-crd-router</sonar.projectKey>
@@ -42,6 +42,12 @@
     <junit.version>5.14.4</junit.version>
     <jqwik.version>1.10.1</jqwik.version>
     <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
+    <!-- JaCoCo coverage floor, enforced at verify. Each tested module sets its
+         own floor at its measured coverage minus 0.01. Raise a floor when
+         coverage rises; never lower one. These defaults are the lowest module
+         floors, so a new module starts with the repo's floor. -->
+    <jacoco.minimum.line>0.87</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.82</jacoco.minimum.branch>
   </properties>
 
   <dependencyManagement>
@@ -122,7 +128,8 @@
           </execution>
         </executions>
       </plugin>
-      <!-- Coverage for SonarCloud. -->
+      <!-- Coverage for SonarCloud, and the coverage floor. check skips a
+           module with no tests (no execution data). -->
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
@@ -136,6 +143,30 @@
             <id>report</id>
             <phase>verify</phase>
             <goals><goal>report</goal></goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.minimum.line}</minimum>
+                    </limit>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.minimum.branch}</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
           </execution>
         </executions>
       </plugin>
