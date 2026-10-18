@@ -135,10 +135,10 @@ applicable to a library, with the reasons.
 
 ### CI
 
-GitHub Actions runs three workflows:
+GitHub Actions runs four workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
-  push to `master`, with four jobs:
+  push to `master`, with five jobs:
   - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
   - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
@@ -149,8 +149,11 @@ GitHub Actions runs three workflows:
     `.github/crd-ri.ref` (cached by that commit), starts it, and runs the
     `client-sdk` tests against it. It fails if `CrdReferenceServerTest`
     skipped anything.
-  - `gate`: always runs, and passes only when `build`, `sonar` and `crd-ri`
-    all succeeded. It is the one check to require.
+  - `fhir-validator`: runs `fhir-validator/run.sh` (the official HL7 FHIR
+    validator) and fails if a recorded verdict changed; see DECISIONS.md,
+    "Differential testing against the official validator".
+  - `gate`: always runs, and passes only when `build`, `sonar`, `crd-ri` and
+    `fhir-validator` all succeeded. It is the one check to require.
 
   A new push to a PR cancels that PR's older run; runs on `master` are never
   cancelled.
@@ -159,6 +162,8 @@ GitHub Actions runs three workflows:
   and on manual dispatch. On failure it opens or comments on the "CRD RI
   master drift" issue; on success with a newer RI commit it opens a PR that
   bumps the pin.
+- **Downstream** (`.github/workflows/downstream.yml`): builds the workbench
+  against `master` nightly; see [Compatibility](#compatibility).
 - **Inferno CRD client suite** (`.github/workflows/inferno-crd-client.yml`):
   runs `InfernoCrdClientSuiteTest` against the Inferno Da Vinci CRD test kit
   (see below). Manual dispatch only.
@@ -175,6 +180,26 @@ these pull requests (see the PR checks for how it ends).
 A local SonarQube scan against a self-hosted server is optional and only for
 the maintainer. The `sonar` job analyzes through the Maven scanner,
 which does not read the root `sonar-project.properties`.
+
+## Compatibility
+
+This repo has one real consumer,
+[payer-onboarding-workbench](https://github.com/dflippojr/payer-onboarding-workbench),
+which pins an older commit of this repo in `scripts/install-crd-router.sh`.
+The **Downstream** workflow (`.github/workflows/downstream.yml`) checks that
+the workbench still works against this repo's current `master`, so a breaking
+API or behaviour change shows up within a day instead of at the next pin bump.
+
+It runs nightly (07:00 UTC) and on manual dispatch. It installs `master` into
+the local Maven repository with `./mvnw install -DskipTests`, in place of the
+workbench's pinned install, then runs the workbench's `./mvnw verify` and its
+REST demo tour (`node scripts/demo.mjs`). It skips the workbench's Playwright
+UI journeys, because the goal is API compatibility. On success the job summary
+records both tested SHAs. On failure it opens, or comments on, one issue titled
+"Downstream: workbench fails against master", with the failing tests and the
+commit range since the last passing run. It only reads the workbench and never
+pushes to it. Pull requests that change the check, and dispatches with
+`dry_run` set, write that issue to the job summary instead of filing it.
 
 ## Status
 
