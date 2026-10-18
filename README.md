@@ -158,7 +158,7 @@ applicable to a library, with the reasons.
 GitHub Actions runs four workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
-  push to `master`, with five jobs:
+  push to `master`, with six jobs:
   - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
   - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
@@ -172,11 +172,22 @@ GitHub Actions runs four workflows:
   - `fhir-validator`: runs `fhir-validator/run.sh` (the official HL7 FHIR
     validator) and fails if a recorded verdict changed; see DECISIONS.md,
     "Differential testing against the official validator".
-  - `gate`: always runs, and passes only when `build`, `sonar`, `crd-ri` and
-    `fhir-validator` all succeeded. It is the one check to require.
+  - `gate-guard`: the shared gate guard from `dflippojr/.github`, pinned by
+    full SHA. It fails a pull request that deletes tests, adds `@Disabled`,
+    adds retries, or edits workflows, Sonar or JaCoCo config, unless the
+    owner applied the `gate-change-approved` label.
+  - `gate`: always runs, and passes only when `build`, `sonar`, `crd-ri`,
+    `fhir-validator` and `gate-guard` all succeeded.
 
   A new push to a PR cancels that PR's older run; runs on `master` are never
   cancelled.
+- **Gate guard (default branch)** (`.github/workflows/gate-guard-target.yml`)
+  runs the same guard under `pull_request_target`, so GitHub reads it from
+  `master` and a pull request can't rewrite it. It never checks out the pull
+  request's code, and it counts `gate-change-approved` only when the owner
+  applied it after the newest push. It posts the `gate-guard` check run. The
+  `master` ruleset requires `gate` and `gate-guard`, both from GitHub
+  Actions; see DECISIONS.md, "Gate guard".
 - **CRD reference server drift** (`.github/workflows/crd-reference-server.yml`):
   runs `CrdReferenceServerTest` against RI `master` weekly (Mondays 12:00 UTC)
   and on manual dispatch. On failure it opens or comments on the "CRD RI
