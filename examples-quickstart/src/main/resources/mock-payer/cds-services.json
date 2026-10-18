@@ -1,0 +1,12 @@
+{
+  "services": [{
+    "hook": "order-sign",
+    "title": "Prior Auth Check",
+    "description": "Checks prior auth requirements",
+    "id": "prior-auth-check",
+    "prefetch": {
+      "patient": "Patient/{{context.patientId}}",
+      "coverage": "Coverage?patient={{context.patientId}}&status=active"
+    }
+  }]
+}

@@ -118,7 +118,7 @@ in `.github/crd-ri.ref`; see DECISIONS.md, "CRD reference server pin".
 GitHub Actions runs three workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
-  push to `master`, with four jobs:
+  push to `master`, with five jobs:
   - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
   - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
@@ -129,8 +129,11 @@ GitHub Actions runs three workflows:
     `.github/crd-ri.ref` (cached by that commit), starts it, and runs the
     `client-sdk` tests against it. It fails if `CrdReferenceServerTest`
     skipped anything.
-  - `gate`: always runs, and passes only when `build`, `sonar` and `crd-ri`
-    all succeeded. It is the one check to require.
+  - `fhir-validator`: runs `fhir-validator/run.sh` (the official HL7 FHIR
+    validator) and fails if a recorded verdict changed; see DECISIONS.md,
+    "Differential testing against the official validator".
+  - `gate`: always runs, and passes only when `build`, `sonar`, `crd-ri` and
+    `fhir-validator` all succeeded. It is the one check to require.
 
   A new push to a PR cancels that PR's older run; runs on `master` are never
   cancelled.

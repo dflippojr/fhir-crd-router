@@ -1,0 +1,106 @@
+{
+  "validator": "7.0.2",
+  "ig": "hl7.fhir.us.davinci-crd#2.2.1",
+  "verdicts": {
+    "order-sign-home-oxygen@resources.coverage": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.deviceRequest": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.location": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.patient": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.payer": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.practitioner": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-home-oxygen@resources.practitionerRole": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed-response@cards.0.suggestions.0.actions.0.resource": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "DeviceRequest",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "DeviceRequest.code[x]: minimum required = 1, but only found 0 (from http://hl7.org/fhir/StructureDefinition/DeviceRequest|4.0.1)"
+        },
+        {
+          "location": "DeviceRequest",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "DeviceRequest.subject: minimum required = 1, but only found 0 (from http://hl7.org/fhir/StructureDefinition/DeviceRequest|4.0.1)"
+        },
+        {
+          "location": "DeviceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:coverage-assertion-id': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        },
+        {
+          "location": "DeviceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:covered': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        },
+        {
+          "location": "DeviceRequest.extension[0]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:date': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        },
+        {
+          "location": "DeviceRequest.extension[0].extension[0][url='coverageInfo']",
+          "messageId": "Extension_EXT_SubExtension_Invalid",
+          "message": "Sub-extension url 'coverageInfo' is not defined by the Extension http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1"
+        },
+        {
+          "location": "DeviceRequest.extension[0].extension[2][url='identifier']",
+          "messageId": "Extension_EXT_SubExtension_Invalid",
+          "message": "Sub-extension url 'identifier' is not defined by the Extension http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1"
+        }
+      ]
+    },
+    "order-sign-hospital-bed@resources.coverage": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.deviceRequest": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.location": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.patient": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.payer": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.practitioner": {
+      "valid": true,
+      "errors": []
+    },
+    "order-sign-hospital-bed@resources.practitionerRole": {
+      "valid": true,
+      "errors": []
+    },
+    "prior-auth-check@systemActions.0.resource": {
+      "valid": true,
+      "errors": []
+    }
+  }
+}
