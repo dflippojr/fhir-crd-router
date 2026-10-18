@@ -93,6 +93,36 @@ The user chose each of these when asked:
 - **Tests generate throwaway keys and certificates at runtime** (JDK
   `KeyPairGenerator` and `keytool`), so no private keys are committed.
 
+## CRD reference server pin (2026-10-16)
+
+The HL7 Da Vinci CRD reference implementation is the one check here that this
+repo's author did not write, so it now runs on every PR and every push to
+`master` (the `crd-ri` job in `ci.yml`, required through `gate`), not weekly.
+
+- **Pinned.** CI builds the RI from the commit in `.github/crd-ri.ref`, now
+  `43547c4e69052df4d3532972e4bd03f8d5317d13` (RI `master` on 2026-07-21). A
+  red `crd-ri` run therefore means our change broke interop, not that the RI
+  changed. The image is cached in `actions/cache` keyed by that commit, so only
+  the first run after a bump builds it.
+- **Drift.** `crd-reference-server.yml` runs the same tests against RI
+  `master` every Monday. On failure it opens, or comments on, one issue
+  titled "CRD RI master drift" listing the failing tests. On success with a
+  newer commit than the pin it opens a PR that bumps the pin.
+- **Bumping the pin.** Merge the drift job's PR, or by hand: put the new commit
+  in `.github/crd-ri.ref`, replace the old commit wherever it is quoted
+  (`git grep <old sha>`), and open a PR; its `crd-ri` job is the proof. A
+  PR opened by the workflow token does not start CI, so close and reopen it.
+  If the drift issue is open instead, either fix the client (the RI is right)
+  or record the RI difference in this file and adapt the test.
+- **RI quirk.** The pinned RI answers an `order-sign` context missing its
+  required fields with HTTP 500 (it crashes), but a context with the wrong
+  JSON type with 400. The error-semantics test uses the second, which CDS
+  Hooks 2.0 allows ("MAY return other HTTP statuses, specifically 4xx and
+  5xx").
+- **No new auth.** The tests call the RI with `AuthType.NONE`, plus
+  `fhirServer`/`fhirAuthorization` in the request body, which the client
+  already supports. CDS Hooks client JWTs stay a separate decision.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub

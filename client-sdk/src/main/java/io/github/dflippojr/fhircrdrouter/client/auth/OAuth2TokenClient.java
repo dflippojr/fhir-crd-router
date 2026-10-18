@@ -6,6 +6,7 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
+import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -44,11 +45,15 @@ import java.util.function.Supplier;
  * resolves to a PEM private key, and the client authenticates with a signed
  * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
- * <p>Tokens are cached in memory per (token endpoint, client ID, scopes)
+ * <p>Tokens are cached in memory per (token endpoint, client ID, scopes,
+ * mTLS credential ref), so records that reach the token endpoint under different
+ * client certificates, or one with and one without mTLS, never share a
+ * (possibly certificate-bound, RFC 8705) token. Entries last
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
  * capped at {@link #MAX_CACHE_LIFETIME}. A token response without
  * {@code expires_in} is not cached, and one whose {@code access_token} is not
- * a non-blank string is rejected with a {@link RouterException}. Callers that get a 401 from the
+ * a string in the RFC 6750 {@code b64token} form is rejected with a {@link RouterException}
+ * and never cached. Callers that get a 401 from the
  * payer should {@link #invalidate} and fetch again, since a payer can revoke
  * a token before its advertised expiry.
  */
@@ -229,7 +234,8 @@ public final class OAuth2TokenClient {
             }
             JsonNode accessToken = json == null ? null : json.get("access_token");
             // JSON null, objects, arrays and numbers would stringify to "null", "" or digits and be sent as a bearer token.
-            if (accessToken == null || !accessToken.isTextual() || accessToken.textValue().isBlank()) {
+            // Text outside b64token (controls, CR/LF, non-Latin-1) is not a legal header value: the JDK would throw.
+            if (accessToken == null || !accessToken.isTextual() || !BearerTokens.isB64Token(accessToken.textValue())) {
                 throw new RouterException("Token response for payerId=" + record.payerId()
                         + " had no usable access_token");
             }
@@ -271,14 +277,15 @@ public final class OAuth2TokenClient {
 
     // tokenEndpoint and clientId presence are already enforced by ConnectionRecord for this authType.
     private static CacheKey cacheKey(ConnectionRecord record) {
-        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes());
+        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef());
     }
 
     private static String formEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes) { }
+    /** {@code mtlsCredentialRef} is null for records without mTLS. */
+    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef) { }
 
     private record CachedToken(String accessToken, Instant refreshAt) { }
 }
