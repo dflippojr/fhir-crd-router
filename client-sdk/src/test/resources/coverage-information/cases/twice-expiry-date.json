@@ -1,0 +1,64 @@
+{
+  "resourceType": "ServiceRequest",
+  "id": "twice-expiry-date",
+  "status": "draft",
+  "intent": "order",
+  "subject": {
+    "reference": "Patient/pat-1"
+  },
+  "extension": [
+    {
+      "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+      "extension": [
+        {
+          "url": "coverage",
+          "valueReference": {
+            "reference": "Coverage/cov-1"
+          }
+        },
+        {
+          "url": "covered",
+          "valueCode": "covered"
+        },
+        {
+          "url": "pa-needed",
+          "valueCode": "auth-needed"
+        },
+        {
+          "url": "doc-needed",
+          "valueCode": "clinical"
+        },
+        {
+          "url": "doc-purpose",
+          "valueCode": "withclaim"
+        },
+        {
+          "url": "reason",
+          "valueCodeableConcept": {
+            "text": "Clinical notes are needed for review"
+          }
+        },
+        {
+          "url": "questionnaire",
+          "valueCanonical": "http://example.org/Questionnaire/q1"
+        },
+        {
+          "url": "date",
+          "valueDate": "2026-09-15"
+        },
+        {
+          "url": "coverage-assertion-id",
+          "valueString": "assert-1"
+        },
+        {
+          "url": "expiry-date",
+          "valueDate": "2026-12"
+        },
+        {
+          "url": "expiry-date",
+          "valueDate": "2027-01"
+        }
+      ]
+    }
+  ]
+}

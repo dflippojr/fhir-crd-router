@@ -132,3 +132,50 @@ repo's author did not write, so it now runs on every PR and every push to
   not against any payer's sandbox.
 - Typed contexts don't validate against full FHIR profiles, and FHIR
   resources are untyped `JsonNode`s.
+
+## Differential testing against the official validator (2026-10-17, #96)
+
+`CoverageInformationValidator` is hand-written, so CI also asks HL7's own
+validator. The `fhir-validator` job in `ci.yml` (part of `gate`) runs
+`fhir-validator/run.sh`. The script downloads a pinned `validator_cli.jar`
+(7.0.2, checked against its SHA-256) and validates two sets of resources
+against `hl7.fhir.us.davinci-crd#2.2.1`:
+
+- the corpus in `client-sdk/src/test/resources/coverage-information/cases`;
+- every FHIR resource inside the test fixtures (`crd-ri/*.json`, and the
+  quickstart's `mock-payer/*.json`).
+
+The job rewrites the recorded verdicts and fails if they changed.
+`CoverageInformationDifferentialTest` then requires our verdict to match the
+official one on every corpus case.
+
+- **HAPI stays out of the build.** The validator runs as a CI tool, not a
+  Maven dependency, so the library keeps its `JsonNode` design (see "Typed
+  CRD models").
+- **No terminology server** (`-tx n/a`). The verdicts are reproducible and
+  need no network beyond the package download. The coverage-information
+  bindings are all to CRD's own code systems, which the validator checks
+  locally.
+
+Where we disagree on purpose (listed in `known-differences.json`):
+
+- **Legacy `identifier` is a warning.** The reference implementation sends it
+  in place of `coverage-assertion-id`, so we warn rather than fail; the
+  official validator fails it.
+- **`crd-ci-q4` follows its text, not its FHIRPath.** The expression is
+  `A and B implies C`. When `pa-needed` is not `satisfied`, `A` is empty, so
+  `{} implies false` is empty and the invariant fails. Read literally, it
+  forbids `doc-purpose = withpa` on every extension, including
+  `pa-needed = auth-needed`, where withpa is the point. We check what the text
+  says: withpa is wrong only after `satisfied` or `no-auth`.
+- **The coverage reference must name a Coverage.** The official validator does
+  not check the type of an unresolved literal reference, so it accepts
+  `Patient/pat-1`. We reject it, because the profile's target is Coverage.
+
+Disagreements that are our bugs: #125 (we accept undefined relative
+sub-extension urls) and #126 (we do not check inside `detail`).
+
+The reference implementation's response fixture fails the official
+validator, as recorded above: legacy names, no `covered` or `date`, and a
+DeviceRequest without `code` or `subject`. That is expected, and
+`fixture-verdicts.json` records it.
