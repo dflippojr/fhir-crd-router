@@ -41,7 +41,11 @@ so far.
     - `CDS_HOOKS_JWT`: the CDS Hooks 2.0 client JWT, signed per request.
 
     Tokens are cached in memory until shortly before `expires_in`, and a
-    401 triggers one retry with a fresh token. JWTs are signed with RS384
+    401 triggers one retry with a fresh token. An API key or OAuth2 access
+    token must be an RFC 6750 `b64token` (letters, digits, `-._~+/`, then
+    optional `=` padding); anything else, such as a key saved with a trailing
+    newline, fails with a `RouterException` before the payer is called, and an
+    access token like that is never cached. JWTs are signed with RS384
     (RSA 2048+) or ES384 (EC P-384), chosen from the key; private keys are
     PKCS#8 PEM. `Jwks` builds the public JWK Set to give a payer, and
     `PemKeys` reads keys and certificates.
@@ -82,7 +86,7 @@ bundled wrapper:
 It is skipped unless `CRD_RI_BASE_URL` is set. To run it locally with Docker:
 
 ```sh
-docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$(cat .github/crd-ri.ref)"
 docker run -d -p 18090:8090 crd-ri
 CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
 ```
@@ -100,28 +104,41 @@ hooks are named in the output and still checked for discovery conformance.
   with synthetic resources and RI prefetch bundles; checks response parsing.
   These requests use a synthetic device code outside the RI rule catalog.
   Each absent hook is skipped with its name in the output.
+- Wire edge cases, all on `order-sign`: prefetch keys with no data sent as
+  `null` (CDS Hooks 2.0 requires it); `fhirServer` and `fhirAuthorization` in
+  the request; service ids with `/`, `..`, `?` or `#`, which must stay one
+  encoded path segment and so reach no service; and a context with the wrong
+  JSON type, which must come back as an HTTP 400 `PayerCallException`.
+
+CI runs this suite on every PR (the `crd-ri` job) against the RI commit pinned
+in `.github/crd-ri.ref`; see DECISIONS.md, "CRD reference server pin".
 
 ### CI
 
 GitHub Actions runs three workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
-  push to `master`, with three jobs:
+  push to `master`, with four jobs:
   - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
   - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
     JDK 21, uploads JaCoCo coverage, and fails when the quality gate fails.
     It needs the `SONAR_TOKEN` repo secret and is skipped on fork PRs. The
     organization and project keys are in the parent `pom.xml`.
-  - `gate`: always runs, and passes only when `build` and `sonar` both
-    succeeded. It is the one check to require.
+  - `crd-ri`: builds the HL7 CRD reference server from the commit in
+    `.github/crd-ri.ref` (cached by that commit), starts it, and runs the
+    `client-sdk` tests against it. It fails if `CrdReferenceServerTest`
+    skipped anything.
+  - `gate`: always runs, and passes only when `build`, `sonar` and `crd-ri`
+    all succeeded. It is the one check to require.
 
   A new push to a PR cancels that PR's older run; runs on `master` are never
   cancelled.
-- **CRD reference server** (`.github/workflows/crd-reference-server.yml`):
-  builds the reference server image, starts it, and runs the `client-sdk`
-  tests against it. The server build is slow, so it runs weekly (Mondays
-  12:00 UTC) and on manual dispatch instead of on every push.
+- **CRD reference server drift** (`.github/workflows/crd-reference-server.yml`):
+  runs `CrdReferenceServerTest` against RI `master` weekly (Mondays 12:00 UTC)
+  and on manual dispatch. On failure it opens or comments on the "CRD RI
+  master drift" issue; on success with a newer RI commit it opens a PR that
+  bumps the pin.
 - **Downstream** (`.github/workflows/downstream.yml`): builds the workbench
   against `master` nightly; see [Compatibility](#compatibility).
 

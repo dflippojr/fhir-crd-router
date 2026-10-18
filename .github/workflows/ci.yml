@@ -1,7 +1,8 @@
 name: CI
 
 # One workflow so that one check, `gate`, can be required: it passes only when
-# the build matrix and the SonarCloud analysis both pass.
+# the build matrix, the SonarCloud analysis and the CRD reference server tests
+# all pass.
 on:
   push:
     branches: [main, master]
@@ -83,13 +84,77 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./mvnw -B -ntp verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true
 
+  # The HL7 Da Vinci CRD reference implementation: the one judge here this
+  # repo's author did not write. It is built from the commit pinned in
+  # .github/crd-ri.ref, so a red run means our change broke interop, not that
+  # the RI moved (crd-reference-server.yml watches RI master for that). The
+  # image is cached by that commit; a new pin builds it once (several minutes).
+  crd-ri:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Read pinned reference server commit
+        id: ref
+        run: echo "sha=$(tr -d '[:space:]' < .github/crd-ri.ref)" >> "$GITHUB_OUTPUT"
+      - name: Restore reference server image
+        id: image
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/crd-ri.tar
+          key: crd-ri-image-${{ steps.ref.outputs.sha }}
+      - name: Build reference server image
+        if: steps.image.outputs.cache-hit != 'true'
+        env:
+          SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$SHA"
+          docker save crd-ri -o "$RUNNER_TEMP/crd-ri.tar"
+      - name: Load cached reference server image
+        if: steps.image.outputs.cache-hit == 'true'
+        run: docker load -i "$RUNNER_TEMP/crd-ri.tar"
+      - name: Start reference server
+        run: |
+          docker run -d --name crd-ri -p 18090:8090 crd-ri
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18090/r4/cds-services > /dev/null && exit 0
+            sleep 5
+          done
+          docker logs crd-ri | tail -50
+          exit 1
+      - run: chmod +x mvnw
+      - name: Run tests against it
+        env:
+          CRD_RI_BASE_URL: http://127.0.0.1:18090/r4
+        run: ./mvnw -B -ntp -pl client-sdk -am test
+      - name: Require the reference server tests to have run
+        # CrdReferenceServerTest is skipped without CRD_RI_BASE_URL; a skip here is a failure.
+        run: |
+          report=client-sdk/target/surefire-reports/TEST-io.github.dflippojr.fhircrdrouter.client.crd.CrdReferenceServerTest.xml
+          test -f "$report" || { echo "::error::$report not found"; exit 1; }
+          grep -o '<testsuite [^>]*>' "$report"
+          if grep -q 'skipped="[1-9]' "$report" || grep -q '<skipped' "$report"; then
+            echo "::error::CrdReferenceServerTest skipped tests against the reference server"
+            exit 1
+          fi
+      - name: Reference server log
+        if: failure()
+        run: docker logs crd-ri 2>&1 | tail -200
+
   # The single check to require. It runs even when a needed job fails or is
   # cancelled, and fails unless every needed job succeeded. The one allowed
   # exception is `sonar` skipped on a fork PR, which gets no secrets.
   gate:
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [build, sonar]
+    needs: [build, sonar, crd-ri]
     if: always()
     steps:
       - name: Require every needed job to succeed
