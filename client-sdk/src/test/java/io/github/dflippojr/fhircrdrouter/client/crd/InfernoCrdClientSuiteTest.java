@@ -10,6 +10,7 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookResponse;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PrefetchTemplates;
 import io.github.dflippojr.fhircrdrouter.client.auth.Jwks;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
@@ -40,6 +41,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -83,8 +85,14 @@ class InfernoCrdClientSuiteTest {
     private final String inferno = stripSlash(System.getenv("INFERNO_BASE_URL"));
     private final String suiteBase = inferno + "/custom/" + SUITE;
     private final Map<String, String> secrets = new LinkedHashMap<>();
+    /** The last hook response body exactly as received, to check what the client decoded from it. */
+    private final AtomicReference<String> lastHookResponse = new AtomicReference<>();
     private final CdsHooksClient client = new CdsHooksClient(new MapCredentials(secrets),
-            Duration.ofSeconds(60), Duration.ofSeconds(5));
+            Duration.ofSeconds(60), Duration.ofSeconds(5), exchange -> {
+                if (exchange.phase() == PayerCallPhase.HOOK) {
+                    lastHookResponse.set(exchange.responseBody());
+                }
+            });
 
     @TestFactory
     Stream<DynamicTest> clientSuiteVerdictsMatchTheRecordedResults() throws Exception {
@@ -268,11 +276,10 @@ class InfernoCrdClientSuiteTest {
                 body.path("context"), prefetch);
         // The kit's prefetch is sent as is; this records which of the service's templates the SDK could expand.
         PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(service.prefetch(), request);
+        lastHookResponse.set(null);
         CdsHookResponse response = client.callHook(record, service.id(), request);
-        assertNotNull(response.cards(), "cards parse");
-        return "call " + service.id() + " at " + record.baseUrl() + ": cards=" + response.cards().size()
-                + " systemActions=" + response.systemActions().size()
-                + " coverageInformation=" + response.coverageInformation().size()
+        String decoded = ParsedResponseCheck.assertMatchesWire(lastHookResponse.get(), response);
+        return "call " + service.id() + " at " + record.baseUrl() + ": " + decoded
                 + "; PrefetchTemplates expands " + expansion.queries().keySet()
                 + ", unresolved " + expansion.unresolved().keySet();
     }

@@ -16,3 +16,9 @@ Used by `InfernoCrdClientSuiteTest` (see [docs/inferno.md](../../../../../docs/i
 - `expected-results.json` records the outcome this library gets for each
   Inferno test, with the reason for every result that is not a pass. The
   test fails when a run differs from it.
+- `populated-response.json` is a synthetic CRD hook response (two cards, two
+  system actions, coverage information in a system action and in a card
+  suggestion). `ParsedResponseCheckTest` sends it through the real client to
+  prove that `ParsedResponseCheck`, which checks every Inferno response the
+  client decodes, fails when a card, system action or coverage determination
+  is dropped. It runs without Inferno.
