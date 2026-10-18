@@ -17,9 +17,14 @@ is a useful loop while you work, but it is not proof.
    `verify` runs every test and the JaCoCo coverage floor (line and branch,
    per module, set in each module's `pom.xml`). If the floor fails, add tests;
    never lower a floor. When coverage rises, raise the floor to the new value
-   minus 0.01. On a PR, the required check is `gate`, which passes only when
-   the `build` matrix, the `sonar` quality gate, the `crd-ri` reference
-   server job (step 2) and the `fhir-validator` job (step 3) all pass.
+   minus 0.01. On a PR, the required checks are `gate`, which passes only
+   when the `build` matrix, the `sonar` quality gate, the `crd-ri` reference
+   server job (step 2), the `fhir-validator` job (step 3) and `gate-guard`
+   all pass, and `gate-guard` from `.github/workflows/gate-guard-target.yml`,
+   which runs from `master`. The guard fails a PR that deletes or skips
+   tests or edits workflows, Sonar or JaCoCo config until the owner applies
+   `gate-change-approved`; a push after that label makes it stale. Only the
+   owner applies it.
 
 2. **Run the reference server** when a change touches the client SDK's wire
    behaviour: requests, responses, discovery, prefetch, auth or the CRD

@@ -179,3 +179,30 @@ The reference implementation's response fixture fails the official
 validator, as recorded above: legacy names, no `covered` or `date`, and a
 DeviceRequest without `code` or `subject`. That is expected, and
 `fixture-verdicts.json` records it.
+
+## Gate guard (2026-10-18, #94)
+
+CI's own checks can be weakened by the pull request they judge: delete a
+test, add `@Disabled`, lower a JaCoCo `<minimum>`, or edit `ci.yml`. The
+shared gate guard from `dflippojr/.github` flags those changes, and the
+owner's `gate-change-approved` label is the only way past it.
+
+- **Two copies, one trusted.** `ci.yml`'s `gate-guard` job runs on
+  `pull_request`, so it comes from the pull request's head and a pull
+  request can replace it with a green no-op. It stays inside `gate` as an
+  early signal. The judge is `gate-guard-target.yml`: under
+  `pull_request_target` GitHub runs it as it is on `master`, it fetches the
+  pull request's commits as git objects and reads their diff, and it never
+  checks out or runs pull request code. It posts the `gate-guard` check run,
+  which the `master` ruleset requires next to `gate`.
+- **Approval is bound to the newest push.** The trusted copy counts the
+  label only when the owner's label event is later than GitHub's recorded
+  push of the head commit, so a push after an approval needs a new one. The
+  `ci.yml` copy only checks who applied the label.
+- **Pinned by full SHA.** Both `uses:` lines and both `guard-ref`s name the
+  same commit of `dflippojr/.github` main, so the script that judges a pull
+  request is the one that was reviewed. Move all four together.
+- **Known limit.** The required check is bound to the GitHub Actions app,
+  not to this workflow. A pull request that adds a job with `checks: write`
+  could overwrite or republish a `gate-guard` check run. Closing that needs a
+  separate GitHub App identity for the guard (dflippojr/.github#24).
