@@ -159,8 +159,13 @@ GitHub Actions runs four workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
   push to `master`, with six jobs:
-  - `build`: `./mvnw verify` on JDK 17 and 21. `verify` includes the JaCoCo
+  - `build`: `./mvnw verify` on Linux with JDK 17 and 21, plus
+    `.\mvnw.cmd verify` on Windows with JDK 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
+    The Linux JDK 21 leg also installs the modules and runs the documented
+    quickstart via `.github/scripts/quickstart-smoke.sh`. It requires a clean
+    exit, exactly two discovery GET metadata lines and one hook POST metadata
+    line, and no stack trace or credential material in the output.
   - `sonar`: the SonarCloud analysis for this repo. It builds and tests on
     JDK 21, uploads JaCoCo coverage, and fails when the quality gate fails.
     It needs the `SONAR_TOKEN` repo secret and is skipped on fork PRs. The
