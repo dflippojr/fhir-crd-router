@@ -1,0 +1,41 @@
+name: Inferno CRD client suite
+
+# Runs CdsHooksClient against the Da Vinci CRD Client v2.2.1 suite of the
+# Inferno CRD test kit (pinned in tools/inferno/start.sh), where Inferno plays
+# the CRD server and judges the client's requests. On demand only: the kit
+# takes minutes to build and its HL7 validator loads IG packages on first use.
+# See docs/inferno.md for what each Inferno test means for this library.
+on:
+  workflow_dispatch:
+
+jobs:
+  inferno:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Start the Inferno CRD test kit
+        run: sh tools/inferno/start.sh
+      - name: Run the client suite
+        env:
+          INFERNO_BASE_URL: http://localhost:18080
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp -pl client-sdk -am test -Dtest=InfernoCrdClientSuiteTest -Dsurefire.failIfNoSpecifiedTests=false -Djacoco.skip=true
+      - name: Upload Inferno results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: inferno-crd-client-results
+          path: client-sdk/target/inferno/
+          if-no-files-found: warn
+      - name: Inferno logs on failure
+        if: failure()
+        run: docker compose -p crd-inferno -f target/inferno-kit/docker-compose.yml -f target/inferno-kit/compose.override.yml logs --tail 100

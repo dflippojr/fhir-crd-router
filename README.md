@@ -79,6 +79,26 @@ bundled wrapper:
 ./mvnw -pl examples-quickstart exec:java
 ```
 
+### Crash and permission tests
+
+`CrashDurabilityIT` in `directory-core` and `credential-store-encrypted-local`
+runs in the `integration-test` phase of `./mvnw verify`, through the Failsafe
+plugin. For each store it kills a writer JVM 100 times with SIGKILL at random
+points: four directories, at most four child JVMs at once. After each kill it
+checks the files with a fresh instance:
+- every acknowledged write is still there;
+- `key.bin` is still the first key ever created;
+- every file is owner-only, including any temporary file the kill left
+  behind (#120).
+
+On POSIX the children run with umask 000. The run prints its seed; pass
+`-Dcrash.seed=<seed>` to repeat the same operations and kill delays. Where a
+kill lands still depends on timing.
+
+`PermissionWindowTest` (Linux and macOS only) checks that both stores create
+their files owner-only from the start. It also checks that loading a `key.bin`
+that others can read restricts it to its owner, or fails when it cannot.
+
 ### Testing against the CRD reference server
 
 `CrdReferenceServerTest` runs the client against the
@@ -113,9 +133,29 @@ hooks are named in the output and still checked for discovery conformance.
 CI runs this suite on every PR (the `crd-ri` job) against the RI commit pinned
 in `.github/crd-ri.ref`; see DECISIONS.md, "CRD reference server pin".
 
+### Testing against the Inferno CRD client suite
+
+`InfernoCrdClientSuiteTest` runs the client against the Da Vinci CRD Client
+v2.2.1 suite of the [Inferno CRD test kit](https://github.com/inferno-framework/davinci-crd-test-kit).
+There, Inferno plays the payer and judges each request: request shape,
+prefetch, `fhirAuthorization` scopes and the CDS Hooks JWT. The test is
+skipped unless `INFERNO_BASE_URL` is set:
+
+```sh
+tools/inferno/start.sh
+INFERNO_BASE_URL=http://localhost:18080 ./mvnw -pl client-sdk -am test \
+    -Dtest=InfernoCrdClientSuiteTest -Dsurefire.failIfNoSpecifiedTests=false
+tools/inferno/stop.sh
+```
+
+Each Inferno verdict is compared with
+`client-sdk/src/test/resources/inferno/expected-results.json`.
+[docs/inferno.md](./docs/inferno.md) lists every test as pass, fail or not
+applicable to a library, with the reasons.
+
 ### CI
 
-GitHub Actions runs three workflows:
+GitHub Actions runs four workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
   push to `master`, with six jobs:
@@ -155,6 +195,9 @@ GitHub Actions runs three workflows:
   bumps the pin.
 - **Downstream** (`.github/workflows/downstream.yml`): builds the workbench
   against `master` nightly; see [Compatibility](#compatibility).
+- **Inferno CRD client suite** (`.github/workflows/inferno-crd-client.yml`):
+  runs `InfernoCrdClientSuiteTest` against the Inferno Da Vinci CRD test kit
+  (see below). Manual dispatch only.
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub
 Actions weekly and opens at most 3 pull requests per ecosystem, labeled

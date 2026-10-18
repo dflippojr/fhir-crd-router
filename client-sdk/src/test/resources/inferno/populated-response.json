@@ -1,0 +1,86 @@
+{
+  "cards": [
+    {
+      "uuid": "b1e3a0c2-0000-4000-8000-000000000001",
+      "summary": "Prior authorization required",
+      "detail": "Synthetic card: submit prior authorization before dispensing.",
+      "indicator": "warning",
+      "source": {
+        "label": "Synthetic payer",
+        "url": "https://payer.example.test",
+        "topic": {
+          "system": "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+          "code": "coverage-info",
+          "display": "Coverage Information"
+        }
+      },
+      "selectionBehavior": "at-most-one",
+      "suggestions": [
+        {
+          "label": "Record the coverage determination",
+          "actions": [
+            {
+              "type": "update",
+              "description": "Annotate the order",
+              "resource": {
+                "resourceType": "ServiceRequest",
+                "id": "sr-synthetic-1",
+                "status": "draft",
+                "intent": "order",
+                "extension": [
+                  {
+                    "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+                    "extension": [
+                      { "url": "coverage", "valueReference": { "reference": "Coverage/cov-synthetic-1" } },
+                      { "url": "covered", "valueCode": "covered" },
+                      { "url": "pa-needed", "valueCode": "auth-needed" },
+                      { "url": "date", "valueDate": "2026-10-18" },
+                      { "url": "coverage-assertion-id", "valueString": "assert-card-1" }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "links": [
+        { "label": "Synthetic policy", "url": "https://payer.example.test/policy", "type": "absolute" }
+      ]
+    },
+    {
+      "uuid": "b1e3a0c2-0000-4000-8000-000000000002",
+      "summary": "Documentation reminder",
+      "indicator": "info",
+      "source": { "label": "Synthetic payer" }
+    }
+  ],
+  "systemActions": [
+    {
+      "type": "update",
+      "description": "Coverage information for the draft order",
+      "resource": {
+        "resourceType": "MedicationRequest",
+        "id": "mr-synthetic-1",
+        "status": "draft",
+        "intent": "order",
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+            "extension": [
+              { "url": "coverage", "valueReference": { "reference": "Coverage/cov-synthetic-2" } },
+              { "url": "covered", "valueCode": "not-covered" },
+              { "url": "date", "valueDate": "2026-10-18" },
+              { "url": "coverage-assertion-id", "valueString": "assert-action-1" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "delete",
+      "description": "Withdraw a superseded draft",
+      "resourceId": "ServiceRequest/sr-synthetic-old"
+    }
+  ]
+}
