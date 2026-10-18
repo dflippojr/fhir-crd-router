@@ -12,11 +12,15 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -39,8 +43,10 @@ class PermissionWindowTest {
 
     /**
      * A child JVM runs with umask 000, so a file created with default permissions and chmod'd later
-     * would be world-readable until the chmod. Each temporary file is checked at its first write,
-     * before any content reaches it.
+     * would be world-readable until the chmod. Each temporary file is checked the moment the create
+     * call returns, before the store can chmod it: the create call must have been given owner-only
+     * permissions and the new file must already have them. At its first write, every temporary file
+     * in the directory must be one of those, so a file created some other way fails.
      */
     @Test
     void bothFilesAreOwnerOnlyFromCreationUnderAPermissiveUmask(@TempDir Path dir) throws Exception {
@@ -49,8 +55,13 @@ class PermissionWindowTest {
         assertTrue(report.contains("control rw-rw-rw-"),
                 "umask 000 was not in effect in the child, so the check proves nothing: " + report);
         List<String> temporaries = report.stream().filter(line -> line.startsWith("tmp ")).toList();
-        assertEquals(List.of("tmp key.bin rw-------", "tmp secrets.properties rw-------",
-                "tmp secrets.properties rw-------"), temporaries);
+        assertEquals(List.of("create key.bin attrs rw------- file rw-------",
+                "create secrets.properties attrs rw------- file rw-------",
+                "create secrets.properties attrs rw------- file rw-------"),
+                report.stream().filter(line -> line.startsWith("create ")).toList());
+        assertEquals(List.of("tmp key.bin rw------- created owner-only",
+                "tmp secrets.properties rw------- created owner-only",
+                "tmp secrets.properties rw------- created owner-only"), temporaries);
         for (String name : List.of("key.bin", "secrets.properties", "secrets.lock")) {
             assertTrue(report.contains("file " + name + " rw-------"), name + ": " + report);
             assertEquals("rw-------", permissions(dir.resolve(name)), name);
@@ -136,12 +147,20 @@ class PermissionWindowTest {
     }
 
     /**
-     * Child process: reports the permissions of every temporary file at its first write, then of
-     * the files the store kept, and of a control file created with default permissions.
+     * Child process: reports the permissions asked for and found when each temporary file is
+     * created, every temporary file at its first write, then the files the store kept and a control
+     * file created with default permissions.
      */
     public static final class UmaskProcess {
         public static void main(String[] args) throws IOException {
             Path dir = Path.of(args[0]);
+            Set<Path> created = new HashSet<>();
+            EncryptedLocalCredentialProvider.TempFileCreator checking = (parent, prefix, suffix, attrs) -> {
+                Path tmp = Files.createTempFile(parent, prefix, suffix, attrs);
+                System.out.println("create " + target(tmp) + " attrs " + requested(attrs) + " file " + permissions(tmp));
+                created.add(tmp);
+                return tmp;
+            };
             var provider = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO, System::nanoTime,
                     out -> new FilterOutputStream(out) {
                         private boolean checked;
@@ -150,11 +169,11 @@ class PermissionWindowTest {
                         public void write(byte[] b, int off, int len) throws IOException {
                             if (!checked) {
                                 checked = true;
-                                reportTemporaries(dir);
+                                reportTemporaries(dir, created);
                             }
                             out.write(b, off, len);
                         }
-                    });
+                    }, checking);
             provider.put("a", SECRET);
             provider.put("b", SECRET);
             for (String name : List.of("key.bin", "secrets.properties", "secrets.lock")) {
@@ -164,16 +183,32 @@ class PermissionWindowTest {
             System.out.println("control " + permissions(control));
         }
 
-        private static void reportTemporaries(Path dir) {
+        private static void reportTemporaries(Path dir, Set<Path> created) {
             try (Stream<Path> files = Files.list(dir)) {
                 for (Path tmp : files.filter(f -> f.getFileName().toString().endsWith(".tmp")).toList()) {
-                    String name = tmp.getFileName().toString();
-                    System.out.println("tmp " + name.substring(0, name.indexOf(".", name.indexOf('.') + 1))
-                            + " " + permissions(tmp));
+                    System.out.println("tmp " + target(tmp) + " " + permissions(tmp)
+                            + (created.contains(tmp) ? " created owner-only" : " created some other way"));
                 }
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
+        }
+
+        /** The file a {@code <target>.*.tmp} file is for. */
+        private static String target(Path tmp) {
+            String name = tmp.getFileName().toString();
+            return name.substring(0, name.indexOf(".", name.indexOf('.') + 1));
+        }
+
+        /** The POSIX permissions the create call was given, or "none". */
+        @SuppressWarnings("unchecked")
+        private static String requested(FileAttribute<?>... attrs) {
+            for (FileAttribute<?> attr : attrs) {
+                if (attr.name().equals("posix:permissions")) {
+                    return PosixFilePermissions.toString((Set<PosixFilePermission>) attr.value());
+                }
+            }
+            return "none";
         }
     }
 }
