@@ -34,13 +34,16 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,6 +93,11 @@ import java.util.function.UnaryOperator;
  * without ever replacing an existing file, so when instances race on first use exactly one key is
  * published and every instance uses it. {@code resolve} never creates a key.
  *
+ * <p>Where POSIX permissions apply, loading an existing {@code key.bin} that its group or others
+ * can access (copied in, restored from a backup, or written by an older version) takes those
+ * permissions off and logs a warning; when they cannot be taken off, for example because another
+ * user owns the file, loading fails with an {@link IllegalStateException}.
+ *
  * <p>{@code put} and {@code remove} are safe across instances and processes on one directory:
  * each holds an exclusive OS file lock on {@code secrets.lock} (a sidecar file that is created
  * empty and never deleted) while it re-reads {@code secrets.properties}, applies its change and
@@ -130,6 +138,9 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     /** One mutex per lock file for this JVM; {@link FileChannel#lock()} fails instead of waiting inside one JVM. */
     private static final Map<Path, ReentrantLock> DIRECTORY_LOCKS = new ConcurrentHashMap<>();
     private static final SecureRandom IV_RANDOM = new SecureRandom();
+    private static final Set<PosixFilePermission> OWNER_PERMISSIONS = EnumSet.of(
+            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+    private static final System.Logger LOG = System.getLogger(EncryptedLocalCredentialProvider.class.getName());
 
     /** Default upper bound on how long a cached map is trusted on metadata alone. */
     public static final Duration DEFAULT_FULL_COMPARE_INTERVAL = Duration.ofSeconds(30);
@@ -143,6 +154,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private final long fullCompareIntervalNanos;
     private final LongSupplier nanoClock;
     private final UnaryOperator<OutputStream> outputWrapper;
+    private final TempFileCreator tempFiles;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
@@ -205,15 +217,23 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         this(baseDir, auditSink, fullCompareInterval, nanoClock, UnaryOperator.identity());
     }
 
-    // Visible for tests, which wrap the temporary-file stream to make a write fail midway.
     EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
                                      LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper) {
+        this(baseDir, auditSink, fullCompareInterval, nanoClock, outputWrapper, Files::createTempFile);
+    }
+
+    // Visible for tests, which wrap the temporary-file stream to make a write fail midway, or check
+    // each temporary file's permissions the moment it exists.
+    EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
+                                     LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper,
+                                     TempFileCreator tempFiles) {
         if (fullCompareInterval.isNegative()) {
             throw new IllegalArgumentException("fullCompareInterval must not be negative");
         }
         this.fullCompareIntervalNanos = fullCompareInterval.toNanos();
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         this.outputWrapper = Objects.requireNonNull(outputWrapper, "outputWrapper");
+        this.tempFiles = Objects.requireNonNull(tempFiles, "tempFiles");
         this.keyFile = baseDir.resolve("key.bin");
         this.secretsFile = baseDir.resolve("secrets.properties");
         this.lockFile = baseDir.resolve("secrets.lock");
@@ -501,10 +521,11 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
                 + " has entries; restore the key.bin that was used to write them");
     }
 
-    /** Reads and validates {@code key.bin}; empty when the file does not exist. */
+    /** Restricts, reads and validates {@code key.bin}; empty when the file does not exist. */
     private Optional<SecretKey> readKeyFile() {
         byte[] raw;
         try {
+            restrictKeyFileToOwner();
             raw = Files.readAllBytes(keyFile);
         } catch (NoSuchFileException e) {
             return Optional.empty();
@@ -520,6 +541,30 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         } finally {
             Arrays.fill(raw, (byte) 0);
         }
+    }
+
+    /**
+     * Takes group and other permissions off {@code key.bin} where POSIX permissions apply, before
+     * the key is read. A key created by this class is already owner-only, so this changes nothing.
+     */
+    private void restrictKeyFileToOwner() throws IOException {
+        if (!keyFile.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            return;
+        }
+        Set<PosixFilePermission> current = Files.getPosixFilePermissions(keyFile);
+        if (OWNER_PERMISSIONS.containsAll(current)) {
+            return;
+        }
+        Set<PosixFilePermission> restricted = EnumSet.copyOf(OWNER_PERMISSIONS);
+        restricted.retainAll(current);
+        try {
+            Files.setPosixFilePermissions(keyFile, restricted);
+        } catch (IOException e) {
+            throw new IllegalStateException("Local credential key at " + keyFile + " is accessible to its group or others ("
+                    + PosixFilePermissions.toString(current) + ") and could not be restricted to its owner", e);
+        }
+        LOG.log(System.Logger.Level.WARNING, "Local credential key at {0} was accessible to its group or others ({1}); restricted it to {2}",
+                keyFile, PosixFilePermissions.toString(current), PosixFilePermissions.toString(restricted));
     }
 
     /**
@@ -693,14 +738,23 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         }
     }
 
-    /** A {@code <target>.*.tmp} file next to the target, owner-only from creation where POSIX applies. */
-    private static Path createOwnerOnlyTempFile(Path dir, Path target) throws IOException {
+    /**
+     * A {@code <target>.*.tmp} file next to the target, owner-only from creation where POSIX applies
+     * (#99): the mode is set by the create call itself, never by a later chmod.
+     */
+    private Path createOwnerOnlyTempFile(Path dir, Path target) throws IOException {
         String prefix = target.getFileName() + ".";
         if (dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-            return Files.createTempFile(dir, prefix, ".tmp",
+            return tempFiles.create(dir, prefix, ".tmp",
                     PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
         }
-        return Files.createTempFile(dir, prefix, ".tmp");
+        return tempFiles.create(dir, prefix, ".tmp");
+    }
+
+    /** Creates a temporary file, as {@link Files#createTempFile(Path, String, String, FileAttribute[])}. */
+    @FunctionalInterface
+    interface TempFileCreator {
+        Path create(Path dir, String prefix, String suffix, FileAttribute<?>... attrs) throws IOException;
     }
 
     private void writeDurably(Path file, byte[] bytes) throws IOException {

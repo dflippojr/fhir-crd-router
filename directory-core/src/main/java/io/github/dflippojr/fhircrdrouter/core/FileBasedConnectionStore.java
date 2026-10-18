@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
@@ -57,10 +58,12 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public final class FileBasedConnectionStore implements ConnectionStore {
 
     private static final int REPLACE_ATTEMPTS = 25;
+    private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rw-------");
 
     private final Path path;
     private final ObjectMapper mapper;
     private final Mover mover;
+    private final TempFileCreator tempFiles;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile Snapshot cache;
 
@@ -75,15 +78,27 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     // Visible for tests, which inject a move that is refused the way Windows refuses it.
     FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover) {
+        this(path, mapper, mover, Files::createTempFile);
+    }
+
+    // Visible for tests, which check each temporary file's permissions the moment it exists.
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover, TempFileCreator tempFiles) {
         this.path = path;
         this.mapper = mapper;
         this.mover = mover;
+        this.tempFiles = tempFiles;
     }
 
     /** Moves a written temporary file over the store file. */
     @FunctionalInterface
     interface Mover {
         void move(Path tmp, Path target) throws IOException;
+    }
+
+    /** Creates a temporary file, as {@link Files#createTempFile(Path, String, String, FileAttribute[])}. */
+    @FunctionalInterface
+    interface TempFileCreator {
+        Path create(Path dir, String prefix, String suffix, FileAttribute<?>... attrs) throws IOException;
     }
 
     private static ObjectMapper defaultMapper() {
@@ -163,8 +178,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         Path tmp = null;
         try {
             Files.createDirectories(dir);
-            tmp = Files.createTempFile(dir, path.getFileName() + ".", ".tmp");
-            applyPermissions(tmp);
+            tmp = createOwnerOnlyTempFile(dir);
+            mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             mapper.writeValue(buffer, records);
             byte[] bytes = buffer.toByteArray();
@@ -239,14 +254,26 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /** Mirror the existing file's mode, else owner-only, where POSIX permissions exist. */
-    private void applyPermissions(Path tmp) throws IOException {
-        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-            return;
+    /**
+     * A {@code <name>.*.tmp} file next to the store file, owner-only from creation where POSIX
+     * permissions exist (#99): the mode is set by the create call itself, never by a later chmod.
+     */
+    private Path createOwnerOnlyTempFile(Path dir) throws IOException {
+        String prefix = path.getFileName() + ".";
+        if (posix()) {
+            return tempFiles.create(dir, prefix, ".tmp", PosixFilePermissions.asFileAttribute(OWNER_ONLY));
         }
-        Set<PosixFilePermission> perms = Files.exists(path)
-                ? Files.getPosixFilePermissions(path)
-                : PosixFilePermissions.fromString("rw-------");
-        Files.setPosixFilePermissions(tmp, perms);
+        return tempFiles.create(dir, prefix, ".tmp");
+    }
+
+    /** Gives the temporary file the existing store file's mode, where POSIX permissions exist. */
+    private void mirrorPermissions(Path tmp) throws IOException {
+        if (posix() && Files.exists(path)) {
+            Files.setPosixFilePermissions(tmp, Files.getPosixFilePermissions(path));
+        }
+    }
+
+    private static boolean posix() {
+        return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
     }
 }

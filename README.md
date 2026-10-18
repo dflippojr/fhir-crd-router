@@ -79,6 +79,26 @@ bundled wrapper:
 ./mvnw -pl examples-quickstart exec:java
 ```
 
+### Crash and permission tests
+
+`CrashDurabilityIT` in `directory-core` and `credential-store-encrypted-local`
+runs in the `integration-test` phase of `./mvnw verify`, through the Failsafe
+plugin. For each store it kills a writer JVM 100 times with SIGKILL at random
+points: four directories, at most four child JVMs at once. After each kill it
+checks the files with a fresh instance:
+- every acknowledged write is still there;
+- `key.bin` is still the first key ever created;
+- every file is owner-only, including any temporary file the kill left
+  behind (#120).
+
+On POSIX the children run with umask 000. The run prints its seed; pass
+`-Dcrash.seed=<seed>` to repeat the same operations and kill delays. Where a
+kill lands still depends on timing.
+
+`PermissionWindowTest` (Linux and macOS only) checks that both stores create
+their files owner-only from the start. It also checks that loading a `key.bin`
+that others can read restricts it to its owner, or fails when it cannot.
+
 ### Testing against the CRD reference server
 
 `CrdReferenceServerTest` runs the client against the
