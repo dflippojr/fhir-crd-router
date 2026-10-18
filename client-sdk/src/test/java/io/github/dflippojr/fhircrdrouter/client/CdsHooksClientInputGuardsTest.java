@@ -163,6 +163,39 @@ class CdsHooksClientInputGuardsTest {
         assertTrue(e.getMessage().contains("payerId=P"), e.getMessage());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"k-123\n", "k-123\r\n", "k 123", "k-é", "k-𐀀", "k\u0000"})
+    void apiKeyThatIsNotAB64TokenIsRejectedBeforeAnyRequest(String key) {
+        ConnectionRecord apiKey = apiKeyRecord();
+        CdsHooksClient client = new CdsHooksClient(credentials(key));
+
+        RouterException e = assertThrows(RouterException.class, () -> client.callHook(apiKey, "svc", REQUEST));
+        assertThrows(RouterException.class, () -> client.discoverServices(apiKey));
+
+        assertEquals("Credential for ref=api-key (payerId=P) is not a usable bearer token", e.getMessage());
+        assertTrue(rawRequests.isEmpty(), "payer called with " + rawRequests);
+    }
+
+    @Test
+    void b64TokenApiKeyIsSentAsIs() {
+        new CdsHooksClient(credentials("Az09-._~+/==")).callHook(apiKeyRecord(), "svc", REQUEST);
+
+        assertEquals("Bearer Az09-._~+/==", authorization.get());
+    }
+
+    private ConnectionRecord apiKeyRecord() {
+        return ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX).baseUrl(base)
+                .authType(AuthType.API_KEY).credentialRef("api-key").build();
+    }
+
+    private static CredentialProvider credentials(String secret) {
+        return new CredentialProvider() {
+            @Override public Optional<String> resolve(String credentialRef) { return Optional.of(secret); }
+            @Override public void put(String credentialRef, String secretValue) { }
+            @Override public void remove(String credentialRef) { }
+        };
+    }
+
     private static CredentialProvider noCredentials() {
         return new CredentialProvider() {
             @Override public Optional<String> resolve(String credentialRef) { return Optional.empty(); }

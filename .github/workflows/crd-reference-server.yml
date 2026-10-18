@@ -1,16 +1,29 @@
-name: CRD reference server
+name: CRD reference server drift
 
-# Builds the HL7 Da Vinci CRD reference implementation and runs the live
-# integration tests against it. Slow (the server build takes minutes), so it
-# runs weekly and on demand instead of on every push.
+# Every PR runs the client against the HL7 Da Vinci CRD reference
+# implementation at the commit pinned in .github/crd-ri.ref (the `crd-ri` job
+# in ci.yml). This workflow runs the same tests against RI `master` once a
+# week, so a change upstream shows up here and not as a red PR:
+# - on failure it opens, or comments on, one issue titled "CRD RI master drift"
+#   that lists the failing tests;
+# - on success, when master is newer than the pin, it opens a PR that bumps
+#   the pin.
+# DECISIONS.md ("CRD reference server pin") says how to bump the pin by hand.
 on:
   schedule:
     - cron: '0 12 * * 1'
   workflow_dispatch:
 
 jobs:
-  integration:
+  drift:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    outputs:
+      result: ${{ steps.tests.outcome }}
+      master: ${{ steps.ref.outputs.master }}
+      pinned: ${{ steps.ref.outputs.pinned }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -18,20 +31,138 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+      - name: Resolve RI master and the pin
+        id: ref
+        run: |
+          master=$(git ls-remote https://github.com/HL7-DaVinci/CRD.git refs/heads/master | cut -f1)
+          test -n "$master"
+          echo "master=$master" >> "$GITHUB_OUTPUT"
+          echo "pinned=$(tr -d '[:space:]' < .github/crd-ri.ref)" >> "$GITHUB_OUTPUT"
       - name: Build reference server image
-        run: docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+        env:
+          SHA: ${{ steps.ref.outputs.master }}
+        run: docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$SHA"
       - name: Start reference server
         run: |
           docker run -d --name crd-ri -p 18090:8090 crd-ri
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:18090/r4/cds-services > /dev/null && exit 0
             sleep 5
           done
           docker logs crd-ri | tail -50
           exit 1
+      - run: chmod +x mvnw
       - name: Run tests against it
+        id: tests
+        continue-on-error: true
         env:
           CRD_RI_BASE_URL: http://127.0.0.1:18090/r4
+        run: ./mvnw -B -ntp -pl client-sdk -am test -Dtest=CrdReferenceServerTest -Dsurefire.failIfNoSpecifiedTests=false
+      - name: List failing tests
+        if: steps.tests.outcome != 'success'
         run: |
-          chmod +x mvnw
-          ./mvnw -B -ntp -pl client-sdk -am test
+          {
+            echo "Failing tests against HL7-DaVinci/CRD@${{ steps.ref.outputs.master }}:"
+            echo
+            # One line per failed or errored testcase, from the surefire XML reports.
+            for f in client-sdk/target/surefire-reports/TEST-*.xml; do
+              [ -f "$f" ] || continue
+              python3 - "$f" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          for case in ET.parse(sys.argv[1]).getroot().iter("testcase"):
+              for kind in ("failure", "error"):
+                  bad = case.find(kind)
+                  if bad is not None:
+                      message = (bad.get("message") or "").splitlines()[0:1]
+                      print(f"- `{case.get('classname')}.{case.get('name')}` ({kind}): {message[0][:300] if message else ''}")
+          PY
+            done
+          } > failures.md
+          grep -q '^- ' failures.md || echo "- No surefire report: the build or server failed before the tests ran. See the run log." >> failures.md
+          cat failures.md
+      - name: Reference server log
+        if: steps.tests.outcome != 'success'
+        run: docker logs crd-ri 2>&1 | tail -200
+      - uses: actions/upload-artifact@v7
+        if: steps.tests.outcome != 'success'
+        with:
+          name: drift-failures
+          path: failures.md
+
+  report-drift:
+    needs: drift
+    # always(): a failed image build or server start is drift too.
+    if: always() && needs.drift.outputs.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: drift-failures
+      - name: Open or comment on the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PINNED: ${{ needs.drift.outputs.pinned }}
+        run: |
+          title="CRD RI master drift"
+          {
+            cat failures.md 2>/dev/null \
+              || echo "The reference server image did not build or start against RI master. See the run log."
+            echo
+            echo "Pinned commit (still used by every PR): HL7-DaVinci/CRD@$PINNED"
+            echo "Run: $RUN_URL"
+          } > body.md
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
+      - name: Fail the run
+        run: |
+          echo "::error::Tests failed against RI master; see the CRD RI master drift issue."
+          exit 1
+
+  bump-pin:
+    needs: drift
+    if: needs.drift.outputs.result == 'success' && needs.drift.outputs.master != needs.drift.outputs.pinned
+    runs-on: ubuntu-latest
+    # Pushing the bump branch needs contents: write; opening the PR needs
+    # pull-requests: write.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open a PR that bumps the pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MASTER: ${{ needs.drift.outputs.master }}
+          PINNED: ${{ needs.drift.outputs.pinned }}
+        run: |
+          branch="crd-ri/bump-${MASTER:0:12}"
+          if gh pr list --head "$branch" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "A PR from $branch is already open."
+            exit 0
+          fi
+          # The pin lives in .github/crd-ri.ref; the docs quote it too.
+          git grep -l "$PINNED" | xargs sed -i "s/$PINNED/$MASTER/g"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "Bump CRD reference server pin to ${MASTER:0:12}"
+          git push origin "HEAD:refs/heads/$branch"
+          cat > body.md <<EOF
+          The weekly drift check passed against HL7-DaVinci/CRD master at \`$MASTER\`, so this moves the pin in \`.github/crd-ri.ref\` from \`$PINNED\`.
+
+          Upstream changes: https://github.com/HL7-DaVinci/CRD/compare/$PINNED...$MASTER
+
+          A PR opened with the workflow token does not start CI. Close and reopen it, or push to it, so \`gate\` runs against the new pin before merging.
+          EOF
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "Bump CRD reference server pin to ${MASTER:0:12}" --body-file body.md

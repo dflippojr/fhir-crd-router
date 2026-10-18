@@ -9,6 +9,8 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookResponse;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -25,12 +27,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -40,7 +44,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@code CRD_RI_BASE_URL} is set, e.g.:
  *
  * <pre>
- * docker build -t crd-ri https://github.com/HL7-DaVinci/CRD.git#master
+ * docker build -t crd-ri "https://github.com/HL7-DaVinci/CRD.git#$(cat .github/crd-ri.ref)"
  * docker run -d -p 18090:8090 crd-ri
  * CRD_RI_BASE_URL=http://127.0.0.1:18090/r4 ./mvnw -pl client-sdk -am test
  * </pre>
@@ -101,37 +105,99 @@ class CrdReferenceServerTest {
     @ValueSource(strings = {"hospital-bed", "home-oxygen"})
     void orderSignReturnsCardsAndCoverageInformation(String rule) throws Exception {
         JsonNode fixture = fixture(rule);
-        JsonNode r = fixture.get("resources");
-        JsonNode deviceRequest = r.get("deviceRequest");
-        String serviceId = serviceFor("order-sign").id();
+        CdsHookResponse response = client.callHook(record, serviceFor("order-sign").id(),
+                orderSign(fixture, orderSignPrefetch(fixture).build()));
+        assertExpectedRuleWithCoverage(fixture, response);
+    }
 
-        // The reference server wants its own prefetch keys (from discovery), not CRD's "patient"/"coverage".
-        CdsHookRequest request = CdsHookRequest.of(
-                new CrdHookContext.OrderSign(fixture.get("userId").asText(), fixture.get("patientId").asText(), null,
-                        bundle("collection", deviceRequest)),
-                CrdPrefetch.builder()
-                        .put("deviceRequestBundle", bundle("searchset", deviceRequest, r.get("patient"),
-                                r.get("practitioner"), r.get("payer"), r.get("location"), r.get("practitionerRole"),
-                                r.get("coverage")))
-                        .put("coverageBundle", bundle("searchset", r.get("coverage")))
-                        .build());
+    /**
+     * CDS Hooks 2.0 (https://cds-hooks.hl7.org/2.0/#prefetch-template): "If the CDS Client has no data to
+     * populate a template prefetch key, the prefetch template key MUST have a value of null."
+     */
+    @Test
+    void orderSignAcceptsNullForPrefetchKeysWithNoData() throws Exception {
+        JsonNode fixture = fixture("hospital-bed");
+        CdsHookRequest request = orderSign(fixture, orderSignPrefetch(fixture)
+                .putNoData("serviceRequestBundle")
+                .putNoData("medicationRequestBundle")
+                .build());
+        String body = mapper.writeValueAsString(request);
+        assertTrue(body.contains("\"serviceRequestBundle\":null"), "null prefetch must be sent, not omitted: " + body);
 
-        CdsHookResponse response = client.callHook(record, serviceId, request);
+        CdsHookResponse response = client.callHook(record, serviceFor("order-sign").id(), request);
 
-        assertFalse(response.cards().isEmpty(), "expected at least one card, got " + response.rawJson());
-        Card card = response.cards().get(0);
-        // The rule's decision depends on the reference server's CQL; assert only that the right rule matched.
-        String expectedRule = fixture.get("expectedRule").asText();
-        assertTrue(response.cards().stream().anyMatch(c -> c.summary().startsWith(expectedRule)),
-                "expected " + expectedRule + ", got " + response.rawJson());
-        assertFalse(card.source().label().isBlank(), "CRD requires source.label");
-        assertEquals("http://hl7.org/fhir/us/davinci-crd/CodeSystem/cardType", card.source().topic().system());
+        assertExpectedRuleWithCoverage(fixture, response);
+    }
 
-        List<CoverageInformation> coverage = response.coverageInformation();
-        assertFalse(coverage.isEmpty(), "expected coverage-information, got " + response.rawJson());
-        assertEquals("DeviceRequest/devreq-1", coverage.get(0).resourceReference());
-        assertEquals("Coverage/cov-1", coverage.get(0).coverage());
-        assertNotNull(coverage.get(0).coverageAssertionId(), "reference server sends its assertion id as \"identifier\"");
+    /**
+     * CDS Hooks 2.0 (https://cds-hooks.hl7.org/2.0/#calling-a-cds-service): a service is called at
+     * {@code {baseUrl}/cds-services/{service.id}}. An id with path or query characters must stay one
+     * segment, so it can't reach another service (the RI's order-sign service, here).
+     */
+    @ParameterizedTest(name = "serviceId: {0}")
+    @ValueSource(strings = {"../%s", "unknown/../%s", "%s/extra", "%s?hook=order-sign", "order-select-crd#%s"})
+    void serviceIdsThatNeedPathEncodingReachNoOtherService(String pattern) throws Exception {
+        JsonNode fixture = fixture("hospital-bed");
+        String serviceId = String.format(pattern, serviceFor("order-sign").id());
+        CdsHookRequest request = orderSign(fixture, orderSignPrefetch(fixture).build());
+
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> client.callHook(record, serviceId, request));
+
+        assertEquals(PayerCallPhase.HOOK, error.phase());
+        int status = error.statusCode().orElseThrow();
+        assertTrue(status == 400 || status == 404, "expected 400 or 404 for " + serviceId + ", got " + status);
+        String rawPath = error.uri().getRawPath();
+        String segment = rawPath.substring(rawPath.indexOf("/cds-services/") + "/cds-services/".length());
+        assertFalse(segment.contains("/"), "serviceId must stay one path segment: " + error.uri());
+        assertEquals(null, error.uri().getRawQuery(), "no query: " + error.uri());
+        assertEquals(null, error.uri().getRawFragment(), "no fragment: " + error.uri());
+        System.out.println("RI serviceId: " + serviceId + " -> " + error.uri().getRawPath() + " HTTP " + status);
+    }
+
+    /**
+     * CDS Hooks 2.0 (https://cds-hooks.hl7.org/2.0/#fhir-resource-access): a client may send
+     * {@code fhirServer} and {@code fhirAuthorization} so the service can call the EHR. With complete
+     * prefetch the RI has no need to call it, so it must still answer as usual.
+     */
+    @Test
+    void orderSignAcceptsFhirServerAndFhirAuthorization() throws Exception {
+        JsonNode fixture = fixture("hospital-bed");
+        CdsHookRequest request = orderSign(fixture, orderSignPrefetch(fixture).build()).withFhirServer(
+                "https://ehr.example.org/fhir",
+                new CdsHookRequest.FhirAuthorization("synthetic-access-token", "Bearer", 300,
+                        "user/Patient.read user/Coverage.read user/DeviceRequest.read", "crd-ri-test"));
+        JsonNode body = mapper.valueToTree(request);
+        assertEquals("https://ehr.example.org/fhir", body.path("fhirServer").asText());
+        assertEquals("Bearer", body.path("fhirAuthorization").path("token_type").asText());
+
+        CdsHookResponse response = client.callHook(record, serviceFor("order-sign").id(), request);
+
+        assertExpectedRuleWithCoverage(fixture, response);
+    }
+
+    /**
+     * CDS Hooks 2.0 (https://cds-hooks.hl7.org/2.0/#http-status-codes): "CDS Services MAY return other
+     * HTTP statuses, specifically 4xx and 5xx HTTP error codes." A context the RI can't read must come
+     * back as a 4xx that the client reports as a {@link PayerCallException}, not as a parse failure.
+     */
+    @Test
+    void invalidHookContextIsAClientErrorNotAParseCrash() throws Exception {
+        JsonNode fixture = fixture("hospital-bed");
+        // draftOrders must be a Bundle; a string is the wrong JSON type, so the RI can't parse the context.
+        CdsHookRequest request = new CdsHookRequest("order-sign", "invalid-context-test",
+                Map.of("userId", fixture.get("userId").asText(), "patientId", fixture.get("patientId").asText(),
+                        "draftOrders", "not-a-bundle"),
+                null);
+
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> client.callHook(record, serviceFor("order-sign").id(), request));
+
+        assertEquals(PayerCallPhase.HOOK, error.phase());
+        assertEquals(400, error.statusCode().orElseThrow(), error.getMessage());
+        assertFalse(error.responseBody().isBlank(), "the RI's error body must be kept");
+        assertFalse(error.timedOut());
+        System.out.println("RI invalid context: HTTP 400 " + error.responseBody());
     }
 
     @ParameterizedTest(name = "typed CRD hook: {0}")
@@ -186,6 +252,40 @@ class CrdReferenceServerTest {
         assertNotNull(response.systemActions(), hook + " system actions parse");
         response.coverageInformation();
         System.out.println("RI typed hook: " + hook + " service=" + service.id() + " parsed successfully");
+    }
+
+    // The reference server wants its own prefetch keys (from discovery), not CRD's "patient"/"coverage".
+    private CrdPrefetch.Builder orderSignPrefetch(JsonNode fixture) {
+        JsonNode r = fixture.get("resources");
+        return CrdPrefetch.builder()
+                .put("deviceRequestBundle", bundle("searchset", r.get("deviceRequest"), r.get("patient"),
+                        r.get("practitioner"), r.get("payer"), r.get("location"), r.get("practitionerRole"),
+                        r.get("coverage")))
+                .put("coverageBundle", bundle("searchset", r.get("coverage")));
+    }
+
+    private CdsHookRequest orderSign(JsonNode fixture, Map<String, Object> prefetch) {
+        return CdsHookRequest.of(
+                new CrdHookContext.OrderSign(fixture.get("userId").asText(), fixture.get("patientId").asText(), null,
+                        bundle("collection", fixture.get("resources").get("deviceRequest"))),
+                prefetch);
+    }
+
+    private static void assertExpectedRuleWithCoverage(JsonNode fixture, CdsHookResponse response) {
+        assertFalse(response.cards().isEmpty(), "expected at least one card, got " + response.rawJson());
+        Card card = response.cards().get(0);
+        // The rule's decision depends on the reference server's CQL; assert only that the right rule matched.
+        String expectedRule = fixture.get("expectedRule").asText();
+        assertTrue(response.cards().stream().anyMatch(c -> c.summary().startsWith(expectedRule)),
+                "expected " + expectedRule + ", got " + response.rawJson());
+        assertFalse(card.source().label().isBlank(), "CRD requires source.label");
+        assertEquals("http://hl7.org/fhir/us/davinci-crd/CodeSystem/cardType", card.source().topic().system());
+
+        List<CoverageInformation> coverage = response.coverageInformation();
+        assertFalse(coverage.isEmpty(), "expected coverage-information, got " + response.rawJson());
+        assertEquals("DeviceRequest/devreq-1", coverage.get(0).resourceReference());
+        assertEquals("Coverage/cov-1", coverage.get(0).coverage());
+        assertNotNull(coverage.get(0).coverageAssertionId(), "reference server sends its assertion id as \"identifier\"");
     }
 
     private CdsServiceDescriptor serviceFor(String hook) {
