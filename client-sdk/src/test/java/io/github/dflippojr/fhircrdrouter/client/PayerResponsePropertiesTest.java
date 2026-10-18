@@ -102,11 +102,18 @@ class PayerResponsePropertiesTest {
      * Any token response, including any JSON type for {@code access_token} and {@code expires_in}:
      * the payer either receives a bearer token that is exactly the non-blank string the token
      * endpoint issued, or is never called and the caller gets a documented exception. String
-     * tokens use the RFC 6750 {@code b64token} characters; any other text is #111.
+     * tokens here are mostly RFC 6750 {@code b64token}s; the any-text property below covers the rest.
      */
     @Property(seed = SEED)
     void tokenResponsesYieldTheIssuedTokenOrADocumentedFailure(@ForAll("tokenBodies") String tokenBody,
                                                                @ForAll("statuses") int tokenStatus) {
+        checkTokenResponse(tokenBody, tokenStatus);
+    }
+
+    /** As above, with any text as the token: one that is not a b64token is never sent or cached (#111). */
+    @Property(seed = SEED)
+    void anyTokenTextYieldsTheIssuedTokenOrADocumentedFailure(@ForAll("anyTextTokenBodies") String tokenBody,
+                                                              @ForAll("statuses") int tokenStatus) {
         checkTokenResponse(tokenBody, tokenStatus);
     }
 
@@ -135,9 +142,9 @@ class PayerResponsePropertiesTest {
         }
     }
 
-    /** The token the SDK should accept: a non-blank JSON string {@code access_token} in a 2xx response. */
+    /** The token the SDK should accept: a JSON string {@code access_token} that is a b64token, in a 2xx response. */
     private static Optional<String> usableToken(int status, String body) {
-        return status / 100 == 2 ? textToken(body).filter(token -> !token.isBlank()) : Optional.empty();
+        return status / 100 == 2 ? textToken(body).filter(token -> B64TOKEN.matcher(token).matches()) : Optional.empty();
     }
 
     /** The body's {@code access_token} when the body is JSON and that field is a string. */
@@ -211,9 +218,12 @@ class PayerResponsePropertiesTest {
         Arbitrary<String> b64token = Combinators.combine(
                 Arbitraries.strings().alpha().numeric().withChars("-._~+/").ofMinLength(1).ofMaxLength(24),
                 Arbitraries.strings().withChars('=').ofMaxLength(2)).as(String::concat);
-        // The "any JSON" bodies can hold text access_tokens too; keep those to b64token as well.
-        return tokenBodies(Arbitraries.oneOf(b64token, Arbitraries.of("", " ", "	")))
-                .filter(body -> textToken(body).map(t -> t.isBlank() || B64TOKEN.matcher(t).matches()).orElse(true));
+        return tokenBodies(Arbitraries.oneOf(b64token, Arbitraries.of("", " ", "	")));
+    }
+
+    @Provide
+    Arbitrary<String> anyTextTokenBodies() {
+        return tokenBodies(JsonArbitraries.text());
     }
 
     private static Arbitrary<String> tokenBodies(Arbitrary<String> textTokens) {
