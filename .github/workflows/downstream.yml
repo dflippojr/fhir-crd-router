@@ -1,0 +1,136 @@
+name: Downstream
+
+# Builds this repo's only real consumer, dflippojr/payer-onboarding-workbench,
+# against this repo's master instead of the older commit the workbench pins in
+# scripts/install-crd-router.sh. A break here then surfaces within a day, not at
+# the next pin bump. On failure it opens (or comments on) one issue titled
+# "Downstream: workbench fails against master"; see
+# .github/scripts/downstream-report.sh. The workbench is only read, never pushed.
+#
+# Pull requests that change this check run it as a dry run: the job summary shows
+# the issue it would file, and no issue is touched. So do dispatches with dry_run
+# set and runs on any branch other than master.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Write the issue to the job summary instead of filing it
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/downstream.yml
+      - .github/scripts/downstream-report.sh
+
+permissions: {}
+
+concurrency:
+  group: downstream-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  workbench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The report step files the failure issue in this repo (GITHUB_TOKEN is
+      # scoped to this repo) and reads earlier runs for the last good commit.
+      issues: write
+      actions: read
+    env:
+      LOG_DIR: ${{ github.workspace }}/downstream-logs
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: router
+          # Full history, for the commit range in the failure issue.
+          fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          repository: dflippojr/payer-onboarding-workbench
+          path: workbench
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          # The workbench needs JDK 21; this repo builds on 17 and 21.
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Record the commits under test
+        id: shas
+        run: |
+          mkdir -p "$LOG_DIR"
+          echo "router=$(git -C router rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "workbench=$(git -C workbench rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Replaces the workbench's pinned install (scripts/install-crd-router.sh):
+      # both use 0.1.0-SNAPSHOT, so the workbench resolves this build instead.
+      - name: Install this repo into the local Maven repository
+        id: install
+        continue-on-error: true
+        working-directory: router
+        run: |
+          set -o pipefail
+          rm -rf ~/.m2/repository/io/github/dflippojr
+          chmod +x mvnw
+          ./mvnw -B -ntp install -DskipTests 2>&1 | tee "$LOG_DIR/install.log"
+      - name: Workbench ./mvnw verify
+        id: verify
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        working-directory: workbench
+        run: |
+          set -o pipefail
+          chmod +x mvnw
+          ./mvnw -B -ntp verify 2>&1 | tee "$LOG_DIR/verify.log"
+      # The REST demo tour only; the Playwright UI journeys are out of scope here.
+      - name: Workbench demo tour (reuses the jar built by verify)
+        id: demo
+        if: steps.verify.outcome == 'success'
+        continue-on-error: true
+        working-directory: workbench
+        env:
+          DEMO_SKIP_BUILD: '1'
+        run: |
+          set -o pipefail
+          node scripts/demo.mjs 2>&1 | tee "$LOG_DIR/demo.log"
+      - name: Record the tested workbench commit
+        if: steps.demo.outcome == 'success'
+        run: echo "${{ steps.shas.outputs.workbench }}" > "$LOG_DIR/workbench-sha.txt"
+      - name: Upload the tested workbench commit
+        if: steps.demo.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: downstream-tested
+          path: downstream-logs/workbench-sha.txt
+          retention-days: 90
+      - name: Report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROUTER_DIR: ${{ github.workspace }}/router
+          ROUTER_SHA: ${{ steps.shas.outputs.router }}
+          WORKBENCH_SHA: ${{ steps.shas.outputs.workbench }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome || 'skipped' }}
+          DEMO_OUTCOME: ${{ steps.demo.outcome || 'skipped' }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/master' || inputs.dry_run == true }}
+        run: bash router/.github/scripts/downstream-report.sh
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: downstream-logs
+          path: downstream-logs/
+          if-no-files-found: ignore
+      - name: Fail unless the workbench passed
+        if: steps.demo.outcome != 'success'
+        run: |
+          echo "install=${{ steps.install.outcome }} verify=${{ steps.verify.outcome }} demo=${{ steps.demo.outcome }}"
+          exit 1
