@@ -135,7 +135,7 @@ in `.github/crd-ri.ref`; see DECISIONS.md, "CRD reference server pin".
 
 ### CI
 
-GitHub Actions runs two workflows:
+GitHub Actions runs three workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
   push to `master`, with four jobs:
@@ -159,6 +159,8 @@ GitHub Actions runs two workflows:
   and on manual dispatch. On failure it opens or comments on the "CRD RI
   master drift" issue; on success with a newer RI commit it opens a PR that
   bumps the pin.
+- **Downstream** (`.github/workflows/downstream.yml`): builds the workbench
+  against `master` nightly; see [Compatibility](#compatibility).
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub
 Actions weekly and opens at most 3 pull requests per ecosystem, labeled
@@ -172,6 +174,26 @@ these pull requests (see the PR checks for how it ends).
 A local SonarQube scan against a self-hosted server is optional and only for
 the maintainer. The `sonar` job analyzes through the Maven scanner,
 which does not read the root `sonar-project.properties`.
+
+## Compatibility
+
+This repo has one real consumer,
+[payer-onboarding-workbench](https://github.com/dflippojr/payer-onboarding-workbench),
+which pins an older commit of this repo in `scripts/install-crd-router.sh`.
+The **Downstream** workflow (`.github/workflows/downstream.yml`) checks that
+the workbench still works against this repo's current `master`, so a breaking
+API or behaviour change shows up within a day instead of at the next pin bump.
+
+It runs nightly (07:00 UTC) and on manual dispatch. It installs `master` into
+the local Maven repository with `./mvnw install -DskipTests`, in place of the
+workbench's pinned install, then runs the workbench's `./mvnw verify` and its
+REST demo tour (`node scripts/demo.mjs`). It skips the workbench's Playwright
+UI journeys, because the goal is API compatibility. On success the job summary
+records both tested SHAs. On failure it opens, or comments on, one issue titled
+"Downstream: workbench fails against master", with the failing tests and the
+commit range since the last passing run. It only reads the workbench and never
+pushes to it. Pull requests that change the check, and dispatches with
+`dry_run` set, write that issue to the job summary instead of filing it.
 
 ## Status
 
