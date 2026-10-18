@@ -3,16 +3,15 @@ package io.github.dflippojr.fhircrdrouter.credential.local;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -47,17 +46,14 @@ class EncryptedLocalCredentialProviderCacheTest {
     @Test
     void externalSameLengthRewriteWithNewMtimeIsVisible(@TempDir Path tempDir) throws Exception {
         EncryptedLocalCredentialProvider provider = new EncryptedLocalCredentialProvider(tempDir);
-        provider.put("ref-a", "value-a");
-        provider.put("ref-b", "value-b");
-        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
-
         Path secrets = tempDir.resolve("secrets.properties");
+        byte[] earlier = putTwice(provider, secrets);
+
         FileTime before = Files.getLastModifiedTime(secrets);
-        swapCiphertexts(secrets);
+        rewriteSameLength(secrets, earlier);
         Files.setLastModifiedTime(secrets, FileTime.fromMillis(before.toMillis() + 10_000));
 
-        assertEquals("value-b", provider.resolve("ref-a").orElseThrow());
-        assertEquals("value-a", provider.resolve("ref-b").orElseThrow());
+        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
         assertEquals(1, provider.parseCount());
     }
 
@@ -66,21 +62,19 @@ class EncryptedLocalCredentialProviderCacheTest {
         AtomicLong clock = new AtomicLong();
         EncryptedLocalCredentialProvider provider =
                 new EncryptedLocalCredentialProvider(tempDir, null, Duration.ofSeconds(30), clock::get);
-        provider.put("ref-a", "value-a");
-        provider.put("ref-b", "value-b");
-        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
-
         Path secrets = tempDir.resolve("secrets.properties");
+        byte[] earlier = putTwice(provider, secrets);
+
         FileTime before = Files.getLastModifiedTime(secrets);
-        swapCiphertexts(secrets);
+        rewriteSameLength(secrets, earlier);
         Files.setLastModifiedTime(secrets, before);
 
         clock.addAndGet(Duration.ofSeconds(29).toNanos());
-        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
+        assertEquals("value-b", provider.resolve("ref-a").orElseThrow());
         assertEquals(0, provider.parseCount());
 
         clock.addAndGet(Duration.ofSeconds(1).toNanos());
-        assertEquals("value-b", provider.resolve("ref-a").orElseThrow());
+        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
         assertEquals(1, provider.parseCount());
     }
 
@@ -103,16 +97,14 @@ class EncryptedLocalCredentialProviderCacheTest {
     void zeroIntervalComparesBytesEveryTime(@TempDir Path tempDir) throws Exception {
         EncryptedLocalCredentialProvider provider =
                 new EncryptedLocalCredentialProvider(tempDir, null, Duration.ZERO);
-        provider.put("ref-a", "value-a");
-        provider.put("ref-b", "value-b");
-        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
-
         Path secrets = tempDir.resolve("secrets.properties");
+        byte[] earlier = putTwice(provider, secrets);
+
         FileTime before = Files.getLastModifiedTime(secrets);
-        swapCiphertexts(secrets);
+        rewriteSameLength(secrets, earlier);
         Files.setLastModifiedTime(secrets, before);
 
-        assertEquals("value-b", provider.resolve("ref-a").orElseThrow());
+        assertEquals("value-a", provider.resolve("ref-a").orElseThrow());
     }
 
     @Test
@@ -147,12 +139,24 @@ class EncryptedLocalCredentialProviderCacheTest {
         assertFalse(cached.contains("synthetic-plaintext-marker"));
     }
 
-    /** Swaps the two entries' ciphertexts in place: same file length, different content. */
-    private static void swapCiphertexts(Path secrets) throws Exception {
-        String original = Files.readString(secrets, StandardCharsets.ISO_8859_1);
-        String swapped = original.replace("ref-a=", "ref-x=").replace("ref-b=", "ref-a=").replace("ref-x=", "ref-b=");
-        assertNotEquals(original, swapped);
-        assertEquals(original.length(), swapped.length());
-        Files.writeString(secrets, swapped, StandardCharsets.ISO_8859_1);
+    /**
+     * Puts ref-a as value-a, then as value-b, and returns the file bytes from the first put. Entries
+     * are bound to their reference, so an earlier copy of the file, not a swap of two entries, is
+     * what gives same-length content that resolves to another value.
+     */
+    private static byte[] putTwice(EncryptedLocalCredentialProvider provider, Path secrets) throws Exception {
+        provider.put("ref-a", "value-a");
+        byte[] earlier = Files.readAllBytes(secrets);
+        provider.put("ref-a", "value-b");
+        assertEquals("value-b", provider.resolve("ref-a").orElseThrow());
+        return earlier;
+    }
+
+    /** Overwrites the file in place with other content of the same length. */
+    private static void rewriteSameLength(Path secrets, byte[] content) throws Exception {
+        byte[] current = Files.readAllBytes(secrets);
+        assertFalse(Arrays.equals(current, content));
+        assertEquals(current.length, content.length);
+        Files.write(secrets, content);
     }
 }
