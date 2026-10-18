@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # Keep Linux quickstart proof even when another platform exposes a bug.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         java: ['17', '21']
