@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -324,6 +325,7 @@ class CrashDurabilityIT {
             watchdog.setDaemon(true);
             watchdog.start();
             try (FileOutputStream log = new FileOutputStream(args[1], true)) {
+                warmUp();
                 var store = new FileBasedConnectionStore(dir.resolve("connections.yaml"));
                 store.findAll();
                 List<String> mine = new ArrayList<>();
@@ -346,6 +348,26 @@ class CrashDurabilityIT {
                         logLine(log, "begin create " + name);
                         new FileBasedConnectionStore(dir.resolve("first-use").resolve(name + ".yaml")).save(record(name));
                         logLine(log, "ack create " + name);
+                    }
+                }
+            }
+        }
+
+        /**
+         * Saves and deletes a record in a scratch directory outside the lane, so class loading and
+         * the first compilations happen before {@link #READY}. Otherwise a loaded machine spends the
+         * whole kill window on the first save and the kills land before anything was acknowledged.
+         */
+        private static void warmUp() throws IOException {
+            Path scratch = Files.createTempDirectory("crash-warm-up");
+            try {
+                var store = new FileBasedConnectionStore(scratch.resolve("connections.yaml"));
+                store.save(record("P-warm-up"));
+                store.delete("P-warm-up", Environment.SANDBOX);
+            } finally {
+                try (Stream<Path> files = Files.walk(scratch)) {
+                    for (Path file : files.sorted(Comparator.reverseOrder()).toList()) {
+                        Files.deleteIfExists(file);
                     }
                 }
             }
