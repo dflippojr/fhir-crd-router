@@ -24,3 +24,10 @@ What it does:
 
 Swap `sample-connections.yaml` for a real payer's sandbox `baseUrl` (and set
 `authType`/`credentialRef` appropriately) once you have one to test against.
+
+CI runs these same commands on Linux with JDK 21 after the full `verify`
+gate. Run `bash .github/scripts/quickstart-smoke.sh` from the repository root
+to repeat the smoke check: it checks the exit status, two discovery GETs
+(connection verification and explicit discovery), one hook POST, and the
+absence of stack traces and credential material. The sample uses `NONE`
+authentication, so there are currently no sample credential values to scan.
