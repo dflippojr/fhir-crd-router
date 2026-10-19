@@ -41,9 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Four lanes run at once, each with its own directory and at most one child JVM at a time. A
  * child loops {@code put}, {@code remove} and first-use key creation in a new store, logging each
- * operation to a side log before it starts and again once it returns. The lane kills it after a
- * random delay with {@link Process#destroyForcibly()} and checks the directory with fresh
- * instances, then starts the next child on the same directory. On POSIX the child runs with umask
+ * operation to a side log before it starts and again once it returns. After two acknowledged puts,
+ * the lane kills it after a random delay with {@link Process#destroyForcibly()} and checks the
+ * directory with fresh instances, then starts the next child on the same directory. On POSIX the child runs with umask
  * 000, so a file that is not owner-only from creation shows up in the permissions check.
  *
  * <p>The seed is printed; {@code -Dcrash.seed=<seed>} repeats the same operations and kill delays
@@ -93,6 +93,21 @@ class CrashDurabilityIT {
         assertTrue(acknowledged > kills, "the children barely ran; the kills tested little");
     }
 
+    /** #135: startup slower than the entire kill window must still leave acknowledged saves. */
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aSlowWriterStillAcknowledgesSavesBeforeItIsKilled(@TempDir Path root) throws Exception {
+        long seed = 135;
+        Lane lane = new Lane(0, root, seed);
+        Files.createDirectories(root);
+        Process child = lane.start(0, seed, MAX_KILL_DELAY_MS + 50);
+        Lane.killAfterReady(child, seed);
+        Operations operations = Operations.read(root.resolve("operations.log"));
+        assertTrue(operations.acknowledgedOf("put").size() >= 2,
+                "a slow child was killed before two saves were acknowledged: " + operations.acknowledged);
+        lane.check(operations, 0, "slow child seed " + seed);
+    }
+
     record LaneResult(int lane, long seed, int kills, int acknowledged, int killedMidOperation, int keysCreated,
                       int temporaryFilesLeft, List<Long> iterationSeeds) {
         @Override
@@ -128,13 +143,7 @@ class CrashDurabilityIT {
                 long iterationSeed = random.nextLong();
                 iterationSeeds.add(iterationSeed);
                 Process child = start(iteration, iterationSeed);
-                try {
-                    awaitReady(child);
-                    Thread.sleep(new Random(iterationSeed).nextInt(MAX_KILL_DELAY_MS));
-                } finally {
-                    child.destroyForcibly();
-                    child.waitFor();
-                }
+                killAfterReady(child, iterationSeed);
                 String where = "lane " + lane + " iteration " + iteration + " seed " + iterationSeed;
                 Operations operations = Operations.read(log);
                 check(operations, iteration, where);
@@ -147,7 +156,21 @@ class CrashDurabilityIT {
                     operations.acknowledgedOf("create").size(), leftovers, iterationSeeds);
         }
 
+        private static void killAfterReady(Process child, long iterationSeed) throws IOException, InterruptedException {
+            try {
+                awaitReady(child);
+                Thread.sleep(new Random(iterationSeed).nextInt(MAX_KILL_DELAY_MS));
+            } finally {
+                child.destroyForcibly();
+                child.waitFor();
+            }
+        }
+
         private Process start(int iteration, long iterationSeed) throws IOException {
+            return start(iteration, iterationSeed, 0);
+        }
+
+        private Process start(int iteration, long iterationSeed, int startupDelayMs) throws IOException {
             List<String> command = new ArrayList<>();
             if (POSIX) {
                 command.addAll(List.of("/bin/sh", "-c", "umask 000 && exec \"$@\"", "sh"));
@@ -155,7 +178,8 @@ class CrashDurabilityIT {
             command.addAll(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                     "-Xmx48m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1",
                     "-cp", System.getProperty("java.class.path"), WriterProcess.class.getName(),
-                    dir.toString(), log.toString(), String.valueOf(iteration), String.valueOf(iterationSeed)));
+                    dir.toString(), log.toString(), String.valueOf(iteration), String.valueOf(iterationSeed),
+                    String.valueOf(startupDelayMs)));
             return new ProcessBuilder(command).redirectErrorStream(true).start();
         }
 
@@ -329,9 +353,10 @@ class CrashDurabilityIT {
      * standard input closes.
      */
     public static final class WriterProcess {
+        /** Emitted once, after two saves returned and their acknowledgements reached the side log. */
         static final String READY = "READY";
 
-        public static void main(String[] args) throws IOException {
+        public static void main(String[] args) throws IOException, InterruptedException {
             Path dir = Path.of(args[0]);
             int iteration = Integer.parseInt(args[2]);
             Random random = new Random(Long.parseLong(args[3]));
@@ -350,8 +375,9 @@ class CrashDurabilityIT {
             try (FileOutputStream log = new FileOutputStream(args[1], true)) {
                 var provider = new EncryptedLocalCredentialProvider(dir.resolve("main"), null, Duration.ZERO);
                 List<String> mine = new ArrayList<>();
-                System.out.println(READY);
-                System.out.flush();
+                // Test hook: emulate a host whose first durable write outlasts the kill window.
+                Thread.sleep(Integer.parseInt(args[4]));
+                int saves = 0;
                 for (int n = 0; ; n++) {
                     String name = "i" + iteration + "-" + n;
                     int choice = random.nextInt(10);
@@ -360,6 +386,12 @@ class CrashDurabilityIT {
                         provider.put(name, secret(name));
                         logLine(log, "ack put " + name);
                         mine.add(name);
+                        // #135: start the random kill window only after this child has durable work.
+                        // Two acknowledged saves per child keep acknowledged > kills independent of host speed.
+                        if (++saves == 2) {
+                            System.out.println(READY);
+                            System.out.flush();
+                        }
                     } else if (choice < 9) {
                         String ref = mine.remove(random.nextInt(mine.size()));
                         logLine(log, "begin remove " + ref);

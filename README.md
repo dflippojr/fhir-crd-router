@@ -85,7 +85,11 @@ bundled wrapper:
 runs in the `integration-test` phase of `./mvnw verify`, through the Failsafe
 plugin. For each store it kills a writer JVM 100 times with SIGKILL at random
 points: four directories, at most four child JVMs at once. After each kill it
-checks the files with a fresh instance:
+checks the files with a fresh instance. Each child signals readiness only after
+two saves have returned and been acknowledged in its side log; the random kill
+delay starts then, so slow startup cannot exhaust the work window. A regression
+in each suite delays a child longer than the entire kill window and checks that
+it still acknowledges at least two saves before being killed. The checks are:
 - every acknowledged write is still there;
 - `key.bin` is still the first key ever created;
 - every file is owner-only, including any temporary file the kill left
