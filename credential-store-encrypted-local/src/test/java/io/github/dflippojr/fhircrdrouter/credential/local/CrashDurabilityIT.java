@@ -41,9 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Four lanes run at once, each with its own directory and at most one child JVM at a time. A
  * child loops {@code put}, {@code remove} and first-use key creation in a new store, logging each
- * operation to a side log before it starts and again once it returns. The lane kills it after a
- * random delay with {@link Process#destroyForcibly()} and checks the directory with fresh
- * instances, then starts the next child on the same directory. On POSIX the child runs with umask
+ * operation to a side log before it starts and again once it returns. After two acknowledged puts,
+ * the lane kills it after a random delay with {@link Process#destroyForcibly()} and checks the
+ * directory with fresh instances, then starts the next child on the same directory. On POSIX the child runs with umask
  * 000, so a file that is not owner-only from creation shows up in the permissions check.
  *
  * <p>The seed is printed; {@code -Dcrash.seed=<seed>} repeats the same operations and kill delays
@@ -353,6 +353,7 @@ class CrashDurabilityIT {
      * standard input closes.
      */
     public static final class WriterProcess {
+        /** Emitted once, after two saves returned and their acknowledgements reached the side log. */
         static final String READY = "READY";
 
         public static void main(String[] args) throws IOException, InterruptedException {
@@ -374,10 +375,9 @@ class CrashDurabilityIT {
             try (FileOutputStream log = new FileOutputStream(args[1], true)) {
                 var provider = new EncryptedLocalCredentialProvider(dir.resolve("main"), null, Duration.ZERO);
                 List<String> mine = new ArrayList<>();
-                System.out.println(READY);
-                System.out.flush();
                 // Test hook: emulate a host whose first durable write outlasts the kill window.
                 Thread.sleep(Integer.parseInt(args[4]));
+                int saves = 0;
                 for (int n = 0; ; n++) {
                     String name = "i" + iteration + "-" + n;
                     int choice = random.nextInt(10);
@@ -386,6 +386,12 @@ class CrashDurabilityIT {
                         provider.put(name, secret(name));
                         logLine(log, "ack put " + name);
                         mine.add(name);
+                        // #135: start the random kill window only after this child has durable work.
+                        // Two acknowledged saves per child keep acknowledged > kills independent of host speed.
+                        if (++saves == 2) {
+                            System.out.println(READY);
+                            System.out.flush();
+                        }
                     } else if (choice < 9) {
                         String ref = mine.remove(random.nextInt(mine.size()));
                         logLine(log, "begin remove " + ref);

@@ -41,8 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Four lanes run at once, each with its own directory and at most one child JVM at a time (the
  * store is single-process). A child loops {@code save}, {@code delete} and the first {@code save}
  * to a new file, logging each operation to a side log before it starts and again once it returns.
- * The lane kills it after a random delay with {@link Process#destroyForcibly()} and checks the files
- * with fresh instances, then starts the next child on the same directory. On POSIX the child runs
+ * After two acknowledged saves, the lane kills it after a random delay with
+ * {@link Process#destroyForcibly()} and checks the files with fresh instances, then starts the next child on the same directory. On POSIX the child runs
  * with umask 000, so a file that is not owner-only from creation shows up in the permissions check.
  *
  * <p>The seed is printed; {@code -Dcrash.seed=<seed>} repeats the same operations and kill delays
@@ -330,6 +330,7 @@ class CrashDurabilityIT {
      * standard input closes.
      */
     public static final class WriterProcess {
+        /** Emitted once, after two saves returned and their acknowledgements reached the side log. */
         static final String READY = "READY";
 
         public static void main(String[] args) throws IOException, InterruptedException {
@@ -353,10 +354,9 @@ class CrashDurabilityIT {
                 var store = new FileBasedConnectionStore(dir.resolve("connections.yaml"));
                 store.findAll();
                 List<String> mine = new ArrayList<>();
-                System.out.println(READY);
-                System.out.flush();
                 // Test hook: emulate a host whose first durable write outlasts the kill window.
                 Thread.sleep(Integer.parseInt(args[4]));
+                int saves = 0;
                 for (int n = 0; ; n++) {
                     String name = "P-i" + iteration + "-" + n;
                     int choice = random.nextInt(10);
@@ -365,6 +365,12 @@ class CrashDurabilityIT {
                         store.save(record(name));
                         logLine(log, "ack save " + name);
                         mine.add(name);
+                        // #135: start the random kill window only after this child has durable work.
+                        // Two acknowledged saves per child keep acknowledged > kills independent of host speed.
+                        if (++saves == 2) {
+                            System.out.println(READY);
+                            System.out.flush();
+                        }
                     } else if (choice < 9) {
                         String payerId = mine.remove(random.nextInt(mine.size()));
                         logLine(log, "begin delete " + payerId);
@@ -380,9 +386,8 @@ class CrashDurabilityIT {
         }
 
         /**
-         * Saves and deletes a record in a scratch directory outside the lane, so class loading and
-         * the first compilations happen before {@link #READY}. Otherwise a loaded machine spends the
-         * whole kill window on the first save and the kills land before anything was acknowledged.
+         * Saves and deletes a record in a scratch directory outside the lane to warm up class loading
+         * and the first compilations. Readiness still requires two acknowledged saves in the lane.
          */
         private static void warmUp() throws IOException {
             Path scratch = Files.createTempDirectory("crash-warm-up");
