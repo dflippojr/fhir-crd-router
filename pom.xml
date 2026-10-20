@@ -40,7 +40,7 @@
     <sonar.host.url>https://sonarcloud.io</sonar.host.url>
     <jackson.version>2.22.3</jackson.version>
     <junit.version>5.14.4</junit.version>
-    <jqwik.version>1.10.1</jqwik.version>
+    <jqwik.version>1.10.2</jqwik.version>
     <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
     <!-- JaCoCo coverage floor, enforced at verify. Each tested module sets its
          own floor at its measured coverage minus 0.01. Raise a floor when
