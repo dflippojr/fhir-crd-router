@@ -103,7 +103,7 @@ jobs:
         run: echo "${{ steps.shas.outputs.workbench }}" > "$LOG_DIR/workbench-sha.txt"
       - name: Upload the tested workbench commit
         if: steps.demo.outcome == 'success'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: downstream-tested
           path: downstream-logs/workbench-sha.txt
@@ -124,7 +124,7 @@ jobs:
         run: bash router/.github/scripts/downstream-report.sh
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: downstream-logs
           path: downstream-logs/
