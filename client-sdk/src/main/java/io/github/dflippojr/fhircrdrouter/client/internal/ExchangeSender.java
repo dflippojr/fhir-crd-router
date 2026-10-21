@@ -15,8 +15,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -88,23 +86,9 @@ public final class ExchangeSender {
         }
     }
 
+    /** {@link HttpResponse.BodyHandlers#ofString()}, so its charset handling, with a size limit. */
     private static HttpResponse.BodyHandler<String> boundedString(long limit) {
-        return info -> new BoundedSubscriber(HttpResponse.BodySubscribers.ofString(charset(info.headers())), limit);
-    }
-
-    /** The Content-Type charset, else UTF-8, as {@link HttpResponse.BodyHandlers#ofString()} decides it. */
-    private static Charset charset(HttpHeaders headers) {
-        for (String param : headers.firstValue("Content-Type").orElse("").split(";")) {
-            String p = param.strip();
-            if (p.regionMatches(true, 0, "charset=", 0, 8)) {
-                try {
-                    return Charset.forName(p.substring(8).replace("\"", ""));
-                } catch (IllegalArgumentException e) {
-                    return StandardCharsets.UTF_8;
-                }
-            }
-        }
-        return StandardCharsets.UTF_8;
+        return info -> new BoundedSubscriber(HttpResponse.BodyHandlers.ofString().apply(info), limit);
     }
 
     /** Passes the body through until it exceeds {@code limit} bytes, then cancels the stream and fails. */

@@ -121,6 +121,13 @@ class ResponseBoundsTest {
     }
 
     @Test
+    void charsetInsideAQuotedParameterIsIgnored() {
+        respondWith("application/json; note=\"a; charset=ISO-8859-1\"; charset=UTF-8", StandardCharsets.UTF_8);
+
+        assertEquals("café", client().discoverServicesRaw(record).path("name").textValue());
+    }
+
+    @Test
     void unknownOrMissingCharsetFallsBackToUtf8() {
         respondWith("application/json; charset=no-such-charset", StandardCharsets.UTF_8);
         assertEquals("café", client().discoverServicesRaw(record).path("name").textValue());
