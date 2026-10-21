@@ -51,6 +51,8 @@ public final class CdsHooksClient {
 
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    /** Largest response body, in bytes, read from a payer or token endpoint; a longer one fails the call. */
+    public static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
     private final PayerExchangeListener exchangeListener;
     private final Duration requestTimeout;
