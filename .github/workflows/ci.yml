@@ -2,9 +2,9 @@ name: CI
 
 # One workflow so that one check, `gate`, can be required: it passes only when
 # the build matrix, the SonarCloud analysis, the FHIR validator, the CRD
-# reference server tests and the gate guard all pass. The ruleset also requires
-# `gate-guard`, the trusted copy of the guard that gate-guard-target.yml posts
-# from master (DECISIONS.md, "Gate guard").
+# reference server tests, the corpus edit check and the gate guard all pass.
+# The ruleset also requires `gate-guard`, the trusted copy of the guard that
+# gate-guard-target.yml posts from master (DECISIONS.md, "Gate guard").
 on:
   push:
     branches: [main, master]
@@ -196,6 +196,58 @@ jobs:
         if: failure()
         run: docker logs crd-ri 2>&1 | tail -200
 
+  # Never edit a corpus case to make it agree (AGENTS.md, step 3; #131). Fails
+  # a pull request that modifies, renames or deletes a file under
+  # coverage-information/cases/ or crd-ri/ unless it also changes
+  # known-differences.json or DECISIONS.md. The check and its test run from
+  # the base commit, checked out apart from the pull request, which is only
+  # the repository they inspect: a pull request that edits the scripts can't
+  # weaken the check on itself (DECISIONS.md, "Corpus edit check"). The test
+  # step runs the check in throwaway repos. Pull requests only: gate accepts
+  # it skipped on a push.
+  corpus-edit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check out the pull request (data only, nothing from it runs)
+        uses: actions/checkout@v7
+        with:
+          path: pr
+          # History of the base branch too, to find the merge base.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the base commit (the check that runs)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Choose the check
+        id: check
+        shell: bash
+        run: |
+          if [ -f trusted/.github/scripts/corpus-edit-check.sh ]; then
+            echo "dir=$GITHUB_WORKSPACE/trusted/.github/scripts" >> "$GITHUB_OUTPUT"
+          else
+            # Only a base older than the check itself (#131) gets here. The
+            # check refuses a pull request that deletes or renames it, so
+            # master can't get back here.
+            echo "::warning::the base commit has no corpus-edit-check.sh; running the pull request's copy"
+            echo "dir=$GITHUB_WORKSPACE/pr/.github/scripts" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Test the check
+        env:
+          CHECK_DIR: ${{ steps.check.outputs.dir }}
+        run: bash "$CHECK_DIR/corpus-edit-check-test.sh"
+      - name: Check this pull request's corpus edits
+        working-directory: pr
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          CHECK_DIR: ${{ steps.check.outputs.dir }}
+        run: bash "$CHECK_DIR/corpus-edit-check.sh" "origin/$BASE_REF"
+
   # The shared gate guard (dflippojr/.github), called at a full commit SHA that
   # dflippojr/.github main contains; guard-ref names the same SHA, so the script
   # that judges the pull request is the one that was reviewed. It fails a pull
@@ -218,18 +270,20 @@ jobs:
       require-owner-label-actor: true
 
   # The single check to require. It runs even when a needed job fails or is
-  # cancelled, and fails unless every needed job succeeded. The one allowed
-  # exception is `sonar` skipped on a fork PR, which gets no secrets.
+  # cancelled, and fails unless every needed job succeeded. The allowed
+  # exceptions are `sonar` skipped on a fork PR, which gets no secrets, and
+  # `corpus-edit` skipped on a push, which has no base to compare with.
   gate:
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [build, sonar, fhir-validator, crd-ri, gate-guard]
+    needs: [build, sonar, fhir-validator, crd-ri, corpus-edit, gate-guard]
     if: always()
     steps:
       - name: Require every needed job to succeed
         env:
           NEEDS: ${{ toJSON(needs) }}
           FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          EVENT: ${{ github.event_name }}
         shell: bash
         run: |
           failed=0
@@ -238,6 +292,8 @@ jobs:
               echo "$job: success"
             elif [ "$job" = "sonar" ] && [ "$result" = "skipped" ] && [ "$FORK_PR" = "true" ]; then
               echo "::notice::$job: skipped on a fork PR (no secrets)"
+            elif [ "$job" = "corpus-edit" ] && [ "$result" = "skipped" ] && [ "$EVENT" != "pull_request" ]; then
+              echo "::notice::$job: skipped on a push (pull requests only)"
             else
               echo "::error::$job: $result"
               failed=1

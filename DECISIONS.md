@@ -237,3 +237,43 @@ owner's `gate-change-approved` label is the only way past it.
   not to this workflow. A pull request that adds a job with `checks: write`
   could overwrite or republish a `gate-guard` check run. Closing that needs a
   separate GitHub App identity for the guard (dflippojr/.github#24).
+
+## Corpus edit check (2026-10-22, #131)
+
+AGENTS.md says never to edit a corpus case to make it agree. The
+`fhir-validator` and `crd-ri` jobs catch a changed verdict, but not a case
+rewritten so that both sides agree. `.github/scripts/corpus-edit-check.sh`
+turns the rule into a check. CI's `corpus-edit` job runs it on every pull
+request, and it is one of `gate`'s needs.
+
+- **What counts.** The corpus is
+  `client-sdk/src/test/resources/coverage-information/cases/` and
+  `client-sdk/src/test/resources/crd-ri/`. Modifying, renaming or deleting a
+  file there fails the check unless the same diff, taken from the merge
+  base, changes `known-differences.json` or `DECISIONS.md`. Adding a case
+  always passes.
+- **Escape hatch, not approval.** The owner chose a diff check in this repo
+  over the shared gate guard's protected paths. Writing the reason down is
+  the price of an edit, and a reviewer reads that reason. No label is
+  needed.
+- **Pull requests only.** A push to `master` has no base to compare with, so
+  the job is skipped there and `gate` accepts that skip on a push.
+- **The check runs from the base commit.** The job checks out the pull
+  request's base commit apart from the pull request and runs the check and
+  its test from there; the pull request's checkout is only the repository
+  they inspect. So a pull request that edits a case and turns both scripts
+  into no-ops still fails: its copies never run on it. A change to the
+  scripts takes effect once it is merged, after review. The gate guard flags
+  edits to `ci.yml`, which holds that wiring, but not `.github/scripts/`, so
+  the check guards its own presence: a pull request that deletes or renames
+  `corpus-edit-check.sh` or its test fails, and no escape hatch allows it.
+  Without that, a merged deletion would leave the next pull request's base
+  with no check. The one fallback is a base older than the check, the case
+  for the pull request that adds it: the job then runs the pull request's
+  copy and says so in a warning. To retire the check, remove the job from
+  `ci.yml` first, which needs the owner's `gate-change-approved`.
+- **Paths are read NUL by NUL.** The check reads `git diff -z` one
+  NUL-terminated field at a time, and prints paths shell-quoted. A file name
+  may contain a newline; split into lines, an added file named
+  `a<LF>M<LF>DECISIONS.md` would pose as a changed `DECISIONS.md` and unlock
+  the escape hatch.
