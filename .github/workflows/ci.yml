@@ -199,24 +199,54 @@ jobs:
   # Never edit a corpus case to make it agree (AGENTS.md, step 3; #131). Fails
   # a pull request that modifies, renames or deletes a file under
   # coverage-information/cases/ or crd-ri/ unless it also changes
-  # known-differences.json or DECISIONS.md. The first step tests the check in
-  # throwaway repos. Pull requests only: gate accepts it skipped on a push.
+  # known-differences.json or DECISIONS.md. The check and its test run from
+  # the base commit, checked out apart from the pull request, which is only
+  # the repository they inspect: a pull request that edits the scripts can't
+  # weaken the check on itself (DECISIONS.md, "Corpus edit check"). The test
+  # step runs the check in throwaway repos. Pull requests only: gate accepts
+  # it skipped on a push.
   corpus-edit:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out the pull request (data only, nothing from it runs)
+        uses: actions/checkout@v7
         with:
+          path: pr
           # History of the base branch too, to find the merge base.
           fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the base commit (the check that runs)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Choose the check
+        id: check
+        shell: bash
+        run: |
+          if [ -f trusted/.github/scripts/corpus-edit-check.sh ]; then
+            echo "dir=$GITHUB_WORKSPACE/trusted/.github/scripts" >> "$GITHUB_OUTPUT"
+          else
+            # Only a base older than the check itself (#131) gets here. The
+            # check refuses a pull request that deletes or renames it, so
+            # master can't get back here.
+            echo "::warning::the base commit has no corpus-edit-check.sh; running the pull request's copy"
+            echo "dir=$GITHUB_WORKSPACE/pr/.github/scripts" >> "$GITHUB_OUTPUT"
+          fi
       - name: Test the check
-        run: bash .github/scripts/corpus-edit-check-test.sh
+        env:
+          CHECK_DIR: ${{ steps.check.outputs.dir }}
+        run: bash "$CHECK_DIR/corpus-edit-check-test.sh"
       - name: Check this pull request's corpus edits
+        working-directory: pr
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: bash .github/scripts/corpus-edit-check.sh "origin/$BASE_REF"
+          CHECK_DIR: ${{ steps.check.outputs.dir }}
+        run: bash "$CHECK_DIR/corpus-edit-check.sh" "origin/$BASE_REF"
 
   # The shared gate guard (dflippojr/.github), called at a full commit SHA that
   # dflippojr/.github main contains; guard-ref names the same SHA, so the script

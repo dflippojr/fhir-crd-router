@@ -64,7 +64,9 @@ is a useful loop while you work, but it is not proof.
    `client-sdk/src/test/resources/coverage-information/cases/` or
    `client-sdk/src/test/resources/crd-ri/`, unless the same PR also changes
    `known-differences.json` or `DECISIONS.md`. Adding a case is always
-   allowed. Run the check locally on your committed changes:
+   allowed. CI runs the check from the PR's base commit, so editing the
+   script changes nothing for that PR, and deleting or renaming it fails.
+   Run the check locally on your committed changes:
 
    ```sh
    .github/scripts/corpus-edit-check.sh origin/master

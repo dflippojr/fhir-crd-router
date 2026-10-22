@@ -258,7 +258,22 @@ request, and it is one of `gate`'s needs.
   needed.
 - **Pull requests only.** A push to `master` has no base to compare with, so
   the job is skipped there and `gate` accepts that skip on a push.
-- **Known limit.** The job runs from the pull request's head, like the
-  `ci.yml` copy of the gate guard. A pull request can still weaken the
-  script itself. The gate guard flags workflow edits, but not
-  `.github/scripts/`.
+- **The check runs from the base commit.** The job checks out the pull
+  request's base commit apart from the pull request and runs the check and
+  its test from there; the pull request's checkout is only the repository
+  they inspect. So a pull request that edits a case and turns both scripts
+  into no-ops still fails: its copies never run on it. A change to the
+  scripts takes effect once it is merged, after review. The gate guard flags
+  edits to `ci.yml`, which holds that wiring, but not `.github/scripts/`, so
+  the check guards its own presence: a pull request that deletes or renames
+  `corpus-edit-check.sh` or its test fails, and no escape hatch allows it.
+  Without that, a merged deletion would leave the next pull request's base
+  with no check. The one fallback is a base older than the check, the case
+  for the pull request that adds it: the job then runs the pull request's
+  copy and says so in a warning. To retire the check, remove the job from
+  `ci.yml` first, which needs the owner's `gate-change-approved`.
+- **Paths are read NUL by NUL.** The check reads `git diff -z` one
+  NUL-terminated field at a time, and prints paths shell-quoted. A file name
+  may contain a newline; split into lines, an added file named
+  `a<LF>M<LF>DECISIONS.md` would pose as a changed `DECISIONS.md` and unlock
+  the escape hatch.

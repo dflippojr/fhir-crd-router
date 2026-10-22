@@ -13,8 +13,14 @@
 # changes DECISIONS.md, like any other edit. The diff runs from the merge base
 # of <base-ref> and HEAD to HEAD, so only committed changes count.
 #
+# CI runs this file from the base commit, not from the pull request, and the
+# pull request's checkout is only the repository it inspects (DECISIONS.md,
+# "Corpus edit check"). So a pull request may change this file or its test, but
+# it may not delete or rename either one: the base would then have no checker,
+# and the next pull request would run its own copy.
+#
 # Usage: corpus-edit-check.sh <base-ref>     (locally: origin/master)
-# Exit:  0 pass, 1 corpus edited without an escape hatch, 2 usage or git error
+# Exit:  0 pass, 1 corpus or checker edited, 2 usage or git error
 set -euo pipefail
 
 CORPUS_DIRS=(
@@ -23,6 +29,10 @@ CORPUS_DIRS=(
 )
 KNOWN_DIFFERENCES=client-sdk/src/test/resources/coverage-information/known-differences.json
 DECISIONS=DECISIONS.md
+CHECKER_FILES=(
+  .github/scripts/corpus-edit-check.sh
+  .github/scripts/corpus-edit-check-test.sh
+)
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <base-ref>   (for example: $0 origin/master)" >&2
@@ -43,26 +53,47 @@ in_corpus() {
   return 1
 }
 
+is_checker() {
+  local file
+  for file in "${CHECKER_FILES[@]}"; do
+    [[ "$1" == "$file" ]] && return 0
+  done
+  return 1
+}
+
+# A path as one shell-quoted word, so a newline in a file name can't start a
+# line of its own (or a workflow command) in the output.
+quote() {
+  printf '%q' "$1"
+}
+
 edited=()
+removed_checker=()
 escape_hatch=""
 
-# -z: NUL-separated, so no path quoting. A rename or copy entry carries two
-# paths (old, then new); every other entry carries one.
-diff_out="$(git diff --name-status -z -M "$merge_base" HEAD | tr '\0' '\n')" || exit 2
-mapfile -t fields <<< "$diff_out"
-i=0
-while (( i < ${#fields[@]} )); do
-  status="${fields[i]}"
-  [[ -z "$status" ]] && { i=$((i + 1)); continue; }
-  path="${fields[i + 1]:-}"
+# -z: each field ends in a NUL and no path is quoted. A rename or copy record
+# is status, old path, new path; every other record is status, path. The
+# fields are read NUL by NUL: a file name may contain a newline, so turning
+# NULs into newlines would let a name such as $'a\nM\nDECISIONS.md' pose as
+# extra records. The output goes to a file first so that git's exit status
+# is not lost in a pipe.
+diff_file="$(mktemp)"
+trap 'rm -f "$diff_file"' EXIT
+git diff --name-status -z -M "$merge_base" HEAD > "$diff_file" || exit 2
+
+truncated() {
+  echo "error: git diff output ended inside a record" >&2
+  exit 2
+}
+
+while IFS= read -r -d '' status; do
+  IFS= read -r -d '' path || truncated
   case "$status" in
     R* | C*)
-      new_path="${fields[i + 2]:-}"
-      i=$((i + 3))
+      IFS= read -r -d '' new_path || truncated
       ;;
     *)
       new_path="$path"
-      i=$((i + 2))
       ;;
   esac
 
@@ -77,16 +108,31 @@ while (( i < ${#fields[@]} )); do
       ;;
     R*)
       # Renaming a case out of (or within) the corpus removes the old one.
-      in_corpus "$path" && edited+=("renamed  $path -> $new_path")
+      in_corpus "$path" && edited+=("renamed  $(quote "$path") -> $(quote "$new_path")")
+      is_checker "$path" && removed_checker+=("renamed  $path -> $(quote "$new_path")")
       ;;
     D*)
-      in_corpus "$path" && edited+=("deleted  $path")
+      in_corpus "$path" && edited+=("deleted  $(quote "$path")")
+      is_checker "$path" && removed_checker+=("deleted  $path")
       ;;
     *)
-      in_corpus "$path" && edited+=("modified $path")
+      in_corpus "$path" && edited+=("modified $(quote "$path")")
       ;;
   esac
-done
+done < "$diff_file"
+
+if (( ${#removed_checker[@]} > 0 )); then
+  {
+    echo "::error::corpus-edit: the corpus edit check itself is deleted or renamed."
+    printf '  %s\n' "${removed_checker[@]}"
+    echo
+    echo "CI runs the check from the base commit. Without it there, the next pull"
+    echo "request would run its own copy. No escape hatch allows this; to retire"
+    echo "the check, remove the corpus-edit job from .github/workflows/ci.yml first,"
+    echo "which the gate guard leaves to the owner (DECISIONS.md, \"Corpus edit check\")."
+  } >&2
+  exit 1
+fi
 
 if (( ${#edited[@]} == 0 )); then
   echo "corpus-edit: no existing corpus case changed since $base_ref."
