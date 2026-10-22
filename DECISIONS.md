@@ -144,6 +144,16 @@ repo's author did not write, so it now runs on every PR and every push to
   cannot send `davinci-crd.requestedVersion` or `davinci-crd.configuration`
   (#128).
 
+## Only ACTIVE connections are routable (2026-10-22, #104)
+
+`PayerRouter.resolve` returns a record only when its status is `ACTIVE`.
+`INACTIVE` and `DEPRECATED` both throw the same "No active connection"
+`RouterException` as a missing record, so no hook call goes to a payer
+marked inactive. Before this only `DEPRECATED` was refused. The owner chose
+this (option A on #104). `CdsHooksClient.verify` takes the record directly
+and runs on any status, so a connection can be checked before it is
+switched back to `ACTIVE`.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
