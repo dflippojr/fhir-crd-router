@@ -266,8 +266,11 @@ OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes,
 `mtlsCredentialRef`), so connections that call the token endpoint under
 different client certificates, or one with and one without mTLS, never share a
 token (an RFC 8705 certificate-bound token only works with its own certificate).
-Entries last until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours;
-responses without `expires_in` aren't cached. A token response whose
+Entries last until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours.
+`expires_in` is accepted as a positive whole number or, for authorization servers
+that send it as a string (older Azure AD endpoints), a numeric string such as
+`"3600"`; responses without `expires_in`, or with any other value (`"abc"`,
+`"1.5"`, `"0"`, `null`), aren't cached. A token response whose
 `access_token` is missing, `null`, blank or not a string is rejected with a
 `RouterException` in the TOKEN phase, and nothing is cached. If the payer returns 401 on an OAuth2 connection, the cached token is
 dropped and the request is retried exactly once with a fresh token. Concurrent
