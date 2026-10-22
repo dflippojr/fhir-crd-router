@@ -214,7 +214,7 @@ jobs:
       pull-requests: read
     uses: dflippojr/.github/.github/workflows/gate-guard.yml@27bdb76481888567a6c524ebbb19bf4a6c7e7e20
     with:
-      guard-ref: 882623c67a5c3bab64da2136e6070a5325440b47
+      guard-ref: 27bdb76481888567a6c524ebbb19bf4a6c7e7e20
       require-owner-label-actor: true
 
   # The single check to require. It runs even when a needed job fails or is
