@@ -193,6 +193,15 @@ Where we disagree on purpose (listed in `known-differences.json`):
 - **Legacy `identifier` is a warning.** The reference implementation sends it
   in place of `coverage-assertion-id`, so we warn rather than fail; the
   official validator fails it.
+- **The reference implementation's `coverageInfo` is a warning** (owner
+  decision on #125, 2026-10-17). An undefined relative sub-extension url is
+  an error, as the official validator's `Extension_EXT_SubExtension_Invalid`:
+  open slicing admits only absolute urls. The reference implementation sends
+  `coverageInfo`, a relative url CRD 2.2.1 does not define, so we warn about
+  it like `identifier`, and reference server responses are not flagged as
+  errors. `unknown-ri-coverage-info` stays in `known-differences.json`
+  because we still call it valid; its `warning` path makes the differential
+  test require the warning.
 - **`crd-ci-q4` follows its text, not its FHIRPath.** The expression is
   `A and B implies C`. When `pa-needed` is not `satisfied`, `A` is empty, so
   `{} implies false` is empty and the invariant fails. Read literally, it
@@ -203,8 +212,7 @@ Where we disagree on purpose (listed in `known-differences.json`):
   not check the type of an unresolved literal reference, so it accepts
   `Patient/pat-1`. We reject it, because the profile's target is Coverage.
 
-Disagreements that are our bugs: #125 (we accept undefined relative
-sub-extension urls) and #126 (we do not check inside `detail`).
+Disagreements that are our bugs: #126 (we do not check inside `detail`).
 
 The reference implementation's response fixture fails the official
 validator, as recorded above: legacy names, no `covered` or `date`, and a
