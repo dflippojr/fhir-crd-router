@@ -41,6 +41,11 @@ class CoverageInformationValidatorTest {
               {"url":"expiry-date","valueDate":"2026-12"}
             ]}""";
 
+    private static final String IDENTIFIER_WARNING = "identifier is the pre-2.x name for coverage-assertion-id; "
+            + "CRD 2.2.1 requires the url coverage-assertion-id";
+    private static final String COVERAGE_INFO_WARNING = "coverageInfo is a reference implementation sub-extension "
+            + "that CRD 2.2.1 does not define";
+
     @Test
     void conformantExtensionHasNoViolations() {
         assertEquals(List.of(), CoverageInformationValidator.validate(conformant()));
@@ -156,10 +161,50 @@ class CoverageInformationValidatorTest {
     }
 
     @Test
-    void unknownSubExtensionsAreAllowedBecauseSlicingIsOpen() {
+    void unknownAbsoluteUrlIsAllowedBecauseSlicingIsOpen() {
         ObjectNode ext = conformant();
-        add(sub("http://example.org/payer-note", "valueString", "hi")).accept(ext);
+        add(sub("http://example.org/payer-note", "valueString", "hi"),
+                sub("urn:oid:2.16.840.1.113883", "valueString", "hi")).accept(ext);
         assertEquals(List.of(), CoverageInformationValidator.validate(ext));
+    }
+
+    /** #125: open slicing admits absolute urls only; a relative url must be one the profile defines. */
+    @Test
+    void unknownRelativeUrlIsAnError() {
+        ObjectNode ext = conformant();
+        add(sub("note", "valueString", "x")).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[note]",
+                "note is not a sub-extension of ext-coverage-information; CRD 2.2.1 allows other "
+                        + "sub-extensions only with an absolute url")), CoverageInformationValidator.validate(ext));
+    }
+
+    @Test
+    void subExtensionWithoutUrlIsAnError() {
+        ObjectNode ext = conformant();
+        add(MAPPER.createObjectNode().put("valueString", "x")).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[]", "a sub-extension has no url")),
+                CoverageInformationValidator.validate(ext));
+    }
+
+    /** #125: the reference implementation's coverageInfo is warned about, like its legacy identifier. */
+    @Test
+    void referenceImplementationCoverageInfoIsAWarningNotAnError() {
+        ObjectNode ext = conformant();
+        add(sub("coverageInfo", "valueCoding", MAPPER.createObjectNode().put("code", "clinical"))).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.WARNING, "extension[coverageInfo]", COVERAGE_INFO_WARNING)),
+                CoverageInformationValidator.validate(ext));
+    }
+
+    @Test
+    void preTwoIdentifierNextToCoverageAssertionIdIsAWarning() {
+        ObjectNode ext = conformant();
+        add(sub("identifier", "valueString", "id-1")).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.WARNING, "extension[identifier]", IDENTIFIER_WARNING)),
+                CoverageInformationValidator.validate(ext));
     }
 
     @Test
@@ -167,15 +212,14 @@ class CoverageInformationValidatorTest {
         ObjectNode ext = conformant();
         replace("coverage-assertion-id", sub("identifier", "valueString", "id-1")).accept(ext);
 
-        assertEquals(List.of(new Violation(Severity.WARNING, "extension[identifier]",
-                "identifier is the pre-2.x name for coverage-assertion-id; CRD 2.2.1 requires the url "
-                        + "coverage-assertion-id")), CoverageInformationValidator.validate(ext));
+        assertEquals(List.of(new Violation(Severity.WARNING, "extension[identifier]", IDENTIFIER_WARNING)),
+                CoverageInformationValidator.validate(ext));
     }
 
     /**
-     * The reference implementation's response: besides the identifier warning, it omits {@code covered}
-     * and {@code date}, both 1..1 in the 2.2.1 StructureDefinition. Its {@code coverageInfo}
-     * sub-extension is allowed by the open slicing.
+     * The reference implementation's response: it omits {@code covered} and {@code date}, both 1..1 in
+     * the 2.2.1 StructureDefinition, and its {@code coverageInfo} and {@code identifier} sub-extensions,
+     * which the profile does not define, are warnings rather than errors.
      */
     @Test
     void referenceImplementationFixture() throws Exception {
@@ -189,9 +233,8 @@ class CoverageInformationValidatorTest {
         assertEquals(List.of(
                         new Violation(Severity.ERROR, "extension[covered]", "covered is required"),
                         new Violation(Severity.ERROR, "extension[date]", "date is required"),
-                        new Violation(Severity.WARNING, "extension[identifier]",
-                                "identifier is the pre-2.x name for coverage-assertion-id; CRD 2.2.1 requires the "
-                                        + "url coverage-assertion-id")),
+                        new Violation(Severity.WARNING, "extension[coverageInfo]", COVERAGE_INFO_WARNING),
+                        new Violation(Severity.WARNING, "extension[identifier]", IDENTIFIER_WARNING)),
                 CoverageInformationValidator.validate(infos.get(0)));
     }
 

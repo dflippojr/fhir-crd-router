@@ -34,7 +34,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>A verdict is "valid" when there are no errors; our {@link Severity#WARNING}s do not count. When
  * the official validator reports a CRD invariant ({@code crd-ci-q1} to {@code crd-ci-q9}), we must
  * report the same one. Cases in {@code known-differences.json} are disagreements that are deliberate
- * (DECISIONS.md) or open bugs; they must still disagree, so a fixed bug cannot leave a stale entry.
+ * (DECISIONS.md) or open bugs; they must still disagree, so a fixed bug cannot leave a stale entry. An
+ * entry with a {@code warning} path is a deliberate leniency: we must report a {@link Severity#WARNING}
+ * there, so the leniency is a warning and not silence.
  */
 class CoverageInformationDifferentialTest {
 
@@ -66,6 +68,11 @@ class CoverageInformationDifferentialTest {
                             + ", but we now say otherwise: " + ours);
             assertNotEquals(officialValid, oursValid, () -> name + " now agrees with the official validator; "
                     + "remove it from known-differences.json (and close its issue or DECISIONS.md entry)");
+            if (known.has("warning")) {
+                String path = known.path("warning").asText();
+                assertTrue(ours.stream().anyMatch(v -> v.severity() == Severity.WARNING && v.path().equals(path)),
+                        () -> name + " should be a WARNING at " + path + ", ours " + ours);
+            }
             return;
         }
         assertEquals(officialValid, oursValid, () -> name + ": official " + (officialValid ? "valid" : "invalid")

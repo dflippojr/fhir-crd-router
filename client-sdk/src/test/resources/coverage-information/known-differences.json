@@ -1,7 +1,8 @@
 {
-  "_comment": "Corpus cases where CoverageInformationValidator and the official HL7 validator disagree on purpose or by a known bug. 'ours' is our verdict. Each entry is either a deliberate leniency or strictness recorded in DECISIONS.md ('Differential testing against the official validator') or an open bug issue. Do not add an entry to make a new disagreement pass without one of those.",
+  "_comment": "Corpus cases where CoverageInformationValidator and the official HL7 validator disagree on purpose or by a known bug. 'ours' is our verdict. Each entry is either a deliberate leniency or strictness recorded in DECISIONS.md ('Differential testing against the official validator') or an open bug issue. Do not add an entry to make a new disagreement pass without one of those. An entry with 'warning' is a leniency we must still report as a WARNING at that path.",
   "legacy-identifier": {
     "ours": "valid",
+    "warning": "extension[identifier]",
     "why": "Deliberate leniency: the HL7 reference implementation sends the pre-2.x 'identifier' sub-extension in place of coverage-assertion-id. We report it as a WARNING, not an ERROR. DECISIONS.md."
   },
   "q4-auth-needed-with-withpa": {
@@ -12,13 +13,10 @@
     "ours": "invalid",
     "why": "Deliberate strictness: the coverage valueReference must target a Coverage. The official validator does not check the type of an unresolved literal reference; 'Patient/pat-1' names a Patient, so we reject it. DECISIONS.md."
   },
-  "unknown-relative-url": {
-    "ours": "valid",
-    "why": "Bug #125: a sub-extension with a relative url the profile does not define is invalid; only absolute-url extensions are allowed by the open slicing."
-  },
   "unknown-ri-coverage-info": {
     "ours": "valid",
-    "why": "Bug #125: the reference implementation's 'coverageInfo' is a relative url the profile does not define."
+    "warning": "extension[coverageInfo]",
+    "why": "Deliberate leniency (owner decision on #125): the HL7 reference implementation sends 'coverageInfo', a relative url the profile does not define. The official validator fails it; we report it as a WARNING, not an ERROR, like the legacy 'identifier', so reference server responses are not flagged as errors. DECISIONS.md."
   },
   "detail-missing-code": {
     "ours": "valid",
