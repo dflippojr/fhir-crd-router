@@ -216,11 +216,14 @@ dependency): required sub-extensions and their cardinality, value types, the
 required code bindings for `covered`, `pa-needed`, `doc-needed`, `doc-purpose`
 and `info-needed`, the FHIR `date` format, a `coverage` reference to a
 Coverage, and invariants `crd-ci-q1` to `crd-ci-q9` (cited in the message).
-Unknown sub-extensions are allowed, since the profile's slicing is open, and
-the internals of `detail` are not checked.
+Sub-extensions the profile does not define are allowed only with an absolute
+url, since the profile's slicing is open to other extensions but a relative
+url must name one of its own; an unknown relative url such as `note` is an
+`ERROR`. The internals of `detail` are not checked.
 
-The pre-2.x `identifier` sub-extension in place of `coverage-assertion-id` is
-a `WARNING`, not an `ERROR`. The reference implementation's responses also
+The reference implementation's own names are a `WARNING`, not an `ERROR`:
+the pre-2.x `identifier` in place of `coverage-assertion-id`, and
+`coverageInfo`. The reference implementation's responses also
 get `ERROR`s for missing `covered` and `date`, which 2.2.1 requires.
 
 ## Testing against the HL7 CRD reference implementation

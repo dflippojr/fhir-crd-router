@@ -36,11 +36,16 @@ import java.util.regex.Pattern;
  *   <li>invariants {@code crd-ci-q1} to {@code crd-ci-q9}.</li>
  * </ul>
  *
- * <p>The profile's sub-extension slicing is open, so unknown sub-extensions are allowed.
- * The one exception is {@code identifier}: the HL7 reference implementation sends it in place
- * of {@code coverage-assertion-id}, which is reported as a {@link Severity#WARNING} rather than
- * a missing-element {@link Severity#ERROR}. The internals of {@code detail}, {@code billingCode},
- * {@code contact} and {@code dependency} are not checked beyond their value type.
+ * <p>The profile's sub-extension slicing is open, but only to extensions with an absolute url: a
+ * relative url names a sub-extension of this extension, so it must be one the profile defines
+ * (<a href="http://hl7.org/fhir/R4/extensibility.html#Extension">FHIR R4 Extension.url</a>). An
+ * unknown relative url is an {@link Severity#ERROR}, as the official validator's
+ * {@code Extension_EXT_SubExtension_Invalid}. Two exceptions are the HL7 reference implementation's
+ * names, reported as a {@link Severity#WARNING} so its responses are not flagged as errors:
+ * {@code identifier}, which it sends in place of {@code coverage-assertion-id} (and which then stands
+ * in for the missing {@code coverage-assertion-id}), and {@code coverageInfo}. The internals of
+ * {@code detail}, {@code billingCode}, {@code contact} and {@code dependency} are not checked beyond
+ * their value type.
  *
  * <p>Two places where the invariant text and its FHIRPath differ: {@code crd-ci-q4} names
  * {@code noauth}, which is not a pa-needed code, so {@code no-auth} is checked as intended;
@@ -51,8 +56,7 @@ import java.util.regex.Pattern;
  *
  * <p>Verdicts are compared with the official HL7 FHIR validator's on a corpus of cases
  * ({@code CoverageInformationDifferentialTest}); the deliberate differences are in DECISIONS.md.
- * Known gaps: unknown relative sub-extension urls are accepted (#125) and {@code detail} is not
- * checked inside (#126).
+ * Known gap: {@code detail} is not checked inside (#126).
  *
  * <p>Parsing via {@link CoverageInformation#fromResource(JsonNode)} stays lenient; this class
  * only reports.
@@ -89,6 +93,7 @@ public final class CoverageInformationValidator {
     static final String SATISFIED_PA_ID = "satisfied-pa-id";
     static final String QUESTIONNAIRE = "questionnaire";
     static final String LEGACY_IDENTIFIER = "identifier";
+    static final String RI_COVERAGE_INFO = "coverageInfo";
 
     private static final String CONDITIONAL = "conditional";
     private static final String INDETERMINATE = "indeterminate";
@@ -132,6 +137,9 @@ public final class CoverageInformationValidator {
     private static final Pattern FHIR_DATE = Pattern.compile(
             "([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1]))?)?");
 
+    /** RFC 3986 scheme, so an absolute url such as {@code http://...} or {@code urn:oid:...}. */
+    private static final Pattern ABSOLUTE_URL = Pattern.compile("[A-Za-z][A-Za-z0-9+.\\-]*:.+");
+
     /** Relative, absolute or contained reference whose target is a Coverage. */
     private static final Pattern COVERAGE_REFERENCE = Pattern.compile(
             "(.*/)?Coverage/[A-Za-z0-9\\-.]{1,64}(/_history/[A-Za-z0-9\\-.]{1,64})?|#.+");
@@ -162,6 +170,7 @@ public final class CoverageInformationValidator {
         for (Map.Entry<String, Slice> slice : SLICES.entrySet()) {
             checkSlice(slice.getKey(), slice.getValue(), byUrl, violations);
         }
+        checkUndefined(byUrl, violations);
         checkInvariants(byUrl, violations);
         return violations;
     }
@@ -209,11 +218,38 @@ public final class CoverageInformationValidator {
 
     private static void missing(String url, String path, Map<String, List<JsonNode>> byUrl,
                                 List<Violation> violations) {
-        if (COVERAGE_ASSERTION_ID.equals(url) && byUrl.containsKey(LEGACY_IDENTIFIER)) {
-            violations.add(warning(path(LEGACY_IDENTIFIER), "identifier is the pre-2.x name for "
-                    + "coverage-assertion-id; CRD 2.2.1 requires the url coverage-assertion-id"));
-        } else {
+        // The legacy identifier stands in for coverage-assertion-id; checkUndefined warns about it.
+        if (!COVERAGE_ASSERTION_ID.equals(url) || !byUrl.containsKey(LEGACY_IDENTIFIER)) {
             violations.add(error(path, url + " is required"));
+        }
+    }
+
+    /**
+     * Sub-extensions the profile does not define. Its slicing is open, but a relative url can only name
+     * one of its own sub-extensions, so an undefined relative url is an error; the official validator
+     * reports it as {@code Extension_EXT_SubExtension_Invalid}. The reference implementation's
+     * {@code identifier} and {@code coverageInfo} are warnings (#125). See
+     * <a href="http://hl7.org/fhir/us/davinci-crd/STU2.2/StructureDefinition-ext-coverage-information.html">
+     * ext-coverage-information</a> (CRD 2.2.1) and
+     * <a href="http://hl7.org/fhir/R4/extensibility.html#Extension">FHIR R4 Extension.url</a>.
+     */
+    private static void checkUndefined(Map<String, List<JsonNode>> byUrl, List<Violation> violations) {
+        for (String url : byUrl.keySet()) {
+            if (SLICES.containsKey(url) || ABSOLUTE_URL.matcher(url).matches()) {
+                continue;
+            }
+            if (LEGACY_IDENTIFIER.equals(url)) {
+                violations.add(warning(path(url), "identifier is the pre-2.x name for coverage-assertion-id; "
+                        + "CRD 2.2.1 requires the url coverage-assertion-id"));
+            } else if (RI_COVERAGE_INFO.equals(url)) {
+                violations.add(warning(path(url), "coverageInfo is a reference implementation sub-extension "
+                        + "that CRD 2.2.1 does not define"));
+            } else if (url.isEmpty()) {
+                violations.add(error(path(url), "a sub-extension has no url"));
+            } else {
+                violations.add(error(path(url), url + " is not a sub-extension of ext-coverage-information; "
+                        + "CRD 2.2.1 allows other sub-extensions only with an absolute url"));
+            }
         }
     }
 
