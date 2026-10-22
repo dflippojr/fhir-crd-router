@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
+import io.github.dflippojr.fhircrdrouter.core.ConnectionStatus;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
@@ -104,6 +105,16 @@ class ConnectionVerificationTest {
         assertEquals(1, discoveryCalls.get());
         assertEquals(0, otherCalls.get());
         assertEquals(List.of(PayerCallPhase.DISCOVERY), exchanges.stream().map(PayerExchange::phase).toList());
+    }
+
+    @Test
+    void verifiesARecordWhateverItsStatus() {
+        for (ConnectionStatus connectionStatus : ConnectionStatus.values()) {
+            ConnectionVerification report = client().verify(connection(AuthType.NONE, connectionStatus));
+
+            assertTrue(report.ok(), connectionStatus.name());
+        }
+        assertEquals(ConnectionStatus.values().length, discoveryCalls.get());
     }
 
     @Test
@@ -340,9 +351,14 @@ class ConnectionVerificationTest {
     }
 
     private ConnectionRecord connection(AuthType auth) {
+        return connection(auth, ConnectionStatus.ACTIVE);
+    }
+
+    private ConnectionRecord connection(AuthType auth, ConnectionStatus connectionStatus) {
         return ConnectionRecord.builder().payerId("PAYER-SYNTHETIC").environment(Environment.SANDBOX)
                 .baseUrl(baseUrl() + "/").authType(auth).credentialRef("synthetic-ref")
-                .clientId("synthetic-client").tokenEndpoint(baseUrl() + "/token").build();
+                .clientId("synthetic-client").tokenEndpoint(baseUrl() + "/token")
+                .status(connectionStatus).build();
     }
 
     private CredentialProvider credentials() {

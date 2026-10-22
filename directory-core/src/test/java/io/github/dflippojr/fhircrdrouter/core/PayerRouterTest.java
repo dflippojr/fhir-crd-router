@@ -37,6 +37,20 @@ class PayerRouterTest {
     }
 
     @Test
+    void refusesToResolveInactiveConnection(@TempDir Path tempDir) {
+        ConnectionStore store = new FileBasedConnectionStore(tempDir.resolve("connections.yaml"));
+        store.save(ConnectionRecord.builder()
+                .payerId("PAYER-1").environment(Environment.PRODUCTION)
+                .baseUrl("https://payer.example.test").authType(AuthType.NONE)
+                .status(ConnectionStatus.INACTIVE).build());
+
+        PayerRouter router = new PayerRouter(store);
+
+        RouterException e = assertThrows(RouterException.class, () -> router.resolve("PAYER-1"));
+        assertEquals("No active connection for payerId=PAYER-1 environment=PRODUCTION", e.getMessage());
+    }
+
+    @Test
     void unknownPayerThrows(@TempDir Path tempDir) {
         ConnectionStore store = new FileBasedConnectionStore(tempDir.resolve("connections.yaml"));
         PayerRouter router = new PayerRouter(store);

@@ -198,6 +198,10 @@ public final class CdsHooksClient {
      * {@link AuditPersistenceException} from an audited provider, which propagates because the
      * audit protocol says to stop and report; a null record throws {@link NullPointerException}.
      *
+     * <p>Runs on a record of any {@link io.github.dflippojr.fhircrdrouter.core.ConnectionStatus}, so an
+     * {@code INACTIVE} or {@code DEPRECATED} connection can be checked before it is reactivated;
+     * only {@code PayerRouter.resolve} refuses those.
+     *
      * <p>The SDK does not write to a store: when {@link ConnectionVerification#ok()} is true, save
      * {@code record.withLastVerifiedAt(report.checkedAt())}.
      */

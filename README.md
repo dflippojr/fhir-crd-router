@@ -15,7 +15,9 @@ so far.
 - **`directory-core`**: `ConnectionRecord` model, `ConnectionStore`
   interface with a default flat-YAML-file implementation
   (`FileBasedConnectionStore`), `CredentialProvider` interface, and
-  `PayerRouter` (the `payerId -> ConnectionRecord` resolver). A record
+  `PayerRouter` (the `payerId -> ConnectionRecord` resolver, which returns
+  only `ACTIVE` records and refuses `INACTIVE` and `DEPRECATED` ones;
+  `CdsHooksClient.verify` still runs on any status). A record
   never holds a secret, only opaque `credentialRef` / `mtlsCredentialRef`
   references into a `CredentialProvider`. It also holds the opt-in
   `core.audit` package: an append-only JSONL audit trail, store and

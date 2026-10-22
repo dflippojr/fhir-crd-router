@@ -15,10 +15,14 @@ public final class PayerRouter {
         this.store = Objects.requireNonNull(store, "store");
     }
 
-    /** Resolves the connection for a payer in a given environment. */
+    /**
+     * Resolves the connection for a payer in a given environment. Only an
+     * {@link ConnectionStatus#ACTIVE} record is routable: an {@code INACTIVE}
+     * or {@code DEPRECATED} one throws {@link RouterException}, as a missing one does.
+     */
     public ConnectionRecord resolve(String payerId, Environment environment) {
         return store.findByPayerIdAndEnvironment(payerId, environment)
-                .filter(record -> record.status() != ConnectionStatus.DEPRECATED)
+                .filter(record -> record.status() == ConnectionStatus.ACTIVE)
                 .orElseThrow(() -> new RouterException(
                         "No active connection for payerId=" + payerId + " environment=" + environment));
     }

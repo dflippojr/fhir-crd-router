@@ -91,7 +91,8 @@ does not repeat the provider's. An `AuditPersistenceException` propagates unchan
 
 The SDK does not write to a store. Save `record.withLastVerifiedAt(report.checkedAt())`
 yourself when the report is `ok`. Verification does not change `ConnectionStatus`,
-run on a schedule or check every record in a store.
+run on a schedule or check every record in a store. It runs on a record of any
+status, while `PayerRouter.resolve` returns only `ACTIVE` records.
 
 ## CRD requests and responses
 
