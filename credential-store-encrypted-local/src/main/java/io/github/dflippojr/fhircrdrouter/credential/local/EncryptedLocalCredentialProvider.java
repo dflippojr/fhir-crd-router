@@ -248,6 +248,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     @Override
     public Optional<String> resolve(AuditContext context, String credentialRef) {
+        Objects.requireNonNull(credentialRef, "credentialRef");
         lock.readLock().lock();
         try {
             String encoded = currentSnapshot().entries.get(credentialRef);
@@ -267,6 +268,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     @Override
     public void put(AuditContext context, String credentialRef, String secretValue) {
+        Objects.requireNonNull(credentialRef, "credentialRef");
         referenceAad(credentialRef);
         lock.writeLock().lock();
         try {
@@ -289,6 +291,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     @Override
     public void remove(AuditContext context, String credentialRef) {
+        Objects.requireNonNull(credentialRef, "credentialRef");
         lock.writeLock().lock();
         try {
             if (Files.notExists(secretsFile)) {
