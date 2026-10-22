@@ -237,3 +237,28 @@ owner's `gate-change-approved` label is the only way past it.
   not to this workflow. A pull request that adds a job with `checks: write`
   could overwrite or republish a `gate-guard` check run. Closing that needs a
   separate GitHub App identity for the guard (dflippojr/.github#24).
+
+## Corpus edit check (2026-10-22, #131)
+
+AGENTS.md says never to edit a corpus case to make it agree. The
+`fhir-validator` and `crd-ri` jobs catch a changed verdict, but not a case
+rewritten so that both sides agree. `.github/scripts/corpus-edit-check.sh`
+turns the rule into a check. CI's `corpus-edit` job runs it on every pull
+request, and it is one of `gate`'s needs.
+
+- **What counts.** The corpus is
+  `client-sdk/src/test/resources/coverage-information/cases/` and
+  `client-sdk/src/test/resources/crd-ri/`. Modifying, renaming or deleting a
+  file there fails the check unless the same diff, taken from the merge
+  base, changes `known-differences.json` or `DECISIONS.md`. Adding a case
+  always passes.
+- **Escape hatch, not approval.** The owner chose a diff check in this repo
+  over the shared gate guard's protected paths. Writing the reason down is
+  the price of an edit, and a reviewer reads that reason. No label is
+  needed.
+- **Pull requests only.** A push to `master` has no base to compare with, so
+  the job is skipped there and `gate` accepts that skip on a push.
+- **Known limit.** The job runs from the pull request's head, like the
+  `ci.yml` copy of the gate guard. A pull request can still weaken the
+  script itself. The gate guard flags workflow edits, but not
+  `.github/scripts/`.

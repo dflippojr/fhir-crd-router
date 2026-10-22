@@ -19,12 +19,12 @@ is a useful loop while you work, but it is not proof.
    never lower a floor. When coverage rises, raise the floor to the new value
    minus 0.01. On a PR, the required checks are `gate`, which passes only
    when the `build` matrix, the `sonar` quality gate, the `crd-ri` reference
-   server job (step 2), the `fhir-validator` job (step 3) and `gate-guard`
-   all pass, and `gate-guard` from `.github/workflows/gate-guard-target.yml`,
-   which runs from `master`. The guard fails a PR that deletes or skips
-   tests or edits workflows, Sonar or JaCoCo config until the owner applies
-   `gate-change-approved`; a push after that label makes it stale. Only the
-   owner applies it.
+   server job (step 2), the `fhir-validator` and `corpus-edit` jobs (step 3)
+   and `gate-guard` all pass, and `gate-guard` from
+   `.github/workflows/gate-guard-target.yml`, which runs from `master`. The
+   guard fails a PR that deletes or skips tests or edits workflows, Sonar or
+   JaCoCo config until the owner applies `gate-change-approved`; a push after
+   that label makes it stale. Only the owner applies it.
 
 2. **Run the reference server** when a change touches the client SDK's wire
    behaviour: requests, responses, discovery, prefetch, auth or the CRD
@@ -58,6 +58,17 @@ is a useful loop while you work, but it is not proof.
    A changed verdict is a finding, not noise. Fix the validator, or record the
    difference in `known-differences.json` with a DECISIONS.md entry or a bug
    issue. Never edit a case to make it agree.
+
+   CI's `corpus-edit` job enforces that on every PR. It fails when a PR
+   modifies, renames or deletes an existing file in
+   `client-sdk/src/test/resources/coverage-information/cases/` or
+   `client-sdk/src/test/resources/crd-ri/`, unless the same PR also changes
+   `known-differences.json` or `DECISIONS.md`. Adding a case is always
+   allowed. Run the check locally on your committed changes:
+
+   ```sh
+   .github/scripts/corpus-edit-check.sh origin/master
+   ```
 
 4. **Cite the spec.** A change to spec behaviour cites the section it
    implements: [CRD 2.2.1](https://hl7.org/fhir/us/davinci-crd/STU2.2/) or
