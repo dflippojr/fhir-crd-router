@@ -7,6 +7,9 @@ import java.util.Optional;
  * Optional extension for providers that can attribute their own side effects (for example local
  * key creation) to the initiating caller. The plain {@link CredentialProvider} methods behave as
  * the context versions called with {@link AuditContext#unknown()}.
+ *
+ * <p>Every method throws {@link NullPointerException} if {@code credentialRef} is null, as
+ * {@link CredentialProvider} specifies, before any lookup, lock or audit event.
  */
 public interface ContextualCredentialProvider extends CredentialProvider {
     Optional<String> resolve(AuditContext context, String credentialRef);

@@ -21,7 +21,10 @@ import java.util.Optional;
  *       secret is discarded and {@link AuditPersistenceException} is thrown. This records
  *       resolution, not downstream use of the value.</li>
  * </ul>
- * If the delegate is a {@link ContextualCredentialProvider} the context is passed down so side
+ * <p>A {@code null} reference is a caller bug: each method throws {@link NullPointerException} naming
+ * {@code credentialRef} before any audit event is written.
+ *
+ * <p>If the delegate is a {@link ContextualCredentialProvider} the context is passed down so side
  * effects such as key creation are attributed to the same caller.
  */
 public final class AuditedCredentialProvider implements CredentialProvider {
@@ -52,6 +55,7 @@ public final class AuditedCredentialProvider implements CredentialProvider {
 
     public Optional<String> resolve(AuditContext context, String credentialRef) {
         Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(credentialRef, "credentialRef");
         String target = AuditTargets.opaque(credentialRef);
         Optional<String> result;
         try {
@@ -76,6 +80,7 @@ public final class AuditedCredentialProvider implements CredentialProvider {
 
     public void put(AuditContext context, String credentialRef, String secretValue) {
         Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(credentialRef, "credentialRef");
         mutate(context, "credential.put", credentialRef, () -> {
             if (delegate instanceof ContextualCredentialProvider c) c.put(context, credentialRef, secretValue);
             else delegate.put(credentialRef, secretValue);
@@ -84,6 +89,7 @@ public final class AuditedCredentialProvider implements CredentialProvider {
 
     public void remove(AuditContext context, String credentialRef) {
         Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(credentialRef, "credentialRef");
         mutate(context, "credential.remove", credentialRef, () -> {
             if (delegate instanceof ContextualCredentialProvider c) c.remove(context, credentialRef);
             else delegate.remove(credentialRef);

@@ -17,15 +17,22 @@ public interface CredentialProvider {
      * @param credentialRef opaque key, as stored on a {@link ConnectionRecord}
      * @return the secret value (e.g. client secret, API key, or PEM-encoded
      *     client certificate material), or empty if no such reference exists
+     * @throws NullPointerException if {@code credentialRef} is null; empty means "not found" only
      */
     Optional<String> resolve(String credentialRef);
 
     /**
      * Stores or replaces the secret material for a reference, creating it if
      * it doesn't already exist.
+     *
+     * @throws NullPointerException if {@code credentialRef} is null
      */
     void put(String credentialRef, String secretValue);
 
-    /** Removes a stored secret. No-op if it doesn't exist. */
+    /**
+     * Removes a stored secret. No-op if it doesn't exist.
+     *
+     * @throws NullPointerException if {@code credentialRef} is null
+     */
     void remove(String credentialRef);
 }
