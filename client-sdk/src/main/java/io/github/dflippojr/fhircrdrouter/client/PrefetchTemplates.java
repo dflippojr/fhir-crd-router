@@ -25,8 +25,12 @@ import java.util.regex.Pattern;
  * prefetch key it does not satisfy. A value that is only dots ({@code .},
  * {@code ..}) is not a usable id: inserted as is it would be a
  * <a href="https://www.rfc-editor.org/rfc/rfc3986#section-5.2.4">dot segment</a>
- * that walks up the FHIR base path, so its key is unresolved too. This does
- * not run the queries.
+ * that walks up the FHIR base path, so its key is unresolved too. So is an
+ * empty or whitespace-only value, including the id after the
+ * {@code ResourceType/} prefix of {@code context.userId}: FHIR servers ignore
+ * <a href="https://hl7.org/fhir/R4/search.html#errors">empty search parameters</a>,
+ * so {@code Coverage?patient=&status=active} would return every patient's
+ * Coverage, and a blank value is no id at all. This does not run the queries.
  */
 public final class PrefetchTemplates {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -131,6 +135,13 @@ public final class PrefetchTemplates {
             return Result.failed(name + " is not a primitive");
         }
         String text = value.asText();
+        // FHIR R4 3.1.1.3 (https://hl7.org/fhir/R4/search.html#errors): "Empty parameters are not an error - they
+        // are just ignored by the server", so Coverage?patient= matches every patient. A blank value cannot satisfy
+        // the key, and CDS Hooks (https://cds-hooks.hl7.org/2.0/#prefetch-tokens) says a client "MUST NOT send any
+        // prefetch template key that it chooses not to satisfy" (#155).
+        if (text.isBlank()) {
+            return Result.failed(name + " is empty or blank");
+        }
         if (isDotsOnly(text)) {
             return Result.failed(name + " is not a usable id");
         }
@@ -148,6 +159,10 @@ public final class PrefetchTemplates {
             return Result.failed("{{" + token + "}} needs context.userId to be a " + resourceType + " reference");
         }
         String id = reference.substring(prefix.length());
+        if (id.isBlank()) {
+            // Same rule as a blank context field (#155): see contextField.
+            return Result.failed("{{" + token + "}} needs a non-blank id in context.userId");
+        }
         if (isDotsOnly(id)) {
             return Result.failed("{{" + token + "}} is not a usable id");
         }

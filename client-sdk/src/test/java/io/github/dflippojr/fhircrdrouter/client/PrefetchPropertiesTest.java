@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -141,6 +142,39 @@ class PrefetchPropertiesTest {
         });
     }
 
+    /** An empty id is ignored by a FHIR server, so {@code Coverage?patient=} would match every patient (#155). */
+    @Property(seed = SEED)
+    void templatesReferencingABlankContextFieldAreUnresolved(@ForAll("templates") Map<String, String> templates,
+                                                             @ForAll("contexts") Map<String, Object> context,
+                                                             @ForAll("blankFields") String field,
+                                                             @ForAll("blanks") String blank) {
+        Map<String, Object> withBlank = new LinkedHashMap<>(context);
+        withBlank.put(field, blank);
+        Map<String, String> withReference = new LinkedHashMap<>(templates);
+        withReference.put("referencesBlank", "X/{{context." + field + "}}");
+        Pattern reference = Pattern.compile("\\{\\{\\s*(context\\." + field
+                + (field.equals("userId") ? "|user(Practitioner|PractitionerRole|Patient|RelatedPerson)Id" : "")
+                + ")\\s*}}");
+
+        PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(withReference,
+                new CdsHookRequest("order-sign", "instance", withBlank, null));
+
+        withReference.forEach((key, template) -> {
+            if (template != null && reference.matcher(template).find()) {
+                assertTrue(expansion.unresolved().containsKey(key), template + " -> " + expansion.queries().get(key));
+            }
+        });
+    }
+
+    @Property(seed = SEED)
+    void userTokensWithABlankIdAreUnresolved(@ForAll("blanks") String blank) {
+        PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(
+                Map.of("practitioner", "Practitioner/{{userPractitionerId}}"),
+                new CdsHookRequest("order-sign", "instance", Map.of("userId", "Practitioner/" + blank), null));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+    }
+
     private static long count(String s, char c) {
         return s.chars().filter(ch -> ch == c).count();
     }
@@ -169,6 +203,17 @@ class PrefetchPropertiesTest {
                 Tuple.of(1, Arbitraries.just((String) null)),
                 Tuple.of(9, template));
         return Arbitraries.maps(JsonArbitraries.text(), templateOrNull).ofMaxSize(4).map(LinkedHashMap::new);
+    }
+
+    /** Strings of spaces and tabs, the empty string included. */
+    @Provide
+    Arbitrary<String> blanks() {
+        return Arbitraries.strings().withChars(' ', '\t').ofMinLength(0).ofMaxLength(6);
+    }
+
+    @Provide
+    Arbitrary<String> blankFields() {
+        return Arbitraries.of("patientId", "encounterId", "userId");
     }
 
     /** Context maps that usually hold the fields templates read, with any JSON-ish value, plus other fields. */

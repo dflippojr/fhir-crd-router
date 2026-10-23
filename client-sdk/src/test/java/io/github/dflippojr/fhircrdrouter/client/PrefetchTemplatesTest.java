@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.crd.CrdHookContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -152,6 +153,56 @@ class PrefetchTemplatesTest {
                 untyped(Map.of("userId", ".")));
 
         assertEquals(Map.of("user", "context.userId is not a usable id"), expansion.unresolved());
+    }
+
+    @Test
+    void emptyPatientIdLeavesPatientAndCoverageUnresolved() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "patient", "Patient/{{context.patientId}}",
+                "coverage", COVERAGE), untyped(Map.of("patientId", "")));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals(Map.of(
+                "patient", "context.patientId is empty or blank",
+                "coverage", "context.patientId is empty or blank"), expansion.unresolved());
+    }
+
+    @Test
+    void emptyTypedEncounterIdIsUnresolved() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "encounter", "Encounter/{{context.encounterId}}",
+                "encById", "Encounter?_id={{context.encounterId}}"), orderSign("Practitioner/p1", "pat-1", ""));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals(Map.of(
+                "encounter", "context.encounterId is empty or blank",
+                "encById", "context.encounterId is empty or blank"), expansion.unresolved());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "   ", "\t", " \t\n"})
+    void blankIdsAreUnresolvedWithoutTheValueInTheReason(String blank) {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "patient", "Patient/{{context.patientId}}",
+                "practitioner", "Practitioner/{{userPractitionerId}}"),
+                untyped(Map.of("patientId", blank, "userId", "Practitioner/" + blank)));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals("context.patientId is empty or blank", expansion.unresolved().get("patient"));
+        assertTrue(expansion.unresolved().get("practitioner").startsWith("{{userPractitionerId}}"),
+                expansion.unresolved().toString());
+        expansion.unresolved().values().forEach(reason -> assertFalse(reason.contains("Practitioner/"), reason));
+    }
+
+    @Test
+    void blankUserIdIsUnresolvedForUserTokens() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "user", "{{context.userId}}",
+                "practitioner", "Practitioner/{{userPractitionerId}}"), untyped(Map.of("userId", "  ")));
+
+        assertEquals(Map.of(
+                "user", "context.userId is empty or blank",
+                "practitioner", "context.userId is empty or blank"), expansion.unresolved());
     }
 
     @Test
