@@ -68,17 +68,25 @@ public final class CdsDiscoveryValidator {
         }
         JsonNode prefetch = service.get("prefetch");
         if (prefetch != null) {
-            validatePrefetch(prefetch, path + ".prefetch", findings);
+            validatePrefetch(prefetch, service.get("id"), path + ".prefetch", findings);
         }
     }
 
-    private static void validatePrefetch(JsonNode prefetch, String path, List<Violation> findings) {
+    private static void validatePrefetch(JsonNode prefetch, JsonNode id, String path, List<Violation> findings) {
         if (!prefetch.isObject()) {
             findings.add(error(path, "prefetch must be an object when present"));
             return;
         }
         prefetch.fields().forEachRemaining(entry -> {
-            if (!nonblankText(entry.getValue())) {
+            JsonNode template = entry.getValue();
+            if (template.isNull()) {
+                // A null template is the one invalid value CdsServiceDescriptor keeps (#107), so name
+                // the service and key a caller sees there. CDS Hooks 2.0 discovery: each prefetch
+                // value is a string template, https://cds-hooks.hl7.org/2.0/#prefetch-template
+                String service = nonblankText(id) ? "service \"" + id.textValue() + "\"" : "a service with no valid id";
+                findings.add(error(path + "." + entry.getKey(), "Prefetch template \"" + entry.getKey() + "\" of "
+                        + service + " is null; it must be a nonblank string"));
+            } else if (!nonblankText(template)) {
                 findings.add(error(path + "." + entry.getKey(), "Prefetch template must be a nonblank string"));
             }
         });
