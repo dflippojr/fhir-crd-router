@@ -272,7 +272,8 @@ class InfernoCrdClientSuiteTest {
                 auth.isMissingNode() ? null : new CdsHookRequest.FhirAuthorization(
                         auth.path("access_token").asText(), auth.path("token_type").asText(null),
                         auth.path("expires_in").isNumber() ? auth.path("expires_in").asInt() : null,
-                        auth.path("scope").asText(null), auth.path("subject").asText(null)),
+                        auth.path("scope").asText(null), auth.path("subject").asText(null),
+                        auth.path("patient").asText(null)),
                 body.path("context"), prefetch);
         // The kit's prefetch is sent as is; this records which of the service's templates the SDK could expand.
         PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(service.prefetch(), request);

@@ -17,7 +17,10 @@ import java.util.UUID;
  *
  * <p>{@code fhirServer} and {@code fhirAuthorization} are optional: without
  * them the payer can only use what is sent in {@code prefetch}, so send
- * everything its discovery response asks for.
+ * everything its discovery response asks for. A {@code fhirAuthorization}
+ * requires a {@code fhirServer}
+ * (<a href="https://cds-hooks.hl7.org/2.0/#http-request_1">CDS Hooks 2.0, HTTP Request</a>:
+ * "If fhirAuthorization is provided, this field is REQUIRED").
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CdsHookRequest(
@@ -32,6 +35,9 @@ public record CdsHookRequest(
         Objects.requireNonNull(hook, "hook");
         Objects.requireNonNull(hookInstance, "hookInstance");
         Objects.requireNonNull(context, "context");
+        if (fhirAuthorization != null && (fhirServer == null || fhirServer.isBlank())) {
+            throw new IllegalArgumentException("fhirServer is required when fhirAuthorization is set");
+        }
         if (prefetch == null || prefetch.isEmpty()) {
             prefetch = null;
         } else {
@@ -59,18 +65,57 @@ public record CdsHookRequest(
         return new CdsHookRequest(hook, hookInstance, fhirServer, fhirAuthorization, context, prefetch);
     }
 
-    /** The CDS Hooks {@code fhirAuthorization} object (an OAuth2 bearer token for {@code fhirServer}). */
+    /**
+     * The CDS Hooks {@code fhirAuthorization} object: an OAuth2 bearer token for {@code fhirServer}.
+     * Every field but {@code patient} is required, and {@code token_type} is fixed to {@code Bearer}
+     * (<a href="https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service">CDS Hooks 2.0,
+     * Passing the Access Token to the CDS Service</a>). A null {@code tokenType} means {@code Bearer}.
+     * Send {@code patient}, the FHIR id the token is restricted to, when {@code scope} has
+     * {@code patient/} scopes. {@code expires_in} is the token's lifetime in seconds, so it must be
+     * positive. {@link #toString()} prints {@code accessToken=[REDACTED]}, so logging a request never
+     * leaks the token.
+     */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record FhirAuthorization(
             @JsonProperty("access_token") String accessToken,
             @JsonProperty("token_type") String tokenType,
             @JsonProperty("expires_in") Integer expiresIn,
             @JsonProperty("scope") String scope,
-            @JsonProperty("subject") String subject
+            @JsonProperty("subject") String subject,
+            @JsonProperty("patient") String patient
     ) {
         public FhirAuthorization {
-            Objects.requireNonNull(accessToken, "accessToken");
+            required(accessToken, "accessToken");
             tokenType = tokenType == null ? "Bearer" : tokenType;
+            if (!"Bearer".equals(tokenType)) {
+                throw new IllegalArgumentException("tokenType must be Bearer");
+            }
+            if (expiresIn == null) {
+                throw new IllegalArgumentException("expiresIn is required");
+            }
+            if (expiresIn <= 0) {
+                throw new IllegalArgumentException("expiresIn must be positive");
+            }
+            required(scope, "scope");
+            required(subject, "subject");
+        }
+
+        /** A token with no {@code patient} restriction. */
+        public FhirAuthorization(String accessToken, String tokenType, Integer expiresIn, String scope,
+                                 String subject) {
+            this(accessToken, tokenType, expiresIn, scope, subject, null);
+        }
+
+        @Override
+        public String toString() {
+            return "FhirAuthorization[accessToken=[REDACTED], tokenType=" + tokenType + ", expiresIn=" + expiresIn
+                    + ", scope=" + scope + ", subject=" + subject + ", patient=" + patient + "]";
+        }
+
+        private static void required(String value, String name) {
+            if (value == null || value.isBlank()) {
+                throw new IllegalArgumentException(name + " is required");
+            }
         }
     }
 }
