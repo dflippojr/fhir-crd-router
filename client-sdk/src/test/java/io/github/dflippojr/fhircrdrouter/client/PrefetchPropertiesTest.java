@@ -21,7 +21,9 @@ import net.jqwik.api.Tuple;
 import net.jqwik.api.lifecycle.AfterContainer;
 import net.jqwik.api.lifecycle.BeforeContainer;
 
+import java.net.URLDecoder;
 import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -40,7 +42,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Prefetch maps reach the payer as CDS Hooks 2.0 requires, null "no data" values included (the #66
  * class), and template expansion never throws or lets a context value add query syntax. That a
- * context value never becomes a {@code .} or {@code ..} segment is #108.
+ * context value never becomes a {@code .} or {@code ..} segment is #108. That it never adds a FHIR search OR
+ * value or a {@code |} or {@code $} split is #160.
  */
 class PrefetchPropertiesTest {
 
@@ -175,6 +178,53 @@ class PrefetchPropertiesTest {
         assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
     }
 
+    /**
+     * Reads a query value the way a FHIR server does (https://hl7.org/fhir/R4/search.html#escaping): URL-decode,
+     * then split on unescaped {@code ,} and look for unescaped {@code |} and {@code $}. The value must come back as
+     * one OR value equal to the context value, with no separator (#160).
+     */
+    @Property(seed = SEED)
+    void contextValuesNeverAddAnOrValueOrASeparatorToASearchParameter(@ForAll("searchSyntaxValues") String value) {
+        Map<String, String> templates = Map.of(
+                "coverage", "Coverage?patient={{context.patientId}}&status=active",
+                "observation", "Observation?subject=Patient/x&code={{context.patientId}}");
+
+        PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(templates,
+                new CdsHookRequest("order-sign", "instance", Map.of("patientId", value), null));
+
+        assertEquals(templates.keySet(), expansion.queries().keySet(), expansion.unresolved().toString());
+        assertEquals(List.of(value), searchValues(expansion.queries().get("coverage"), "patient"));
+        assertEquals(List.of(value), searchValues(expansion.queries().get("observation"), "code"));
+    }
+
+    /** The OR values of {@code parameter}, unescaped; fails on an unescaped {@code |} or {@code $}. */
+    private static List<String> searchValues(String query, String parameter) {
+        String queryString = query.substring(query.indexOf('?') + 1);
+        List<String> raw = Arrays.stream(queryString.split("&", -1))
+                .filter(pair -> pair.startsWith(parameter + "="))
+                .map(pair -> URLDecoder.decode(pair.substring(parameter.length() + 1), StandardCharsets.UTF_8))
+                .toList();
+        assertEquals(1, raw.size(), query);
+        List<String> values = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        String text = raw.get(0);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                assertTrue(i + 1 < text.length(), "dangling escape: " + query);
+                current.append(text.charAt(++i));
+            } else if (c == ',') {
+                values.add(current.toString());
+                current.setLength(0);
+            } else {
+                assertFalse(c == '|' || c == '$', "unescaped '" + c + "': " + query);
+                current.append(c);
+            }
+        }
+        values.add(current.toString());
+        return values;
+    }
+
     private static long count(String s, char c) {
         return s.chars().filter(ch -> ch == c).count();
     }
@@ -205,10 +255,22 @@ class PrefetchPropertiesTest {
         return Arbitraries.maps(JsonArbitraries.text(), templateOrNull).ofMaxSize(4).map(LinkedHashMap::new);
     }
 
-    /** Strings of spaces and tabs, the empty string included. */
+    /** Strings of ASCII and Unicode spaces (no-break, figure, zero-width, ideographic), the empty string included. */
     @Provide
     Arbitrary<String> blanks() {
-        return Arbitraries.strings().withChars(' ', '\t').ofMinLength(0).ofMaxLength(6);
+        return Arbitraries.strings().withChars(' ', '\t', '\u00A0', '\u2007', '\u200B', '\u3000')
+                .ofMinLength(0).ofMaxLength(6);
+    }
+
+    /** Text with at least one FHIR search escape or separator character in it. */
+    @Provide
+    Arbitrary<String> searchSyntaxValues() {
+        Arbitrary<String> syntax = Arbitraries.strings().withChars(',', '|', '$', '\\').ofMinLength(1).ofMaxLength(4);
+        Arbitrary<String> text = Arbitraries.frequencyOf(
+                Tuple.of(1, Arbitraries.just("")),
+                Tuple.of(2, Arbitraries.of("pat-1", "http://loinc.org", "Patient/p", " ", "a b")),
+                Tuple.of(2, JsonArbitraries.text()));
+        return Combinators.combine(text, syntax, text, syntax, text).as((a, b, c, d, e) -> a + b + c + d + e);
     }
 
     @Provide
