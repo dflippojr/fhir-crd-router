@@ -132,6 +132,24 @@ class ConnectionVerificationTest {
     }
 
     @Test
+    void nullPrefetchTemplateIsOneValidatorFindingWithoutFailurePhase() {
+        body = RawDiscoveryTest.NULL_TEMPLATE_CATALOG;
+        ConnectionVerification report = client().verify(connection(AuthType.NONE));
+
+        assertFalse(report.ok());
+        assertEquals(2, report.serviceCount());
+        assertEquals(Set.of("order-sign"), report.hooks());
+        assertEquals(1, report.findings().size());
+        CdsDiscoveryValidator.Violation finding = report.findings().get(0);
+        assertEquals("services[1].prefetch.k", finding.path());
+        assertTrue(finding.message().contains("\"bad\""), finding.message());
+        assertTrue(finding.message().contains("\"k\""), finding.message());
+        assertTrue(report.failurePhase().isEmpty());
+        assertTrue(report.failureStatus().isEmpty());
+        assertEquals("discovery catalog has 1 finding(s)", report.failureReason());
+    }
+
+    @Test
     void invalidEntriesStillReportCountAndUsableHooks() {
         body = "{\"services\":[{\"id\":\"a\",\"hook\":\"order-sign\",\"description\":\"d\"},"
                 + "{\"id\":\"b\",\"hook\":\"order-sign\"},{\"hook\":7}]}";

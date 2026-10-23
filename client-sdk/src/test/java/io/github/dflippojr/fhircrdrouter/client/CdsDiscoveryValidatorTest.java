@@ -85,6 +85,21 @@ class CdsDiscoveryValidatorTest {
         assertEquals("id is required and must be a nonblank string", findings.get(0).message());
     }
 
+    @Test
+    void nullPrefetchTemplateMessageNamesServiceIdAndKey() throws Exception {
+        var findings = CdsDiscoveryValidator.validate(mapper.readTree("""
+                {"services":[{"id":"bad","hook":"order-sign","description":"x","prefetch":{"k":null,"blank":""}},
+                 {"hook":"order-sign","description":"x","prefetch":{"coverage":null}}]}
+                """));
+        assertEquals(List.of("services[0].prefetch.k", "services[0].prefetch.blank", "services[1].id",
+                "services[1].prefetch.coverage"), findings.stream().map(CdsDiscoveryValidator.Violation::path).toList());
+        assertEquals("Prefetch template \"k\" of service \"bad\" is null; it must be a nonblank string",
+                findings.get(0).message());
+        assertEquals("Prefetch template must be a nonblank string", findings.get(1).message());
+        assertEquals("Prefetch template \"coverage\" of a service with no valid id is null; "
+                + "it must be a nonblank string", findings.get(3).message());
+    }
+
     private JsonNode withOptional(String field, String value) throws Exception {
         return mapper.readTree("{\"services\":[{\"id\":\"id\",\"hook\":\"hook\",\"description\":\"desc\",\""
                 + field + "\":" + value + "}]}");
