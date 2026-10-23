@@ -128,6 +128,61 @@ class PrefetchTemplatesTest {
         assertEquals("X?count=3&flag=true", expansion.queries().get("n"));
     }
 
+    @ParameterizedTest
+    @CsvSource({".", "..", "..."})
+    void dotOnlyIdsAreUnresolvedWithoutTheValueInTheReason(String dots) {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "patient", "Patient/{{context.patientId}}",
+                "practitioner", "Practitioner/{{userPractitionerId}}"),
+                untyped(Map.of("patientId", dots, "userId", "Practitioner/" + dots)));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals(Map.of(
+                "patient", "context.patientId is not a usable id",
+                "practitioner", "{{userPractitionerId}} is not a usable id"), expansion.unresolved());
+        expansion.unresolved().values().forEach(reason -> {
+            assertFalse(reason.contains(".."), reason);
+            assertFalse(reason.contains("Practitioner/"), reason);
+        });
+    }
+
+    @Test
+    void dotOnlyContextUserIdIsUnresolved() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of("user", "{{context.userId}}"),
+                untyped(Map.of("userId", ".")));
+
+        assertEquals(Map.of("user", "context.userId is not a usable id"), expansion.unresolved());
+    }
+
+    @Test
+    void idsWithDotsAmongOtherCharactersExpandVerbatimAndPathsArePercentEncoded() {
+        String sixtyFour = "a".repeat(32) + "." + "b-".repeat(15) + "9";
+        Map<String, Object> context = new HashMap<>();
+        context.put("patientId", "a..b");
+        context.put("encounterId", "a.b");
+        context.put("dash", "-");
+        context.put("long", sixtyFour);
+        context.put("up", "../..");
+        context.put("userId", "Practitioner/../x");
+
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "p", "Patient/{{context.patientId}}",
+                "e", "Encounter/{{context.encounterId}}",
+                "d", "X/{{context.dash}}",
+                "l", "X/{{context.long}}",
+                "u", "Patient/{{context.up}}",
+                "r", "Practitioner/{{userPractitionerId}}"), untyped(context));
+
+        assertEquals(64, sixtyFour.length());
+        assertTrue(expansion.unresolved().isEmpty(), expansion.unresolved().toString());
+        assertEquals("Patient/a..b", expansion.queries().get("p"));
+        assertEquals("Encounter/a.b", expansion.queries().get("e"));
+        assertEquals("X/-", expansion.queries().get("d"));
+        assertEquals("X/" + sixtyFour, expansion.queries().get("l"));
+        assertEquals("Patient/..%2F..", expansion.queries().get("u"));
+        assertEquals("Practitioner/..%2Fx", expansion.queries().get("r"));
+    }
+
     @Test
     void mapsAreImmutableAndKeepInputOrder() {
         Map<String, String> templates = new LinkedHashMap<>();
