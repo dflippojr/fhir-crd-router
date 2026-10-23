@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -27,6 +28,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RawDiscoveryTest {
+    static final String NULL_TEMPLATE_CATALOG = "{\"services\":["
+            + "{\"hook\":\"order-sign\",\"id\":\"good\",\"description\":\"ok\"},"
+            + "{\"hook\":\"order-sign\",\"id\":\"bad\",\"description\":\"x\",\"prefetch\":{\"k\":null}}]}";
+
     private HttpServer server;
     private ConnectionRecord record;
     private final AtomicInteger calls = new AtomicInteger();
@@ -78,6 +83,22 @@ class RawDiscoveryTest {
         assertEquals(2, calls.get());
         body = "{\"services\":[{}]}";
         assertNull(client().discoverServices(record).get(0).id());
+    }
+
+    @Test
+    void nullPrefetchTemplateKeepsWholeCatalogAndExpandsAsUnresolved() {
+        body = NULL_TEMPLATE_CATALOG;
+        List<CdsServiceDescriptor> services = client().discoverServices(record);
+        assertEquals(List.of("good", "bad"), services.stream().map(CdsServiceDescriptor::id).toList());
+        Map<String, String> prefetch = services.get(1).prefetch();
+        assertTrue(prefetch.containsKey("k"));
+        assertNull(prefetch.get("k"));
+        assertThrows(UnsupportedOperationException.class, () -> prefetch.put("x", "Patient"));
+
+        PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(prefetch,
+                new CdsHookRequest("order-sign", "hook-1", Map.of("patientId", "pat-1"), null));
+        assertEquals(Map.of("k", "template is null"), expansion.unresolved());
+        assertTrue(expansion.queries().isEmpty());
     }
 
     @Test
