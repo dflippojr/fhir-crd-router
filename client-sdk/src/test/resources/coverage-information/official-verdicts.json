@@ -157,6 +157,36 @@
         }
       ]
     },
+    "detail-code-category": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[12].extension[0].value.ofType(code)",
+          "messageId": "UNABLE_TO_INFER_CODESYSTEM",
+          "message": "The System URI could not be determined for the code 'cat-visits' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageDetailCategories|2.2.1'"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[12].extension[0].value.ofType(code)",
+          "messageId": "Terminology_TX_NoValid_16",
+          "message": "The value provided ('cat-visits') was not found in the value set 'CRD Coverage Detail Categories Value Set' (http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageDetailCategories|2.2.1), and a code is required from this value set  (error message = The System URI could not be determined for the code 'cat-visits' in the ValueSet 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageDetailCategories|2.2.1'; The provided code '#cat-visits' was not found in the value set 'http://hl7.org/fhir/us/davinci-crd/ValueSet/coverageDetailCategories|2.2.1')"
+        }
+      ]
+    },
+    "detail-missing-category": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[12]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension:detail.extension: minimum required = 3, but only found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[12]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:detail.extension:category': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
     "detail-missing-code": {
       "valid": false,
       "errors": [
@@ -169,6 +199,41 @@
           "location": "ServiceRequest.extension[0].extension[4]",
           "messageId": "Validation_VAL_Profile_Minimum_SLICE",
           "message": "Slice 'Extension.extension:detail.extension:code': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "detail-missing-value": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[12]",
+          "messageId": "Validation_VAL_Profile_Minimum",
+          "message": "Extension.extension:detail.extension: minimum required = 3, but only found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[12]",
+          "messageId": "Validation_VAL_Profile_Minimum_SLICE",
+          "message": "Slice 'Extension.extension:detail.extension:value': a matching slice is required, but not found (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1). Note that other slices are allowed in addition to this required slice"
+        }
+      ]
+    },
+    "detail-twice-code": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[12]",
+          "messageId": "Validation_VAL_Profile_Maximum",
+          "message": "Extension.extension:detail.extension:code: max allowed = 1, but found 2 (from http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information|2.2.1)"
+        }
+      ]
+    },
+    "detail-type-value": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0].extension[12].extension[2]",
+          "messageId": "Validation_VAL_Profile_NoType",
+          "message": "The type of element valueInteger is not known - it could not be determined from the information available. Valid types at this point are boolean, string, url, Period, Quantity"
         }
       ]
     },
@@ -544,6 +609,10 @@
       "errors": []
     },
     "valid-conditional": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-detail-quantity": {
       "valid": true,
       "errors": []
     },

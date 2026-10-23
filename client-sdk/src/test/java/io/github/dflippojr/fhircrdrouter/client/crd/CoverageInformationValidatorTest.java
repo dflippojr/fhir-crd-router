@@ -35,11 +35,18 @@ class CoverageInformationValidatorTest {
               {"url":"doc-needed","valueCode":"clinical"},
               {"url":"doc-purpose","valueCode":"withpa"},
               {"url":"reason","valueCodeableConcept":{"text":"Prior authorization requires clinical notes"}},
+              {"url":"detail","extension":[
+                {"url":"category","valueCode":"cat-limitation"},
+                {"url":"code","valueCodeableConcept":{"text":"Visits per year"}},
+                {"url":"value","valueString":"12"}
+              ]},
               {"url":"questionnaire","valueCanonical":"http://example.org/Questionnaire/q1"},
               {"url":"date","valueDate":"2026-09-15"},
               {"url":"coverage-assertion-id","valueString":"assert-1"},
               {"url":"expiry-date","valueDate":"2026-12"}
             ]}""";
+
+    private static final String DETAIL = "extension[detail][0].extension";
 
     private static final String IDENTIFIER_WARNING = "identifier is the pre-2.x name for coverage-assertion-id; "
             + "CRD 2.2.1 requires the url coverage-assertion-id";
@@ -125,6 +132,32 @@ class CoverageInformationValidatorTest {
                 arguments("coverage-assertion-id value type", replace("coverage-assertion-id",
                         sub("coverage-assertion-id", "valueIdentifier", MAPPER.createObjectNode().put("value", "a"))),
                         "extension[coverage-assertion-id]", "must have a valueString"),
+                arguments("detail category required", inDetail(remove("category")),
+                        DETAIL + "[category]", "detail category is required"),
+                arguments("detail code required", inDetail(remove("code")),
+                        DETAIL + "[code]", "detail code is required"),
+                arguments("detail value required", inDetail(remove("value")),
+                        DETAIL + "[value]", "detail value is required"),
+                arguments("detail code max 1", inDetail(add(sub("code", "valueCodeableConcept",
+                        MAPPER.createObjectNode().put("text", "Visits per month")))),
+                        DETAIL + "[code]", "detail code may appear at most once, found 2"),
+                arguments("detail qualification max 1", inDetail(add(sub("qualification", "valueString", "a"),
+                        sub("qualification", "valueString", "b"))),
+                        DETAIL + "[qualification]", "detail qualification may appear at most once, found 2"),
+                arguments("detail category code", inDetail(replace("category", sub("category", "valueCode",
+                        "cat-visits"))), DETAIL + "[category]",
+                        "detail category code 'cat-visits' is not one of cat-decisional, cat-limitation, cat-other"),
+                arguments("detail category value type", inDetail(replace("category", sub("category", "valueCoding",
+                        MAPPER.createObjectNode().put("code", "cat-limitation")))),
+                        DETAIL + "[category]", "detail category must have a valueCode, found valueCoding"),
+                arguments("detail code value type", inDetail(replace("code", sub("code", "valueString", "visits"))),
+                        DETAIL + "[code]", "detail code must have a valueCodeableConcept, found valueString"),
+                arguments("detail value value type", inDetail(replace("value",
+                        sub("value", "valueInteger", MAPPER.getNodeFactory().numberNode(12)))),
+                        DETAIL + "[value]", "detail value must have a valueBoolean, valueString, valueUrl, "
+                                + "valuePeriod or valueQuantity, found valueInteger"),
+                arguments("detail qualification value type", inDetail(add(sub("qualification", "valueCode", "x"))),
+                        DETAIL + "[qualification]", "detail qualification must have a valueString, found valueCode"),
                 arguments("crd-ci-q1", remove("doc-needed"), "extension[questionnaire]", "crd-ci-q1"),
                 arguments("crd-ci-q2", replace("covered", sub("covered", "valueCode", "not-covered")),
                         "extension[pa-needed]", "crd-ci-q2"),
@@ -148,6 +181,41 @@ class CoverageInformationValidatorTest {
                 arguments("crd-ci-q9", replace("doc-needed", sub("doc-needed", "valueCode", "indeterminate"))
                         .andThen(remove("reason")).andThen(remove("doc-purpose")),
                         "extension[reason]", "crd-ci-q9"));
+    }
+
+    /** #126: detail's value is boolean, string, url, Period or Quantity (CRD 2.2.1 ext-coverage-information). */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("detailValues")
+    void eachAllowedDetailValueTypeConforms(String valueType, JsonNode value) {
+        ObjectNode ext = conformant();
+        inDetail(replace("value", sub("value", valueType, value))
+                .andThen(add(sub("qualification", "valueString", "Per calendar year")))).accept(ext);
+        assertEquals(List.of(), CoverageInformationValidator.validate(ext));
+    }
+
+    static Stream<Arguments> detailValues() {
+        return Stream.of(
+                arguments("valueBoolean", MAPPER.getNodeFactory().booleanNode(true)),
+                arguments("valueString", MAPPER.getNodeFactory().textNode("12")),
+                arguments("valueUrl", MAPPER.getNodeFactory().textNode("http://example.org/limits")),
+                arguments("valuePeriod", MAPPER.createObjectNode().put("start", "2026-01-01")),
+                arguments("valueQuantity", MAPPER.createObjectNode().put("value", 12).put("unit", "visits")));
+    }
+
+    /** #126: each detail is checked on its own, and the path says which one. */
+    @Test
+    void secondDetailIsCheckedAndNamedByIndex() {
+        ObjectNode ext = conformant();
+        add(MAPPER.createObjectNode().put("url", "detail")).accept(ext);
+
+        assertEquals(List.of(
+                        new Violation(Severity.ERROR, "extension[detail][1].extension[category]",
+                                "detail category is required"),
+                        new Violation(Severity.ERROR, "extension[detail][1].extension[code]",
+                                "detail code is required"),
+                        new Violation(Severity.ERROR, "extension[detail][1].extension[value]",
+                                "detail value is required")),
+                CoverageInformationValidator.validate(ext));
     }
 
     @Test
@@ -308,5 +376,17 @@ class CoverageInformationValidatorTest {
 
     private static Consumer<ObjectNode> replace(String url, ObjectNode... subs) {
         return remove(url).andThen(add(subs));
+    }
+
+    /** Applies a change to the first detail's own sub-extensions. */
+    private static Consumer<ObjectNode> inDetail(Consumer<ObjectNode> change) {
+        return ext -> {
+            for (JsonNode sub : ext.get("extension")) {
+                if ("detail".equals(sub.path("url").asText())) {
+                    change.accept((ObjectNode) sub);
+                    return;
+                }
+            }
+        };
     }
 }
