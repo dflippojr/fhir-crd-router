@@ -17,9 +17,5 @@
     "ours": "valid",
     "warning": "extension[coverageInfo]",
     "why": "Deliberate leniency (owner decision on #125): the HL7 reference implementation sends 'coverageInfo', a relative url the profile does not define. The official validator fails it; we report it as a WARNING, not an ERROR, like the legacy 'identifier', so reference server responses are not flagged as errors. DECISIONS.md."
-  },
-  "detail-missing-code": {
-    "ours": "valid",
-    "why": "Bug #126: the detail sub-extension's own sub-extensions (category, code and value, each 1..1) are not checked."
   }
 }
