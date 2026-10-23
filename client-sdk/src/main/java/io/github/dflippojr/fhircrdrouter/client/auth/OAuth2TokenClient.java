@@ -50,8 +50,10 @@ import java.util.function.Supplier;
  * client certificates, or one with and one without mTLS, never share a
  * (possibly certificate-bound, RFC 8705) token. Entries last
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
- * capped at {@link #MAX_CACHE_LIFETIME}. A token response without
- * {@code expires_in} is not cached, and one whose {@code access_token} is not
+ * capped at {@link #MAX_CACHE_LIFETIME}. {@code expires_in} may be a positive whole
+ * number or, for servers that send it as a string, a numeric string such as
+ * {@code "3600"}; a token response with no {@code expires_in}, or any other value
+ * ({@code "abc"}, {@code "1.5"}, {@code "0"}, {@code null}), is not cached. One whose {@code access_token} is not
  * a string in the RFC 6750 {@code b64token} form is rejected with a {@link RouterException}
  * and never cached. Callers that get a 401 from the
  * payer should {@link #invalidate} and fetch again, since a payer can revoke
@@ -241,11 +243,11 @@ public final class OAuth2TokenClient {
             }
 
             // Measure expiry from when the request was sent, not when it returned.
-            JsonNode expiresIn = json.get("expires_in");
+            long expiresIn = expiresInSeconds(json.get("expires_in"));
             Instant refreshAt = null;
-            if (expiresIn != null && expiresIn.canConvertToLong() && expiresIn.asLong() > 0) {
+            if (expiresIn > 0) {
                 // Clamp first: a huge value would overflow Instant and throw DateTimeException.
-                long seconds = Math.min(expiresIn.asLong(), MAX_CACHE_LIFETIME.toSeconds());
+                long seconds = Math.min(expiresIn, MAX_CACHE_LIFETIME.toSeconds());
                 refreshAt = requestedAt.plusSeconds(seconds).minus(EXPIRY_SKEW);
             }
             return new CachedToken(accessToken.textValue(), refreshAt);
@@ -257,6 +259,28 @@ public final class OAuth2TokenClient {
             throw PayerCallException.transport("Token request interrupted for payerId=" + record.payerId(),
                     PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
         }
+    }
+
+    /**
+     * {@code expires_in} in seconds, or 0 when it is absent or unusable. RFC 6749 §5.1 makes it a
+     * number, but some servers (older Azure AD endpoints) send a string such as {@code "3600"},
+     * which is accepted when it parses as a whole number (#105).
+     */
+    private static long expiresInSeconds(JsonNode expiresIn) {
+        if (expiresIn == null) {
+            return 0;
+        }
+        if (expiresIn.canConvertToLong()) {
+            return expiresIn.asLong();
+        }
+        if (expiresIn.isTextual()) {
+            try {
+                return Long.parseLong(expiresIn.textValue().trim());
+            } catch (NumberFormatException e) {
+                // "abc", "", "1.5", "1e3" or out of range: not cached, as for any other unusable value.
+            }
+        }
+        return 0;
     }
 
     private String tokenErrorBody(String body, String secret) {

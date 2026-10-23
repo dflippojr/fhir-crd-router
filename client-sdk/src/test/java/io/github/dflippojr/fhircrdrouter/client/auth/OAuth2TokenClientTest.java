@@ -196,6 +196,55 @@ class OAuth2TokenClientTest {
     }
 
     @Test
+    void numericStringExpiresInIsCached() {
+        ConnectionRecord record = record(List.of());
+        // RFC 6749 §5.1 says a number, but some servers (older Azure AD endpoints) send a string (#105).
+        for (String text : List.of("\"3600\"", "\"3600 \"", "\" 3600\"")) {
+            expiresInJson.set(",\"expires_in\":" + text);
+            tokenClient.invalidate(record);
+            tokenRequests.set(0);
+
+            assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"), text);
+            clock.advance(Duration.ofSeconds(3600).minus(OAuth2TokenClient.EXPIRY_SKEW).minusSeconds(1));
+            assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"), text);
+            assertEquals(1, tokenRequests.get(), "a cached token makes no token request for " + text);
+
+            clock.advance(Duration.ofSeconds(1));
+            assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"), text);
+            assertEquals(2, tokenRequests.get(), text);
+        }
+    }
+
+    @Test
+    void hugeNumericStringExpiresInIsCapped() {
+        expiresInJson.set(",\"expires_in\":\"99999999999999\"");
+        ConnectionRecord record = record(List.of());
+
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+        clock.advance(OAuth2TokenClient.MAX_CACHE_LIFETIME.minus(OAuth2TokenClient.EXPIRY_SKEW).minusSeconds(1));
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+
+        clock.advance(Duration.ofSeconds(1));
+        assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"));
+        assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
+    void unusableExpiresInIsNotCachedAndDoesNotThrow() {
+        ConnectionRecord record = record(List.of());
+        for (String bad : List.of("\"abc\"", "\"\"", "\"  \"", "\"-1\"", "\"0\"", "\"1.5\"", "\"1e3\"",
+                "\"99999999999999999999\"", "-1", "0", "null", "true", "{}", "[]")) {
+            expiresInJson.set(",\"expires_in\":" + bad);
+            tokenClient.invalidate(record);
+            tokenRequests.set(0);
+
+            assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"), bad);
+            assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"), bad);
+            assertEquals(2, tokenRequests.get(), "nothing may be cached for " + bad);
+        }
+    }
+
+    @Test
     void unusableAccessTokenIsRejectedAndNeverCached() {
         ConnectionRecord record = record(List.of());
         // The last six are text but not RFC 6750 b64token: non-BMP, CRLF, NUL, space, Latin-1, leading "=" (#111).
