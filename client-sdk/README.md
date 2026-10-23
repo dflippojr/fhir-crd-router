@@ -180,9 +180,14 @@ primitive (`draftOrders`), the token is a nested path such as the reference
 implementation's `{{context.draftOrders.DeviceRequest.id}}`, the token is
 unknown or a FHIRPath expression, a `{{` is never closed, or the value is
 only dots (`.`, `..`): `Patient/..` would walk up the FHIR base path, so it
-is not a usable id (`a..b` is, and still expands). An empty or
-whitespace-only value is unresolved too, as is a blank id after the
-`Practitioner/` (or other) prefix of `context.userId`. FHIR servers
+is not a usable id (`a..b` is, and still expands). A blank value is
+unresolved too, as is a blank id after the `Practitioner/` (or other) prefix
+of `context.userId`. Blank means empty or only whitespace, Unicode space
+separators (`\p{Z}`, such as U+00A0) or invisible format characters
+(`\p{Cf}`, such as U+200B). A context value that is a type prefix with a
+blank or dots-only id after it (`Practitioner/`, `Patient/..`) is unresolved
+as well, so `PractitionerRole?practitioner={{context.userId}}` never asks for
+a reference with no id. FHIR servers
 [ignore empty search parameters](https://hl7.org/fhir/R4/search.html#errors),
 so `Coverage?patient=&status=active` would fetch every patient's Coverage,
 and a key a blank value cannot satisfy must not be sent
@@ -190,7 +195,16 @@ and a key a blank value cannot satisfy must not be sent
 fields, never their values, so logging them does not leak patient
 identifiers. Values matching the FHIR id pattern are inserted as is; anything
 else is percent-encoded (UTF-8, space as `%20`) so it cannot add query
-parameters. `expand` never throws for template content. Both maps are
+parameters or path segments. Percent-encoding alone does not stop a value
+from adding FHIR search syntax: a server URL-decodes before it reads `,` as
+OR and `|` or `$` as separators, so `%2C` is still an OR. So after the
+template's `?`, a value's `\`, `,`, `$` and `|` are first backslash-escaped,
+as [FHIR search escaping](https://hl7.org/fhir/R4/search.html#escaping)
+requires: `patientId` = `pat-1,pat-2` gives
+`Coverage?patient=pat-1%5C%2Cpat-2&status=active`, one search for the
+literal id `pat-1,pat-2`, which matches nothing, rather than a search for
+both patients. Before the `?` (`Patient/{{context.patientId}}`) a value is
+only percent-encoded, since search syntax does not apply there. `expand` never throws for template content. Both maps are
 immutable and keep the template key order. It does not run queries, fetch
 resources, evaluate FHIRPath or cache discovery.
 
