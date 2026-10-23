@@ -135,7 +135,11 @@ requires every one of those fields, so the record rejects a null or blank
 `accessToken`, `scope` or `subject`, a null `expiresIn`, and any `tokenType`
 other than `Bearer` (null means `Bearer`). When the token has `patient/`
 scopes, use the six-argument constructor to send `patient`, the FHIR id the
-token is restricted to. A `fhirAuthorization` without a `fhirServer` is
+token is restricted to. `expiresIn` is the token's lifetime in seconds, so
+the record also rejects an `expiresIn` of 0 or less: if the token is about to
+expire, refresh it rather than send a lifetime that has run out.
+`toString()` prints `accessToken=[REDACTED]` in place of the token; the JSON
+sent to the payer still carries it. A `fhirAuthorization` without a `fhirServer` is
 [not allowed](https://cds-hooks.hl7.org/2.0/#http-request_1), so
 `withFhirServer(null, auth)` throws `IllegalArgumentException`.
 
