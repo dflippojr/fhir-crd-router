@@ -178,7 +178,9 @@ Supported tokens follow [CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#prefetch-
 A key is unresolved, with a short reason, when a field is absent or not a
 primitive (`draftOrders`), the token is a nested path such as the reference
 implementation's `{{context.draftOrders.DeviceRequest.id}}`, the token is
-unknown or a FHIRPath expression, or a `{{` is never closed. Reasons name
+unknown or a FHIRPath expression, a `{{` is never closed, or the value is
+only dots (`.`, `..`): `Patient/..` would walk up the FHIR base path, so it
+is not a usable id (`a..b` is, and still expands). Reasons name
 fields, never their values, so logging them does not leak patient
 identifiers. Values matching the FHIR id pattern are inserted as is; anything
 else is percent-encoded (UTF-8, space as `%20`) so it cannot add query

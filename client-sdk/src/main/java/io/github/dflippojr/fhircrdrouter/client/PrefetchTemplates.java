@@ -22,7 +22,11 @@ import java.util.regex.Pattern;
  * {@code {{userPatientId}}}, {@code {{userRelatedPersonId}}}), derived from
  * {@code context.userId}. Any key that cannot be fully expanded is reported in
  * {@link Expansion#unresolved()}; the spec says a client MUST NOT send a
- * prefetch key it does not satisfy. This does not run the queries.
+ * prefetch key it does not satisfy. A value that is only dots ({@code .},
+ * {@code ..}) is not a usable id: inserted as is it would be a
+ * <a href="https://www.rfc-editor.org/rfc/rfc3986#section-5.2.4">dot segment</a>
+ * that walks up the FHIR base path, so its key is unresolved too. This does
+ * not run the queries.
  */
 public final class PrefetchTemplates {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -126,7 +130,11 @@ public final class PrefetchTemplates {
         if (!value.isTextual() && !value.isNumber() && !value.isBoolean()) {
             return Result.failed(name + " is not a primitive");
         }
-        return Result.ok(value.asText());
+        String text = value.asText();
+        if (isDotsOnly(text)) {
+            return Result.failed(name + " is not a usable id");
+        }
+        return Result.ok(text);
     }
 
     private static Result userToken(String token, String resourceType, JsonNode context) {
@@ -139,7 +147,16 @@ public final class PrefetchTemplates {
         if (!reference.startsWith(prefix) || reference.length() == prefix.length()) {
             return Result.failed("{{" + token + "}} needs context.userId to be a " + resourceType + " reference");
         }
-        return Result.ok(reference.substring(prefix.length()));
+        String id = reference.substring(prefix.length());
+        if (isDotsOnly(id)) {
+            return Result.failed("{{" + token + "}} is not a usable id");
+        }
+        return Result.ok(id);
+    }
+
+    /** {@code .} and {@code ..} match {@link #FHIR_ID}, so {@link #encode} would insert them verbatim (#108). */
+    private static boolean isDotsOnly(String value) {
+        return !value.isEmpty() && value.chars().allMatch(c -> c == '.');
     }
 
     private static String encode(String value) {

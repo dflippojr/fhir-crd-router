@@ -23,6 +23,7 @@ import net.jqwik.api.lifecycle.BeforeContainer;
 
 import java.net.http.HttpClient;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -124,6 +125,19 @@ class PrefetchPropertiesTest {
                 assertEquals(count(literal, c), count(query, c),
                         "'" + c + "' count changed: " + templates.get(key) + " -> " + query);
             }
+        });
+    }
+
+    @Property(seed = SEED)
+    void contextValuesNeverBecomeDotSegments(@ForAll("templates") Map<String, String> templates,
+                                             @ForAll("contexts") Map<String, Object> context) {
+        PrefetchTemplates.Expansion expansion = PrefetchTemplates.expand(templates,
+                new CdsHookRequest("order-sign", "instance", context, null));
+        expansion.queries().forEach((key, query) -> {
+            String literal = templates.get(key).replaceAll("(?s)\\{\\{.*?}}", "");
+            long dotSegments = Arrays.stream(query.split("[/?&=]", -1)).filter(s -> s.equals(".") || s.equals("..")).count();
+            long literalDotSegments = Arrays.stream(literal.split("[/?&=]", -1)).filter(s -> s.equals(".") || s.equals("..")).count();
+            assertEquals(literalDotSegments, dotSegments, templates.get(key) + " -> " + query);
         });
     }
 
