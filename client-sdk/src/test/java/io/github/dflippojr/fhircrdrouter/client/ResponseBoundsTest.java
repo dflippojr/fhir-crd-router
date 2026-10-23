@@ -20,7 +20,9 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,9 +81,11 @@ class ResponseBoundsTest {
     }
 
     @Test
-    void bodyLargerThanTheLimitFailsWithoutBufferingIt() {
-        // Never ends: only a client that stops reading at the limit fails before the timeout.
-        server.createContext("/cds-services", exchange -> stream(exchange, Long.MAX_VALUE));
+    void bodyLargerThanTheLimitFailsWithoutBufferingIt() throws Exception {
+        // A client that buffers everything reads all of it; one that stops at the limit hangs up first.
+        CompletableFuture<Boolean> hungUp = new CompletableFuture<>();
+        server.createContext("/cds-services",
+                exchange -> hungUp.complete(stream(exchange, 4L * CdsHooksClient.MAX_RESPONSE_BYTES)));
 
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> client(Duration.ofSeconds(10)).discoverServices(record));
@@ -91,6 +95,7 @@ class ResponseBoundsTest {
         assertEquals(PayerCallPhase.DISCOVERY, error.phase());
         assertEquals(1, exchanges.size());
         assertNotNull(exchanges.get(0).error());
+        assertTrue(hungUp.get(5, TimeUnit.SECONDS), "the client read the whole body before failing");
     }
 
     @Test
@@ -151,8 +156,11 @@ class ResponseBoundsTest {
         });
     }
 
-    /** Streams {@code {"services":[]}} padded with leading spaces to {@code size} bytes, without a length. */
-    private static void stream(HttpExchange exchange, long size) throws IOException {
+    /**
+     * Streams {@code {"services":[]}} padded with leading spaces to {@code size} bytes, without a length.
+     * Returns true when the client hung up before the end.
+     */
+    private static boolean stream(HttpExchange exchange, long size) throws IOException {
         byte[] json = "{\"services\":[]}".getBytes(StandardCharsets.UTF_8);
         byte[] padding = new byte[64 * 1024];
         Arrays.fill(padding, (byte) ' ');
@@ -166,8 +174,9 @@ class ResponseBoundsTest {
             }
             out.write(json);
         } catch (IOException e) {
-            // The client stopped reading; that is the point.
+            return true;
         }
+        return false;
     }
 
     private static CredentialProvider secret() {
