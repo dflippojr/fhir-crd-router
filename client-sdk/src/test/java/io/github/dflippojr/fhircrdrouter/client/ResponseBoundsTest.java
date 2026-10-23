@@ -80,7 +80,8 @@ class ResponseBoundsTest {
 
     @Test
     void bodyLargerThanTheLimitFailsWithoutBufferingIt() {
-        server.createContext("/cds-services", exchange -> stream(exchange, CdsHooksClient.MAX_RESPONSE_BYTES + 1));
+        // Never ends: only a client that stops reading at the limit fails before the timeout.
+        server.createContext("/cds-services", exchange -> stream(exchange, Long.MAX_VALUE));
 
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> client(Duration.ofSeconds(10)).discoverServices(record));

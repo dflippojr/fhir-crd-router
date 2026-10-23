@@ -373,7 +373,8 @@ fetch and a retried hook can take multiple request budgets in total. The
 request timeout covers the whole response, body included, so a body still
 arriving when it runs out fails with a timeout. A response body larger than
 `CdsHooksClient.MAX_RESPONSE_BYTES` (16 MiB) fails as a transport error
-without being buffered.
+without being buffered. That failure has no HTTP status, even on an error
+response, so a policy retry on 429 or 503 does not apply to it.
 
 ```java
 CdsHooksClient client = new CdsHooksClient(credentials,
