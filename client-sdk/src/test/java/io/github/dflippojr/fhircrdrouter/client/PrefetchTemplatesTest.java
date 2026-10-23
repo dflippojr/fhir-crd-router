@@ -205,6 +205,93 @@ class PrefetchTemplatesTest {
                 "practitioner", "context.userId is empty or blank"), expansion.unresolved());
     }
 
+    /**
+     * FHIR R4 search escaping (https://hl7.org/fhir/R4/search.html#escaping): {@code ,} is OR and {@code |} and
+     * {@code $} are separators, and a server URL-decodes before it parses them, so {@code %2C} still acts as OR
+     * (#160). In a query value they are backslash-escaped, and the backslash itself too, before percent-encoding.
+     */
+    @ParameterizedTest
+    @CsvSource(delimiter = ';', quoteCharacter = '"', value = {
+            "pat-1,pat-2; pat-1%5C%2Cpat-2",
+            ",; %5C%2C",
+            "http://loinc.org|1234-5; http%3A%2F%2Floinc.org%5C%7C1234-5",
+            "a$b; a%5C%24b",
+            "a\\b; a%5C%5Cb",
+            "a\\,b; a%5C%5C%5C%2Cb",
+    })
+    void searchSyntaxInAQueryValueIsBackslashEscaped(String value, String expected) {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "coverage", COVERAGE,
+                "identified", "Patient?identifier={{context.patientId}}"), untyped(Map.of("patientId", value)));
+
+        assertEquals(Map.of(
+                "coverage", "Coverage?patient=" + expected + "&status=active",
+                "identified", "Patient?identifier=" + expected), expansion.queries());
+    }
+
+    @Test
+    void searchSyntaxBeforeTheQueryStringIsOnlyPercentEncoded() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "patient", "Patient/{{context.patientId}}",
+                "both", "Patient/{{context.patientId}}/_history?_id={{context.patientId}}"),
+                untyped(Map.of("patientId", "a,b|c$d\\e")));
+
+        assertEquals("Patient/a%2Cb%7Cc%24d%5Ce", expansion.queries().get("patient"));
+        assertEquals("Patient/a%2Cb%7Cc%24d%5Ce/_history?_id=a%5C%2Cb%5C%7Cc%5C%24d%5C%5Ce",
+                expansion.queries().get("both"));
+    }
+
+    /** Review advisory 3 on #158: {@code practitioner=Practitioner%2F} is a reference with no id (#160). */
+    @ParameterizedTest
+    @ValueSource(strings = {"Practitioner/", "Practitioner/ ", "Practitioner/\u00A0", "Patient/.", "Patient/.."})
+    void aContextReferenceWithATypePrefixAndNoIdIsUnresolved(String reference) {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "roles", "PractitionerRole?practitioner={{context.userId}}",
+                "patient", "Patient/{{context.patientId}}"),
+                untyped(Map.of("userId", reference, "patientId", reference)));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals(Map.of(
+                "roles", "context.userId has no usable id after its type prefix",
+                "patient", "context.patientId has no usable id after its type prefix"), expansion.unresolved());
+    }
+
+    @Test
+    void aContextReferenceWithAnIdStillExpands() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "roles", "PractitionerRole?practitioner={{context.userId}}"),
+                untyped(Map.of("userId", "Practitioner/prac-1")));
+
+        assertEquals(Map.of("roles", "PractitionerRole?practitioner=Practitioner%2Fprac-1"), expansion.queries());
+    }
+
+    /**
+     * Review advisory 2 on #158: {@link String#isBlank} misses no-break and zero-width spaces, so a value of only
+     * those is a blank id too (#160).
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"\u00A0", "\u2007", "\u202F", "\u200B", "\uFEFF", "\u2028", "\u3000\u00A0 \u200B"})
+    void unicodeBlanksAreUnresolved(String blank) {
+        Expansion expansion = PrefetchTemplates.expand(Map.of(
+                "coverage", COVERAGE,
+                "practitioner", "Practitioner/{{userPractitionerId}}"),
+                untyped(Map.of("patientId", blank, "userId", "Practitioner/" + blank)));
+
+        assertTrue(expansion.queries().isEmpty(), expansion.queries().toString());
+        assertEquals(Map.of(
+                "coverage", "context.patientId is empty or blank",
+                "practitioner", "{{userPractitionerId}} needs a non-blank id in context.userId"),
+                expansion.unresolved());
+    }
+
+    @Test
+    void visibleTextAroundUnicodeSpacesStillExpands() {
+        Expansion expansion = PrefetchTemplates.expand(Map.of("coverage", COVERAGE),
+                untyped(Map.of("patientId", "\u00A0a\u200B")));
+
+        assertEquals(Map.of("coverage", "Coverage?patient=%C2%A0a%E2%80%8B&status=active"), expansion.queries());
+    }
+
     @Test
     void idsWithDotsAmongOtherCharactersExpandVerbatimAndPathsArePercentEncoded() {
         String sixtyFour = "a".repeat(32) + "." + "b-".repeat(15) + "9";

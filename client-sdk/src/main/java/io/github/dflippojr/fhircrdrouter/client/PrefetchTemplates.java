@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -25,17 +26,26 @@ import java.util.regex.Pattern;
  * prefetch key it does not satisfy. A value that is only dots ({@code .},
  * {@code ..}) is not a usable id: inserted as is it would be a
  * <a href="https://www.rfc-editor.org/rfc/rfc3986#section-5.2.4">dot segment</a>
- * that walks up the FHIR base path, so its key is unresolved too. So is an
- * empty or whitespace-only value, including the id after the
- * {@code ResourceType/} prefix of {@code context.userId}: FHIR servers ignore
+ * that walks up the FHIR base path, so its key is unresolved too. So is a
+ * blank value, including the id after the {@code ResourceType/} prefix of
+ * {@code context.userId}: FHIR servers ignore
  * <a href="https://hl7.org/fhir/R4/search.html#errors">empty search parameters</a>,
  * so {@code Coverage?patient=&status=active} would return every patient's
- * Coverage, and a blank value is no id at all. This does not run the queries.
+ * Coverage, and a blank value is no id at all. Blank means empty or made only of
+ * whitespace, Unicode space separators ({@code \p{Z}}, such as U+00A0) or
+ * invisible format characters ({@code \p{Cf}}, such as U+200B). A context value
+ * that is a {@code ResourceType/} prefix with a blank or dots-only id after it
+ * ({@code Practitioner/}) is unresolved for the same reasons. This does not run
+ * the queries.
  */
 public final class PrefetchTemplates {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern FHIR_ID = Pattern.compile("[A-Za-z0-9\\-.]{1,64}");
     private static final Pattern FIELD_NAME = Pattern.compile("[A-Za-z_]\\w*");
+    /** A FHIR resource type and slash, and what follows it: {@code Practitioner/prac-1}. */
+    private static final Pattern TYPED_REFERENCE = Pattern.compile("[A-Z][A-Za-z]*/(.*)", Pattern.DOTALL);
+    /** Characters FHIR search parses in a parameter value, the escape itself included. */
+    private static final Pattern SEARCH_SYNTAX = Pattern.compile("[\\\\,$|]");
     private static final String CONTEXT_PREFIX = "context.";
     private static final Map<String, String> USER_TOKENS = Map.of(
             "userPractitionerId", "Practitioner",
@@ -64,7 +74,13 @@ public final class PrefetchTemplates {
      * Expands each template against {@code request.context()} (a
      * {@code CrdHookContext} record or a {@code Map}). Values matching the FHIR
      * id pattern are inserted as is; anything else is percent-encoded (UTF-8)
-     * so it cannot add query parameters. Never throws for template content.
+     * so it cannot add query parameters or path segments. After the template's
+     * {@code ?}, a value's {@code \}, {@code ,}, {@code $} and {@code |} are
+     * first backslash-escaped, as
+     * <a href="https://hl7.org/fhir/R4/search.html#escaping">FHIR search escaping</a>
+     * requires, so a value is always one literal search value: it cannot add an
+     * OR value or split a token into system and code. Never throws for template
+     * content.
      *
      * @throws NullPointerException if {@code templates}, {@code request} or a template key is null
      */
@@ -103,7 +119,9 @@ public final class PrefetchTemplates {
             if (token.reason != null) {
                 return token;
             }
-            out.append(template, pos, open).append(encode(token.value));
+            // Only the template's literal text can put a '?' in out: encode turns a value's '?' into %3F.
+            out.append(template, pos, open);
+            out.append(encode(token.value, out.indexOf("?") >= 0));
             pos = close + 2;
         }
     }
@@ -126,6 +144,21 @@ public final class PrefetchTemplates {
     }
 
     private static Result contextField(String field, JsonNode context) {
+        Result result = contextValue(field, context);
+        if (result.reason != null) {
+            return result;
+        }
+        // A reference with no id after its type (review advisory 3 on #158): PractitionerRole?practitioner=
+        // Practitioner%2F names no practitioner, the same as a blank {{userPractitionerId}} (#160).
+        Matcher reference = TYPED_REFERENCE.matcher(result.value);
+        if (reference.matches() && (isBlank(reference.group(1)) || isDotsOnly(reference.group(1)))) {
+            return Result.failed(CONTEXT_PREFIX + field + " has no usable id after its type prefix");
+        }
+        return result;
+    }
+
+    /** A primitive, non-blank, not dots-only context field, before any check of its reference form. */
+    private static Result contextValue(String field, JsonNode context) {
         JsonNode value = context.isObject() ? context.get(field) : null;
         String name = CONTEXT_PREFIX + field;
         if (value == null || value.isNull()) {
@@ -139,7 +172,7 @@ public final class PrefetchTemplates {
         // are just ignored by the server", so Coverage?patient= matches every patient. A blank value cannot satisfy
         // the key, and CDS Hooks (https://cds-hooks.hl7.org/2.0/#prefetch-tokens) says a client "MUST NOT send any
         // prefetch template key that it chooses not to satisfy" (#155).
-        if (text.isBlank()) {
+        if (isBlank(text)) {
             return Result.failed(name + " is empty or blank");
         }
         if (isDotsOnly(text)) {
@@ -149,7 +182,7 @@ public final class PrefetchTemplates {
     }
 
     private static Result userToken(String token, String resourceType, JsonNode context) {
-        Result userId = contextField("userId", context);
+        Result userId = contextValue("userId", context);
         if (userId.reason != null) {
             return userId;
         }
@@ -159,7 +192,7 @@ public final class PrefetchTemplates {
             return Result.failed("{{" + token + "}} needs context.userId to be a " + resourceType + " reference");
         }
         String id = reference.substring(prefix.length());
-        if (id.isBlank()) {
+        if (isBlank(id)) {
             // Same rule as a blank context field (#155): see contextField.
             return Result.failed("{{" + token + "}} needs a non-blank id in context.userId");
         }
@@ -174,9 +207,25 @@ public final class PrefetchTemplates {
         return !value.isEmpty() && value.chars().allMatch(c -> c == '.');
     }
 
-    private static String encode(String value) {
+    /**
+     * Empty, or only whitespace, Unicode space separators ({@code \p{Z}}: U+00A0, U+2007, U+202F, ...) and
+     * invisible format characters ({@code \p{Cf}}: U+200B, U+FEFF, ...). {@link String#isBlank} misses the no-break
+     * spaces and every format character (review advisory 2 on #158, #160).
+     */
+    private static boolean isBlank(String value) {
+        return value.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)
+                || Character.getType(c) == Character.FORMAT);
+    }
+
+    private static String encode(String value, boolean inQuery) {
         if (FHIR_ID.matcher(value).matches()) {
             return value;
+        }
+        if (inQuery) {
+            // FHIR R4 3.1.1.4.19 (https://hl7.org/fhir/R4/search.html#escaping): a ',', '$' or '|' in a parameter
+            // value "must be prepended by the character '\', which also must be used to prepend itself". The
+            // server URL-decodes before it parses these, so percent-encoding alone leaves %2C an OR (#160).
+            value = SEARCH_SYNTAX.matcher(value).replaceAll("\\\\$0");
         }
         // URLEncoder is form encoding; a literal '+' is already %2B, so '+' here is always a space.
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
