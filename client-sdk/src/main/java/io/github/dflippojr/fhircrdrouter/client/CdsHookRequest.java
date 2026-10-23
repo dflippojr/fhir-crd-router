@@ -71,7 +71,9 @@ public record CdsHookRequest(
      * (<a href="https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service">CDS Hooks 2.0,
      * Passing the Access Token to the CDS Service</a>). A null {@code tokenType} means {@code Bearer}.
      * Send {@code patient}, the FHIR id the token is restricted to, when {@code scope} has
-     * {@code patient/} scopes.
+     * {@code patient/} scopes. {@code expires_in} is the token's lifetime in seconds, so it must be
+     * positive. {@link #toString()} prints {@code accessToken=[REDACTED]}, so logging a request never
+     * leaks the token.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record FhirAuthorization(
@@ -91,6 +93,9 @@ public record CdsHookRequest(
             if (expiresIn == null) {
                 throw new IllegalArgumentException("expiresIn is required");
             }
+            if (expiresIn <= 0) {
+                throw new IllegalArgumentException("expiresIn must be positive");
+            }
             required(scope, "scope");
             required(subject, "subject");
         }
@@ -99,6 +104,12 @@ public record CdsHookRequest(
         public FhirAuthorization(String accessToken, String tokenType, Integer expiresIn, String scope,
                                  String subject) {
             this(accessToken, tokenType, expiresIn, scope, subject, null);
+        }
+
+        @Override
+        public String toString() {
+            return "FhirAuthorization[accessToken=[REDACTED], tokenType=" + tokenType + ", expiresIn=" + expiresIn
+                    + ", scope=" + scope + ", subject=" + subject + ", patient=" + patient + "]";
         }
 
         private static void required(String value, String name) {

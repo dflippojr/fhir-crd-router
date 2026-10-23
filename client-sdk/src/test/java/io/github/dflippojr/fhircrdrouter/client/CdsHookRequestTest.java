@@ -49,6 +49,35 @@ class CdsHookRequestTest {
     }
 
     @Test
+    void expiresInMustBePositive() {
+        for (int lifetime : new int[] {0, -1, Integer.MIN_VALUE}) {
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> new FhirAuthorization("tok", "Bearer", lifetime, "s", "sub"));
+            assertEquals("expiresIn must be positive", e.getMessage());
+        }
+        assertEquals(1, new FhirAuthorization("tok", "Bearer", 1, "s", "sub").expiresIn());
+    }
+
+    @Test
+    void stringFormsNeverContainTheAccessToken() {
+        String token = "SENTINEL-ACCESS-TOKEN-6b1f";
+        FhirAuthorization auth = new FhirAuthorization(token, "Bearer", 300, "patient/Patient.read",
+                "payer-client", "p1");
+        CdsHookRequest request = request().withFhirServer(EHR, auth);
+
+        assertFalse(auth.toString().contains(token), auth.toString());
+        assertFalse(request.toString().contains(token), request.toString());
+        assertTrue(auth.toString().contains("accessToken=[REDACTED]"), auth.toString());
+        assertTrue(request.toString().contains("accessToken=[REDACTED]"), request.toString());
+        // Only the token is hidden: the other fields still print for debugging.
+        assertTrue(auth.toString().contains("scope=patient/Patient.read"), auth.toString());
+        assertTrue(auth.toString().contains("patient=p1"), auth.toString());
+        assertTrue(request.toString().contains("fhirServer=" + EHR), request.toString());
+        // The wire form still carries it.
+        assertEquals(token, mapper.valueToTree(request).at("/fhirAuthorization/access_token").asText());
+    }
+
+    @Test
     void tokenTypeIsBearerOnly() {
         assertRejects("tokenType", () -> new FhirAuthorization("tok", "MAC", 300, "s", "sub"));
         assertRejects("tokenType", () -> new FhirAuthorization("tok", "", 300, "s", "sub"));
