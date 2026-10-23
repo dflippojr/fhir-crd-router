@@ -33,7 +33,12 @@ import java.util.regex.Pattern;
  *       {@code info-needed} (informationNeeded);</li>
  *   <li>FHIR {@code date} format for {@code date} and {@code expiry-date};</li>
  *   <li>{@code coverage} is a Reference to a Coverage;</li>
- *   <li>invariants {@code crd-ci-q1} to {@code crd-ci-q9}.</li>
+ *   <li>invariants {@code crd-ci-q1} to {@code crd-ci-q9};</li>
+ *   <li>each {@code detail}'s own sub-extensions: {@code category} 1..1 ({@code valueCode}, required
+ *       binding coverageDetailCategories), {@code code} 1..1 ({@code valueCodeableConcept}),
+ *       {@code value} 1..1 ({@code valueBoolean}, {@code valueString}, {@code valueUrl},
+ *       {@code valuePeriod} or {@code valueQuantity}) and {@code qualification} 0..1
+ *       ({@code valueString}).</li>
  * </ul>
  *
  * <p>The profile's sub-extension slicing is open, but only to extensions with an absolute url: a
@@ -44,8 +49,8 @@ import java.util.regex.Pattern;
  * names, reported as a {@link Severity#WARNING} so its responses are not flagged as errors:
  * {@code identifier}, which it sends in place of {@code coverage-assertion-id} (and which then stands
  * in for the missing {@code coverage-assertion-id}), and {@code coverageInfo}. The internals of
- * {@code detail}, {@code billingCode}, {@code contact} and {@code dependency} are not checked beyond
- * their value type.
+ * {@code billingCode}, {@code contact} and {@code dependency} are not checked beyond their value type,
+ * and {@code detail}'s {@code code} is not checked against its extensible binding (coverageDetailNew).
  *
  * <p>Two places where the invariant text and its FHIRPath differ: {@code crd-ci-q4} names
  * {@code noauth}, which is not a pa-needed code, so {@code no-auth} is checked as intended;
@@ -56,7 +61,6 @@ import java.util.regex.Pattern;
  *
  * <p>Verdicts are compared with the official HL7 FHIR validator's on a corpus of cases
  * ({@code CoverageInformationDifferentialTest}); the deliberate differences are in DECISIONS.md.
- * Known gap: {@code detail} is not checked inside (#126).
  *
  * <p>Parsing via {@link CoverageInformation#fromResource(JsonNode)} stays lenient; this class
  * only reports.
@@ -94,13 +98,19 @@ public final class CoverageInformationValidator {
     static final String QUESTIONNAIRE = "questionnaire";
     static final String LEGACY_IDENTIFIER = "identifier";
     static final String RI_COVERAGE_INFO = "coverageInfo";
+    static final String DETAIL = "detail";
 
     private static final String CONDITIONAL = "conditional";
     private static final String INDETERMINATE = "indeterminate";
     private static final String REASON_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp";
     private static final String ROOT = "extension";
 
-    private record Slice(int min, int max, String valueType, Set<String> codes) { }
+    /** A sub-extension's cardinality, allowed value types (empty for a complex one) and required codes. */
+    private record Slice(int min, int max, List<String> valueTypes, Set<String> codes) {
+        Slice(int min, int max, String valueType, Set<String> codes) {
+            this(min, max, List.of(valueType), codes);
+        }
+    }
 
     private static final int MANY = Integer.MAX_VALUE;
 
@@ -120,7 +130,7 @@ public final class CoverageInformationValidator {
                 Set.of("performer", "location", "timeframe", "contract-window", "detail-code", "OTH")));
         SLICES.put("billingCode", new Slice(0, MANY, "valueCoding", null));
         SLICES.put(REASON, new Slice(0, MANY, "valueCodeableConcept", null));
-        SLICES.put("detail", new Slice(0, MANY, null, null));
+        SLICES.put(DETAIL, new Slice(0, MANY, List.of(), null));
         SLICES.put("dependency", new Slice(0, MANY, "valueReference", null));
         SLICES.put(QUESTIONNAIRE, new Slice(0, MANY, "valueCanonical", null));
         SLICES.put(DATE, new Slice(1, 1, "valueDate", null));
@@ -128,6 +138,24 @@ public final class CoverageInformationValidator {
         SLICES.put(SATISFIED_PA_ID, new Slice(0, 1, "valueString", null));
         SLICES.put("contact", new Slice(0, MANY, "valueContactDetail", null));
         SLICES.put(EXPIRY_DATE, new Slice(0, 1, "valueDate", null));
+    }
+
+    /**
+     * The sub-extensions of each {@code detail}, from
+     * <a href="http://hl7.org/fhir/us/davinci-crd/STU2.2/StructureDefinition-ext-coverage-information.html">
+     * ext-coverage-information</a> (CRD 2.2.1); {@code category} has a required binding to
+     * <a href="http://hl7.org/fhir/us/davinci-crd/STU2.2/ValueSet-coverageDetailCategories.html">
+     * coverageDetailCategories</a>.
+     */
+    private static final Map<String, Slice> DETAIL_SLICES = new LinkedHashMap<>();
+
+    static {
+        DETAIL_SLICES.put("category", new Slice(1, 1, "valueCode",
+                Set.of("cat-limitation", "cat-decisional", "cat-other")));
+        DETAIL_SLICES.put("code", new Slice(1, 1, "valueCodeableConcept", null));
+        DETAIL_SLICES.put("value", new Slice(1, 1,
+                List.of("valueBoolean", "valueString", "valueUrl", "valuePeriod", "valueQuantity"), null));
+        DETAIL_SLICES.put("qualification", new Slice(0, 1, "valueString", null));
     }
 
     private static final Set<String> REASON_CODES = Set.of(
@@ -168,8 +196,9 @@ public final class CoverageInformationValidator {
 
         Map<String, List<JsonNode>> byUrl = groupByUrl(extension, violations);
         for (Map.Entry<String, Slice> slice : SLICES.entrySet()) {
-            checkSlice(slice.getKey(), slice.getValue(), byUrl, violations);
+            checkSlice(slice.getKey(), slice.getValue(), byUrl, "", ROOT, violations);
         }
+        checkDetails(byUrl.getOrDefault(DETAIL, List.of()), violations);
         checkUndefined(byUrl, violations);
         checkInvariants(byUrl, violations);
         return violations;
@@ -190,37 +219,64 @@ public final class CoverageInformationValidator {
     }
 
     private static Map<String, List<JsonNode>> groupByUrl(JsonNode extension, List<Violation> violations) {
-        Map<String, List<JsonNode>> byUrl = new LinkedHashMap<>();
         JsonNode subs = extension.path(ROOT);
         if (!subs.isArray()) {
             violations.add(error(ROOT, "coverage-information has no sub-extensions"));
-            return byUrl;
+            return new LinkedHashMap<>();
         }
+        return groupByUrl(subs);
+    }
+
+    private static Map<String, List<JsonNode>> groupByUrl(JsonNode subs) {
+        Map<String, List<JsonNode>> byUrl = new LinkedHashMap<>();
         for (JsonNode sub : subs) {
             byUrl.computeIfAbsent(sub.path("url").asText(""), k -> new ArrayList<>()).add(sub);
         }
         return byUrl;
     }
 
-    private static void checkSlice(String url, Slice slice, Map<String, List<JsonNode>> byUrl,
-                                   List<Violation> violations) {
+    /**
+     * Checks one sub-extension slice.
+     *
+     * @param label prefix naming the parent in messages, e.g. {@code "detail "}; empty at the root
+     * @param parent path of the extension array the slice is in
+     */
+    private static void checkSlice(String url, Slice slice, Map<String, List<JsonNode>> byUrl, String label,
+                                   String parent, List<Violation> violations) {
         List<JsonNode> subs = byUrl.getOrDefault(url, List.of());
-        String path = path(url);
+        String path = parent + "[" + url + "]";
+        String name = label + url;
         if (subs.size() < slice.min()) {
-            missing(url, path, byUrl, violations);
+            missing(url, name, path, byUrl, violations);
         } else if (subs.size() > slice.max()) {
-            violations.add(error(path, url + " may appear at most once, found " + subs.size()));
+            violations.add(error(path, name + " may appear at most once, found " + subs.size()));
         }
         for (JsonNode sub : subs) {
-            checkValue(url, slice, sub, path, violations);
+            checkValue(url, name, slice, sub, path, violations);
         }
     }
 
-    private static void missing(String url, String path, Map<String, List<JsonNode>> byUrl,
+    private static void missing(String url, String name, String path, Map<String, List<JsonNode>> byUrl,
                                 List<Violation> violations) {
         // The legacy identifier stands in for coverage-assertion-id; checkUndefined warns about it.
         if (!COVERAGE_ASSERTION_ID.equals(url) || !byUrl.containsKey(LEGACY_IDENTIFIER)) {
-            violations.add(error(path, url + " is required"));
+            violations.add(error(path, name + " is required"));
+        }
+    }
+
+    /**
+     * #126: {@code detail} is a complex extension whose {@code category}, {@code code} and {@code value}
+     * are each 1..1 and {@code qualification} 0..1. See
+     * <a href="http://hl7.org/fhir/us/davinci-crd/STU2.2/StructureDefinition-ext-coverage-information.html">
+     * ext-coverage-information</a> (CRD 2.2.1), element {@code Extension.extension:detail}.
+     */
+    private static void checkDetails(List<JsonNode> details, List<Violation> violations) {
+        for (int i = 0; i < details.size(); i++) {
+            Map<String, List<JsonNode>> parts = groupByUrl(details.get(i).path(ROOT));
+            String parent = path(DETAIL) + "[" + i + "]." + ROOT;
+            for (Map.Entry<String, Slice> slice : DETAIL_SLICES.entrySet()) {
+                checkSlice(slice.getKey(), slice.getValue(), parts, DETAIL + " ", parent, violations);
+            }
         }
     }
 
@@ -253,24 +309,31 @@ public final class CoverageInformationValidator {
         }
     }
 
-    private static void checkValue(String url, Slice slice, JsonNode sub, String path, List<Violation> violations) {
-        if (slice.valueType() == null) {
+    private static void checkValue(String url, String name, Slice slice, JsonNode sub, String path,
+                                   List<Violation> violations) {
+        if (slice.valueTypes().isEmpty()) {
             return;
         }
-        JsonNode value = sub.get(slice.valueType());
-        if (value == null || value.isNull()) {
-            violations.add(error(path, url + " must have a " + slice.valueType()
+        JsonNode value = slice.valueTypes().stream().map(sub::get)
+                .filter(v -> v != null && !v.isNull()).findFirst().orElse(null);
+        if (value == null) {
+            violations.add(error(path, name + " must have a " + oneOf(slice.valueTypes())
                     + otherValue(sub).map(found -> ", found " + found).orElse("")));
             return;
         }
         if (slice.codes() != null && !slice.codes().contains(value.asText())) {
-            violations.add(error(path, url + " code '" + value.asText() + "' is not one of "
+            violations.add(error(path, name + " code '" + value.asText() + "' is not one of "
                     + String.join(", ", slice.codes().stream().sorted().toList())));
         } else if (DATE.equals(url) || EXPIRY_DATE.equals(url)) {
             checkDate(url, value.asText(), path, violations);
         } else if (COVERAGE.equals(url)) {
             checkCoverageReference(value, path, violations);
         }
+    }
+
+    private static String oneOf(List<String> types) {
+        int last = types.size() - 1;
+        return last == 0 ? types.get(0) : String.join(", ", types.subList(0, last)) + " or " + types.get(last);
     }
 
     private static Optional<String> otherValue(JsonNode sub) {

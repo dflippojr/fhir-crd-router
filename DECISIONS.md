@@ -212,7 +212,8 @@ Where we disagree on purpose (listed in `known-differences.json`):
   not check the type of an unresolved literal reference, so it accepts
   `Patient/pat-1`. We reject it, because the profile's target is Coverage.
 
-Disagreements that are our bugs: #126 (we do not check inside `detail`).
+Disagreements that are our bugs: none open. #126 (we did not check inside
+`detail`) is fixed, and `detail-missing-code` now agrees.
 
 The reference implementation's response fixture fails the official
 validator, as recorded above: legacy names, no `covered` or `date`, and a
