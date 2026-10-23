@@ -97,5 +97,6 @@ class CdsHookRequestTest {
 
         assertEquals(mapper.readTree(wire), written.path("fhirAuthorization"));
         assertEquals("p1", written.at("/fhirAuthorization/patient").asText());
+        assertEquals(read, new FhirAuthorization("tok", null, 300, "patient/Patient.read", "payer-client", "p1"));
     }
 }

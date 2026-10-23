@@ -129,7 +129,15 @@ for (CoverageInformation info : response.coverageInformation()) {
 ```
 
 To give the payer access to your FHIR server as well, use
-`request.withFhirServer(url, new CdsHookRequest.FhirAuthorization(token, ...))`.
+`request.withFhirServer(url, new CdsHookRequest.FhirAuthorization(token, "Bearer", expiresIn, scope, subject))`.
+[CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service)
+requires every one of those fields, so the record rejects a null or blank
+`accessToken`, `scope` or `subject`, a null `expiresIn`, and any `tokenType`
+other than `Bearer` (null means `Bearer`). When the token has `patient/`
+scopes, use the six-argument constructor to send `patient`, the FHIR id the
+token is restricted to. A `fhirAuthorization` without a `fhirServer` is
+[not allowed](https://cds-hooks.hl7.org/2.0/#http-request_1), so
+`withFhirServer(null, auth)` throws `IllegalArgumentException`.
 
 **Prefetch keys vary by payer.** CRD recommends keys like `patient` and
 `coverage`, but the HL7 reference implementation asks for its own keys
