@@ -180,7 +180,13 @@ primitive (`draftOrders`), the token is a nested path such as the reference
 implementation's `{{context.draftOrders.DeviceRequest.id}}`, the token is
 unknown or a FHIRPath expression, a `{{` is never closed, or the value is
 only dots (`.`, `..`): `Patient/..` would walk up the FHIR base path, so it
-is not a usable id (`a..b` is, and still expands). Reasons name
+is not a usable id (`a..b` is, and still expands). An empty or
+whitespace-only value is unresolved too, as is a blank id after the
+`Practitioner/` (or other) prefix of `context.userId`. FHIR servers
+[ignore empty search parameters](https://hl7.org/fhir/R4/search.html#errors),
+so `Coverage?patient=&status=active` would fetch every patient's Coverage,
+and a key a blank value cannot satisfy must not be sent
+([CDS Hooks](https://cds-hooks.hl7.org/2.0/#prefetch-tokens)). Reasons name
 fields, never their values, so logging them does not leak patient
 identifiers. Values matching the FHIR id pattern are inserted as is; anything
 else is percent-encoded (UTF-8, space as `%20`) so it cannot add query
