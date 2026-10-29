@@ -22,7 +22,8 @@ import java.util.function.Function;
  * names only, never values. Reads pass straight through and are not audited. The plain
  * {@code save}/{@code delete} use {@link AuditContext#unknown()}. Classification is serialized
  * with the write, so it is exact for writers that go through this instance (one store instance
- * should own the file).
+ * should own the file). The delegate throwing {@link AuditPersistenceException} is a failed mutation
+ * like any other: FAILED is recorded and the exception propagates.
  */
 public final class AuditedConnectionStore implements ConnectionStore {
     public static final String TARGET_KIND = "connection";
@@ -48,12 +49,12 @@ public final class AuditedConnectionStore implements ConnectionStore {
             new Field("contactInfo", ConnectionRecord::contactInfo));
 
     private final ConnectionStore delegate;
-    private final AuditSink sink;
+    private final AuditedMutation mutation;
     private final ReentrantLock writeLock = new ReentrantLock();
 
     public AuditedConnectionStore(ConnectionStore delegate, AuditSink sink) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.sink = Objects.requireNonNull(sink, "sink");
+        this.mutation = new AuditedMutation(sink, TARGET_KIND, AuditedMutation.DelegateAuditFailure.RECORD_FAILED);
     }
 
     @Override
@@ -97,7 +98,7 @@ public final class AuditedConnectionStore implements ConnectionStore {
                 fields = changedFields(before.get(), record);
                 action = fields.isEmpty() ? "connection.no_change" : "connection.update";
             }
-            audited(context, action, record.payerId(), record.environment(), fields, () -> delegate.save(record));
+            mutation.run(context, action, record.payerId(), record.environment(), fields, () -> delegate.save(record));
         } finally {
             writeLock.unlock();
         }
@@ -110,28 +111,11 @@ public final class AuditedConnectionStore implements ConnectionStore {
         writeLock.lock();
         try {
             boolean exists = delegate.findByPayerIdAndEnvironment(payerId, environment).isPresent();
-            audited(context, exists ? "connection.delete" : "connection.delete_missing", payerId, environment,
-                    List.of(), () -> delegate.delete(payerId, environment));
+            mutation.run(context, exists ? "connection.delete" : "connection.delete_missing", payerId,
+                    environment, List.of(), () -> delegate.delete(payerId, environment));
         } finally {
             writeLock.unlock();
         }
-    }
-
-    private void audited(AuditContext context, String action, String payerId, Environment environment,
-                         List<String> fields, Runnable mutation) {
-        String target = AuditTargets.opaque(payerId);
-        sink.record(context, action, TARGET_KIND, target, environment, AuditEvent.Outcome.ATTEMPTED, fields);
-        try {
-            mutation.run();
-        } catch (RuntimeException | Error failure) {
-            try {
-                sink.record(context, action, TARGET_KIND, target, environment, AuditEvent.Outcome.FAILED, fields);
-            } catch (AuditPersistenceException auditFailure) {
-                failure.addSuppressed(auditFailure);
-            }
-            throw failure;
-        }
-        sink.record(context, action, TARGET_KIND, target, environment, AuditEvent.Outcome.SUCCEEDED, fields);
     }
 
     private static List<String> presentFields(ConnectionRecord record) {

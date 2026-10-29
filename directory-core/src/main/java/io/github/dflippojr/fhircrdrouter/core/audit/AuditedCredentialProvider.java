@@ -20,6 +20,8 @@ import java.util.Optional;
  *       reason {@code io_error} or {@code provider_error}. If that event cannot be recorded the
  *       secret is discarded and {@link AuditPersistenceException} is thrown. This records
  *       resolution, not downstream use of the value.</li>
+ *   <li>If the delegate itself throws {@link AuditPersistenceException} (its own audit, such as key
+ *       creation, failed), put, remove and resolve rethrow it with no FAILED or resolve event.</li>
  * </ul>
  * <p>A {@code null} reference is a caller bug: each method throws {@link NullPointerException} naming
  * {@code credentialRef} before any audit event is written.
@@ -32,10 +34,12 @@ public final class AuditedCredentialProvider implements CredentialProvider {
 
     private final CredentialProvider delegate;
     private final AuditSink sink;
+    private final AuditedMutation mutation;
 
     public AuditedCredentialProvider(CredentialProvider delegate, AuditSink sink) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.sink = Objects.requireNonNull(sink, "sink");
+        this.mutation = new AuditedMutation(sink, TARGET_KIND, AuditedMutation.DelegateAuditFailure.RETHROW);
     }
 
     @Override
@@ -81,7 +85,7 @@ public final class AuditedCredentialProvider implements CredentialProvider {
     public void put(AuditContext context, String credentialRef, String secretValue) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(credentialRef, "credentialRef");
-        mutate(context, "credential.put", credentialRef, () -> {
+        mutation.run(context, "credential.put", credentialRef, null, List.of(), () -> {
             if (delegate instanceof ContextualCredentialProvider c) c.put(context, credentialRef, secretValue);
             else delegate.put(credentialRef, secretValue);
         });
@@ -90,27 +94,9 @@ public final class AuditedCredentialProvider implements CredentialProvider {
     public void remove(AuditContext context, String credentialRef) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(credentialRef, "credentialRef");
-        mutate(context, "credential.remove", credentialRef, () -> {
+        mutation.run(context, "credential.remove", credentialRef, null, List.of(), () -> {
             if (delegate instanceof ContextualCredentialProvider c) c.remove(context, credentialRef);
             else delegate.remove(credentialRef);
         });
-    }
-
-    private void mutate(AuditContext context, String action, String ref, Runnable mutation) {
-        String target = AuditTargets.opaque(ref);
-        sink.record(context, action, TARGET_KIND, target, null, AuditEvent.Outcome.ATTEMPTED, List.of());
-        try {
-            mutation.run();
-        } catch (AuditPersistenceException e) {
-            throw e;
-        } catch (RuntimeException | Error failure) {
-            try {
-                sink.record(context, action, TARGET_KIND, target, null, AuditEvent.Outcome.FAILED, List.of());
-            } catch (AuditPersistenceException auditFailure) {
-                failure.addSuppressed(auditFailure);
-            }
-            throw failure;
-        }
-        sink.record(context, action, TARGET_KIND, target, null, AuditEvent.Outcome.SUCCEEDED, List.of());
     }
 }
