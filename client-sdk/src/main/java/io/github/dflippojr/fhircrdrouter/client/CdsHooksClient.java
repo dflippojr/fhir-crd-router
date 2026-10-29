@@ -178,7 +178,7 @@ public final class CdsHooksClient {
 
     /** Calls the payer's standard {@code GET {baseUrl}/cds-services} discovery endpoint. */
     public List<CdsServiceDescriptor> discoverServices(ConnectionRecord record) {
-        String context = "Discovery call for payerId=" + record.payerId();
+        String context = discoveryContext(record);
         JsonNode raw = discoverServicesRaw(record);
         try {
             JsonNode servicesNode = raw.get("services");
@@ -204,13 +204,8 @@ public final class CdsHooksClient {
      * opt-in via {@link CdsDiscoveryValidator#validate(JsonNode)}.
      */
     public JsonNode discoverServicesRaw(ConnectionRecord record) {
-        String context = "Discovery call for payerId=" + record.payerId();
-        HttpResponse<String> response = sendDiscovery(record, context);
-        try {
-            return mapper.readTree(response.body());
-        } catch (IOException e) {
-            throw new RouterException(context + " returned an unparseable body", e);
-        }
+        String context = discoveryContext(record);
+        return readBody(sendDiscovery(record, context), context);
     }
 
     /**
@@ -237,7 +232,7 @@ public final class CdsHooksClient {
         Instant checkedAt = Instant.now();
         long started = System.nanoTime();
         try {
-            HttpResponse<String> response = sendDiscovery(record, "Discovery call for payerId=" + payerId);
+            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record));
             JsonNode catalog;
             try {
                 catalog = mapper.readTree(response.body());
@@ -302,9 +297,26 @@ public final class CdsHooksClient {
         return Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos));
     }
 
+    private static String discoveryContext(ConnectionRecord record) {
+        return "Discovery call for payerId=" + record.payerId();
+    }
+
+    /** {@code {baseUrl}/cds-services}, with one slash however the base URL ends. */
+    private static String servicesUrl(ConnectionRecord record) {
+        return trimTrailingSlash(record.baseUrl()) + "/cds-services";
+    }
+
+    private JsonNode readBody(HttpResponse<String> response, String context) {
+        try {
+            return mapper.readTree(response.body());
+        } catch (IOException e) {
+            throw new RouterException(context + " returned an unparseable body", e);
+        }
+    }
+
     private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context) {
         return send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services"))
+                .uri(URI.create(servicesUrl(record)))
                 .GET());
     }
 
@@ -319,14 +331,10 @@ public final class CdsHooksClient {
             throw new RouterException(context + " could not serialize request", e);
         }
         HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, () -> HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(record.baseUrl()) + "/cds-services/" + segment))
+                .uri(URI.create(servicesUrl(record) + "/" + segment))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
-        try {
-            return mapper.readTree(response.body());
-        } catch (IOException e) {
-            throw new RouterException(context + " returned an unparseable body", e);
-        }
+        return readBody(response, context);
     }
 
     /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
