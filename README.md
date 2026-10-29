@@ -22,7 +22,10 @@ so far.
   references into a `CredentialProvider`. It also holds the opt-in
   `core.audit` package: an append-only JSONL audit trail, store and
   credential wrappers, and an owner read/export API
-  (see [AUDIT.md](./directory-core/AUDIT.md)).
+  (see [AUDIT.md](./directory-core/AUDIT.md)). `core.internal.AtomicFiles`
+  is the owner-only, forced-to-disk, atomic-replace write that both
+  file-backed stores share; it is public only so the credential module can
+  call it and is not part of the API.
 - **`credential-store-encrypted-local`**: the default `CredentialProvider`,
   an AES-GCM encrypted local file keyed by a locally generated secret.
   It caches the parsed ciphertext (never plaintext) and checks only the
