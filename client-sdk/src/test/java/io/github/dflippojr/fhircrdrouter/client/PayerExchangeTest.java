@@ -10,6 +10,7 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -193,6 +194,19 @@ class PayerExchangeTest {
         assertEquals(1, exchanges.size());
         assertEquals("{}", exchanges.get(0).responseBody());
         assertEquals(400, exchanges.get(0).statusCode().orElseThrow());
+        assertNull(exchanges.get(0).error());
+    }
+
+    @Test
+    void nonObjectHookBodyIsReportedAsOneExchange() throws Exception {
+        start();
+        server.createContext("/cds-services/x", e -> respond(e, 200, "[]"));
+        CdsHooksClient client = client("secret", exchanges::add, Duration.ofSeconds(2));
+        assertThrows(RouterException.class, () -> client.callHook(record(AuthType.NONE), "x", REQUEST));
+        assertEquals(1, exchanges.size());
+        assertEquals(PayerCallPhase.HOOK, exchanges.get(0).phase());
+        assertEquals(200, exchanges.get(0).statusCode().orElseThrow());
+        assertEquals("[]", exchanges.get(0).responseBody());
         assertNull(exchanges.get(0).error());
     }
 

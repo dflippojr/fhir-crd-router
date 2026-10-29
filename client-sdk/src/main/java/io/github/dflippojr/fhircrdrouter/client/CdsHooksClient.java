@@ -332,6 +332,12 @@ public final class CdsHooksClient {
     /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
     public CdsHookResponse callHook(ConnectionRecord record, String serviceId, CdsHookRequest request) {
         JsonNode raw = callHookRaw(record, serviceId, request);
+        // CDS Hooks 2.0 HTTP Response (https://cds-hooks.hl7.org/2.0/#http-response): the body is a JSON
+        // object. Any other root would read as "no cards", so it fails instead. The body is not echoed.
+        if (raw == null || !raw.isObject()) {
+            throw new RouterException("Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId
+                    + " returned a response body that is not a JSON object");
+        }
         return new CdsHookResponse(
                 parseArray(record, raw, "cards", Card.class),
                 parseArray(record, raw, "systemActions", SystemAction.class),
