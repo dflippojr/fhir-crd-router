@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client.auth;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.FailingHttpClient;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -12,10 +13,14 @@ import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
+import java.net.http.HttpClient.Redirect;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -48,6 +53,7 @@ class OAuth2TokenClientTest {
 
     private HttpServer server;
     private final AtomicInteger tokenRequests = new AtomicInteger();
+    private final AtomicInteger redirects = new AtomicInteger();
     private final AtomicReference<String> expiresInJson = new AtomicReference<>(",\"expires_in\":300");
     private final AtomicReference<String> accessTokenJson = new AtomicReference<>();
     private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
@@ -79,6 +85,13 @@ class OAuth2TokenClientTest {
             TestResponses.respond(exchange, 200,
                     "{\"access_token\":" + (accessTokenJson.get() != null ? accessTokenJson.get() : "\"token-" + n + "\"")
                             + ",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}");
+        });
+        server.createContext("/moved", exchange -> {
+            redirects.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Location", "/token");
+            exchange.sendResponseHeaders(307, -1);
+            exchange.close();
         });
         server.start();
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient(), clock);
@@ -114,6 +127,73 @@ class OAuth2TokenClientTest {
 
         assertEquals("tokenEndpoint", e.field());
         assertEquals(0, tokenRequests.get());
+    }
+
+    /**
+     * A client that follows redirects would resend the secret or assertion to wherever the token endpoint
+     * points it, unchecked, e.g. from https to http (#156). It is refused before the secret is read.
+     */
+    @ParameterizedTest
+    @EnumSource(value = Redirect.class, names = {"NORMAL", "ALWAYS"})
+    void redirectFollowingClientIsRefusedBeforeTheSecretIsRead(Redirect policy) {
+        ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-OAUTH").environment(Environment.SANDBOX)
+                .baseUrl(origin()).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .tokenEndpoint(origin() + "/moved").clientId("client").credentialRef("ref").build();
+        HttpClient http = HttpClient.newBuilder().followRedirects(policy).build();
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> tokenClient.fetchAccessToken(http, record, () -> fail("secret read for a redirecting client"), 1));
+
+        assertTrue(e.getMessage().contains("redirect"), e.getMessage());
+        assertEquals(0, redirects.get());
+        assertEquals(0, tokenRequests.get());
+    }
+
+    @Test
+    void redirectFollowingClientIsRefusedEvenWithACachedToken() {
+        ConnectionRecord record = record(List.of());
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+
+        assertThrows(IllegalArgumentException.class, () -> tokenClient.fetchAccessToken(
+                new FailingHttpClient(Redirect.ALWAYS), record, () -> fail("secret read"), 1));
+        assertEquals(1, tokenRequests.get());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Redirect.class, names = {"NORMAL", "ALWAYS"})
+    void constructorRefusesRedirectFollowingClient(Redirect policy) {
+        HttpClient http = new FailingHttpClient(policy);
+
+        assertThrows(IllegalArgumentException.class, () -> new OAuth2TokenClient(http));
+        assertThrows(IllegalArgumentException.class, () -> new OAuth2TokenClient(http, clock));
+    }
+
+    /** The assertion's jku is checked before the private key is read or any request is built (#156). */
+    @ParameterizedTest
+    @ValueSource(strings = {"http://ehr.example/jwks.json", "/jwks.json", "https://ehr example/jwks.json",
+            "ftp://ehr.example/jwks.json", "https:///jwks.json"})
+    void refusedJwksUrlIsCheckedBeforeTheSecretIsRead(String jwksUrl) {
+        OAuth2TokenClient client = new OAuth2TokenClient(new FailingHttpClient(), clock);
+
+        EndpointUrlException e = assertThrows(EndpointUrlException.class, () -> client.fetchAccessToken(
+                new FailingHttpClient(), privateKeyJwtRecord(jwksUrl),
+                () -> { throw new IllegalStateException("credential provider down"); }, 1));
+
+        assertEquals("jwksUrl", e.field());
+        assertEquals("PAYER-PKJWT", e.payerId());
+    }
+
+    /** jwksUrl is not part of the cache key, so a cached token must not skip its check. */
+    @Test
+    void refusedJwksUrlIsCheckedBeforeACachedTokenIsReturned() {
+        String pem = TestKeys.privateKeyPem(TestKeys.rsa2048());
+        assertEquals("token-1", tokenClient.fetchAccessToken(privateKeyJwtRecord("https://ehr.example/jwks.json"), pem));
+
+        EndpointUrlException e = assertThrows(EndpointUrlException.class,
+                () -> tokenClient.fetchAccessToken(privateKeyJwtRecord("http://ehr.example/jwks.json"), pem));
+
+        assertEquals("jwksUrl", e.field());
+        assertEquals(1, tokenRequests.get());
     }
 
     @Test
@@ -469,6 +549,16 @@ class OAuth2TokenClientTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    private String origin() {
+        return "http://localhost:" + server.getAddress().getPort();
+    }
+
+    private ConnectionRecord privateKeyJwtRecord(String jwksUrl) {
+        return ConnectionRecord.builder().payerId("PAYER-PKJWT").environment(Environment.SANDBOX)
+                .baseUrl(origin()).authType(AuthType.OAUTH2_PRIVATE_KEY_JWT).tokenEndpoint(origin() + "/token")
+                .clientId("client").keyId("key-1").credentialRef("ref").jwksUrl(jwksUrl).build();
     }
 
     private ConnectionRecord record(List<String> scopes) {

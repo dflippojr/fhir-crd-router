@@ -1,5 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
+import io.github.dflippojr.fhircrdrouter.client.testsupport.FailingHttpClient;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
@@ -14,28 +15,17 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import java.net.Authenticator;
-import java.net.CookieHandler;
-import java.net.ProxySelector;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * {@code baseUrl}, {@code tokenEndpoint} and {@code jwksUrl} must be absolute https URLs with a host;
@@ -224,36 +214,5 @@ class CdsHooksClientUrlSchemeTest {
             @Override public void put(String credentialRef, String secretValue) { }
             @Override public void remove(String credentialRef) { }
         };
-    }
-
-    /** An HttpClient that fails the test if anything is sent through it. */
-    private static final class FailingHttpClient extends HttpClient {
-        @Override public Optional<CookieHandler> cookieHandler() { return Optional.empty(); }
-        @Override public Optional<Duration> connectTimeout() { return Optional.empty(); }
-        @Override public Redirect followRedirects() { return Redirect.NEVER; }
-        @Override public Optional<ProxySelector> proxy() { return Optional.empty(); }
-        @Override public SSLContext sslContext() { return null; }
-        @Override public SSLParameters sslParameters() { return new SSLParameters(); }
-        @Override public Optional<Authenticator> authenticator() { return Optional.empty(); }
-        @Override public Version version() { return Version.HTTP_1_1; }
-        @Override public Optional<Executor> executor() { return Optional.empty(); }
-
-        @Override
-        public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> handler) {
-            return fail("HttpClient.send called for " + request.uri());
-        }
-
-        @Override
-        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
-                                                                HttpResponse.BodyHandler<T> handler) {
-            return fail("HttpClient.sendAsync called for " + request.uri());
-        }
-
-        @Override
-        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
-                                                                HttpResponse.BodyHandler<T> handler,
-                                                                HttpResponse.PushPromiseHandler<T> push) {
-            return fail("HttpClient.sendAsync called for " + request.uri());
-        }
     }
 }
