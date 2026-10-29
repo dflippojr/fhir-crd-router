@@ -5,6 +5,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
 
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERAGE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERAGE_ASSERTION_ID;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DATE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DOC_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.EXTENSION;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.INFO_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.LEGACY_IDENTIFIER;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.PA_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.QUESTIONNAIRE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.SATISFIED_PA_ID;
+
 /**
  * One CRD {@code ext-coverage-information} extension, read off an order or
  * appointment the payer returned in a system action.
@@ -48,7 +60,7 @@ public record CoverageInformation(
         String reference = resource.hasNonNull("resourceType") && resource.hasNonNull("id")
                 ? resource.get("resourceType").asText() + "/" + resource.get("id").asText()
                 : null;
-        for (JsonNode ext : resource.path("extension")) {
+        for (JsonNode ext : resource.path(EXTENSION)) {
             if (EXTENSION_URL.equals(ext.path("url").asText())) {
                 result.add(parse(reference, ext));
             }
@@ -61,21 +73,21 @@ public record CoverageInformation(
         List<String> docNeeded = new ArrayList<>();
         List<String> infoNeeded = new ArrayList<>();
         List<String> questionnaires = new ArrayList<>();
-        for (JsonNode sub : ext.path("extension")) {
+        for (JsonNode sub : ext.path(EXTENSION)) {
             switch (sub.path("url").asText()) {
-                case "coverage" -> coverage = textOrNull(sub.path("valueReference").path("reference"));
-                case "covered" -> covered = textOrNull(sub.path("valueCode"));
-                case "pa-needed" -> paNeeded = textOrNull(sub.path("valueCode"));
-                case "doc-needed" -> addIfPresent(docNeeded, sub.path("valueCode"));
-                case "info-needed" -> addIfPresent(infoNeeded, sub.path("valueCode"));
-                case "date" -> date = textOrNull(sub.path("valueDate"));
-                case "coverage-assertion-id", "identifier" -> {
-                    if (assertionId == null || "coverage-assertion-id".equals(sub.path("url").asText())) {
+                case COVERAGE -> coverage = textOrNull(sub.path("valueReference").path("reference"));
+                case COVERED -> covered = textOrNull(sub.path("valueCode"));
+                case PA_NEEDED -> paNeeded = textOrNull(sub.path("valueCode"));
+                case DOC_NEEDED -> addIfPresent(docNeeded, sub.path("valueCode"));
+                case INFO_NEEDED -> addIfPresent(infoNeeded, sub.path("valueCode"));
+                case DATE -> date = textOrNull(sub.path("valueDate"));
+                case COVERAGE_ASSERTION_ID, LEGACY_IDENTIFIER -> {
+                    if (assertionId == null || COVERAGE_ASSERTION_ID.equals(sub.path("url").asText())) {
                         assertionId = textOrNull(sub.path("valueString"));
                     }
                 }
-                case "questionnaire" -> addIfPresent(questionnaires, sub.path("valueCanonical"));
-                case "satisfied-pa-id" -> satisfiedPaId = textOrNull(sub.path("valueString"));
+                case QUESTIONNAIRE -> addIfPresent(questionnaires, sub.path("valueCanonical"));
+                case SATISFIED_PA_ID -> satisfiedPaId = textOrNull(sub.path("valueString"));
                 default -> { /* billingCode, reason, detail, dependency, contact: see extension() */ }
             }
         }
