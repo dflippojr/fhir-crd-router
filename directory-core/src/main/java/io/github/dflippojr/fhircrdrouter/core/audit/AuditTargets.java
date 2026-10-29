@@ -18,7 +18,7 @@ public final class AuditTargets {
         return "ref-" + digest(reference == null ? "" : reference, 16);
     }
 
-    /** Leading hex characters of SHA-256; used for references and store identities, never secrets. */
+    /** Leading hex characters of SHA-256; used for references, store identities and audit checksums, never secrets. */
     public static String digest(String value, int hexChars) {
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
