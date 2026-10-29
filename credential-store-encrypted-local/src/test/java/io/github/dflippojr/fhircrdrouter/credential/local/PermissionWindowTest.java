@@ -1,5 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.credential.local;
 
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -155,7 +157,7 @@ class PermissionWindowTest {
         public static void main(String[] args) throws IOException {
             Path dir = Path.of(args[0]);
             Set<Path> created = new HashSet<>();
-            EncryptedLocalCredentialProvider.TempFileCreator checking = (parent, prefix, suffix, attrs) -> {
+            AtomicFiles.TempFileCreator checking = (parent, prefix, suffix, attrs) -> {
                 Path tmp = Files.createTempFile(parent, prefix, suffix, attrs);
                 System.out.println("create " + target(tmp) + " attrs " + requested(attrs) + " file " + permissions(tmp));
                 created.add(tmp);

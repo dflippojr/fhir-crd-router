@@ -4,27 +4,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.nio.channels.FileChannel;
 import java.nio.file.AccessDeniedException;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -57,13 +48,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public final class FileBasedConnectionStore implements ConnectionStore {
 
-    private static final int REPLACE_ATTEMPTS = 25;
-    private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rw-------");
-
     private final Path path;
     private final ObjectMapper mapper;
-    private final Mover mover;
-    private final TempFileCreator tempFiles;
+    private final AtomicFiles.Mover mover;
+    private final AtomicFiles.TempFileCreator tempFiles;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile Snapshot cache;
 
@@ -73,32 +61,21 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     // Visible for tests, which inject a mapper that fails mid-write or counts parses.
     FileBasedConnectionStore(Path path, ObjectMapper mapper) {
-        this(path, mapper, FileBasedConnectionStore::move);
+        this(path, mapper, AtomicFiles::move);
     }
 
     // Visible for tests, which inject a move that is refused the way Windows refuses it.
-    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover) {
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover) {
         this(path, mapper, mover, Files::createTempFile);
     }
 
     // Visible for tests, which check each temporary file's permissions the moment it exists.
-    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover, TempFileCreator tempFiles) {
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover,
+                             AtomicFiles.TempFileCreator tempFiles) {
         this.path = path;
         this.mapper = mapper;
         this.mover = mover;
         this.tempFiles = tempFiles;
-    }
-
-    /** Moves a written temporary file over the store file. */
-    @FunctionalInterface
-    interface Mover {
-        void move(Path tmp, Path target) throws IOException;
-    }
-
-    /** Creates a temporary file, as {@link Files#createTempFile(Path, String, String, FileAttribute[])}. */
-    @FunctionalInterface
-    interface TempFileCreator {
-        Path create(Path dir, String prefix, String suffix, FileAttribute<?>... attrs) throws IOException;
     }
 
     private static ObjectMapper defaultMapper() {
@@ -178,21 +155,14 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         Path tmp = null;
         try {
             Files.createDirectories(dir);
-            tmp = createOwnerOnlyTempFile(dir);
+            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, path);
             mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             mapper.writeValue(buffer, records);
             byte[] bytes = buffer.toByteArray();
-            try (OutputStream out = Files.newOutputStream(tmp, StandardOpenOption.WRITE,
-                    StandardOpenOption.TRUNCATE_EXISTING)) {
-                out.write(bytes);
-                out.flush();
-            }
-            try (FileChannel ch = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-                ch.force(true);
-            }
+            AtomicFiles.writeDurably(tmp, bytes);
             try {
-                replace(tmp);
+                AtomicFiles.replace(tmp, path, mover);
             } catch (AccessDeniedException e) {
                 throw new UncheckedIOException("Failed writing connection store at " + path
                         + ": the file is open in another process or access is denied", e);
@@ -202,44 +172,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing connection store at " + path, e);
         } finally {
-            if (tmp != null) {
-                try {
-                    Files.deleteIfExists(tmp);
-                } catch (IOException ignored) {
-                    // Best effort; the original failure is what matters.
-                }
-            }
-        }
-    }
-
-    /**
-     * Moves {@code tmp} over the store file. Windows refuses to replace a file that another handle
-     * has open, and a reader holds it only for one read, so a refused replace is retried briefly.
-     */
-    private void replace(Path tmp) throws IOException {
-        for (int attempt = 1; ; attempt++) {
-            try {
-                mover.move(tmp, path);
-                return;
-            } catch (AccessDeniedException e) {
-                if (attempt >= REPLACE_ATTEMPTS) {
-                    throw e;
-                }
-                try {
-                    Thread.sleep(attempt);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw e;
-                }
-            }
-        }
-    }
-
-    private static void move(Path tmp, Path target) throws IOException {
-        try {
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            AtomicFiles.deleteQuietly(tmp);
         }
     }
 
@@ -254,26 +187,10 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /**
-     * A {@code <name>.*.tmp} file next to the store file, owner-only from creation where POSIX
-     * permissions exist (#99): the mode is set by the create call itself, never by a later chmod.
-     */
-    private Path createOwnerOnlyTempFile(Path dir) throws IOException {
-        String prefix = path.getFileName() + ".";
-        if (posix()) {
-            return tempFiles.create(dir, prefix, ".tmp", PosixFilePermissions.asFileAttribute(OWNER_ONLY));
-        }
-        return tempFiles.create(dir, prefix, ".tmp");
-    }
-
     /** Gives the temporary file the existing store file's mode, where POSIX permissions exist. */
     private void mirrorPermissions(Path tmp) throws IOException {
-        if (posix() && Files.exists(path)) {
+        if (AtomicFiles.posix(path) && Files.exists(path)) {
             Files.setPosixFilePermissions(tmp, Files.getPosixFilePermissions(path));
         }
-    }
-
-    private static boolean posix() {
-        return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
     }
 }

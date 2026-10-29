@@ -5,6 +5,7 @@ import io.github.dflippojr.fhircrdrouter.core.audit.AuditEvent;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditSink;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditTargets;
 import io.github.dflippojr.fhircrdrouter.core.audit.ContextualCredentialProvider;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -18,23 +19,18 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AccessDeniedException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -131,8 +127,6 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private static final int GCM_IV_BYTES = 12;
     private static final int KEY_BITS = 256;
     private static final int KEY_BYTES = KEY_BITS / 8;
-    private static final String OWNER_ONLY = "rw-------";
-    private static final int REPLACE_ATTEMPTS = 25;
     /** Marks an entry encrypted with its reference as associated data. */
     private static final String BOUND_PREFIX = "v2:";
     /** One mutex per lock file for this JVM; {@link FileChannel#lock()} fails instead of waiting inside one JVM. */
@@ -154,7 +148,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private final long fullCompareIntervalNanos;
     private final LongSupplier nanoClock;
     private final UnaryOperator<OutputStream> outputWrapper;
-    private final TempFileCreator tempFiles;
+    private final AtomicFiles.TempFileCreator tempFiles;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
@@ -226,7 +220,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     // each temporary file's permissions the moment it exists.
     EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
                                      LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper,
-                                     TempFileCreator tempFiles) {
+                                     AtomicFiles.TempFileCreator tempFiles) {
         if (fullCompareInterval.isNegative()) {
             throw new IllegalArgumentException("fullCompareInterval must not be negative");
         }
@@ -348,9 +342,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
 
     private FileChannel openLockChannel(Path dir) throws IOException {
         Set<StandardOpenOption> options = Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-        if (dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-            return FileChannel.open(lockFile, options,
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
+        if (AtomicFiles.posix(dir)) {
+            return FileChannel.open(lockFile, options, AtomicFiles.ownerOnly());
         }
         return FileChannel.open(lockFile, options);
     }
@@ -551,7 +544,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
      * the key is read. A key created by this class is already owner-only, so this changes nothing.
      */
     private void restrictKeyFileToOwner() throws IOException {
-        if (!keyFile.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+        if (!AtomicFiles.posix(keyFile)) {
             return;
         }
         Set<PosixFilePermission> current = Files.getPosixFilePermissions(keyFile);
@@ -583,8 +576,8 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             SecretKey generated = keyGen.generateKey();
             Path dir = keyFile.toAbsolutePath().getParent();
             Files.createDirectories(dir);
-            tmp = createOwnerOnlyTempFile(dir, keyFile);
-            writeDurably(tmp, generated.getEncoded());
+            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, keyFile);
+            AtomicFiles.writeDurably(tmp, generated.getEncoded(), outputWrapper);
             if (publishWithoutReplacing(tmp)) {
                 audit(context, AuditEvent.Outcome.SUCCEEDED);
                 return generated;
@@ -603,7 +596,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             auditFailure(context, failure);
             throw failure;
         } finally {
-            deleteQuietly(tmp);
+            AtomicFiles.deleteQuietly(tmp);
         }
     }
 
@@ -729,85 +722,15 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             byte[] bytes = buffer.toByteArray();
             Path dir = secretsFile.toAbsolutePath().getParent();
             Files.createDirectories(dir);
-            tmp = createOwnerOnlyTempFile(dir, secretsFile);
-            writeDurably(tmp, bytes);
-            replace(tmp, secretsFile);
+            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, secretsFile);
+            AtomicFiles.writeDurably(tmp, bytes, outputWrapper);
+            AtomicFiles.replace(tmp, secretsFile);
             tmp = null;
             snapshot = new Snapshot(bytes, Map.copyOf(entries), readStamp(), nanoClock.getAsLong());
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing secrets file at " + secretsFile, e);
         } finally {
-            deleteQuietly(tmp);
-        }
-    }
-
-    /**
-     * A {@code <target>.*.tmp} file next to the target, owner-only from creation where POSIX applies
-     * (#99): the mode is set by the create call itself, never by a later chmod.
-     */
-    private Path createOwnerOnlyTempFile(Path dir, Path target) throws IOException {
-        String prefix = target.getFileName() + ".";
-        if (dir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-            return tempFiles.create(dir, prefix, ".tmp",
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(OWNER_ONLY)));
-        }
-        return tempFiles.create(dir, prefix, ".tmp");
-    }
-
-    /** Creates a temporary file, as {@link Files#createTempFile(Path, String, String, FileAttribute[])}. */
-    @FunctionalInterface
-    interface TempFileCreator {
-        Path create(Path dir, String prefix, String suffix, FileAttribute<?>... attrs) throws IOException;
-    }
-
-    private void writeDurably(Path file, byte[] bytes) throws IOException {
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
-             OutputStream out = outputWrapper.apply(Channels.newOutputStream(channel))) {
-            out.write(bytes);
-            out.flush();
-            channel.force(true);
-        }
-    }
-
-    /**
-     * Moves {@code tmp} over {@code target}. Windows refuses to replace a file that another handle
-     * has open, and a reader holds it only for one read, so a refused replace is retried briefly.
-     */
-    private static void replace(Path tmp, Path target) throws IOException {
-        for (int attempt = 1; ; attempt++) {
-            try {
-                moveOver(tmp, target);
-                return;
-            } catch (AccessDeniedException e) {
-                if (attempt >= REPLACE_ATTEMPTS) {
-                    throw e;
-                }
-                try {
-                    Thread.sleep(attempt);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw e;
-                }
-            }
-        }
-    }
-
-    private static void moveOver(Path tmp, Path target) throws IOException {
-        try {
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-        }
-    }
-
-    private static void deleteQuietly(Path tmp) {
-        if (tmp == null) {
-            return;
-        }
-        try {
-            Files.deleteIfExists(tmp);
-        } catch (IOException ignored) {
-            // Best effort; the original outcome is what matters.
+            AtomicFiles.deleteQuietly(tmp);
         }
     }
 }
