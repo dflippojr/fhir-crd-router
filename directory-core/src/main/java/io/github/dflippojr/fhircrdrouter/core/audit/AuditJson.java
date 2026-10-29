@@ -5,9 +5,6 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 
 final class AuditJson {
     private static final ObjectMapper MAPPER = new ObjectMapper().registerModule(new JavaTimeModule())
@@ -29,11 +26,6 @@ final class AuditJson {
     }
 
     private static String checksum(AuditEvent event) throws IOException {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(MAPPER.writeValueAsBytes(event)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("JDK requires SHA-256", e);
-        }
+        return AuditTargets.digest(MAPPER.writeValueAsString(event), 64);
     }
 }
