@@ -230,6 +230,16 @@ class ConnectionVerificationTest {
     }
 
     @Test
+    void oauth2WithoutCredentialRefIsReportedAsTokenFailure() {
+        ConnectionRecord noRef = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
+                .environment(Environment.SANDBOX).baseUrl(baseUrl()).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .clientId("synthetic-client").tokenEndpoint(baseUrl() + "/token").build();
+        assertFailure(client().verify(noRef), PayerCallPhase.TOKEN, null, "missing credential for token request");
+        assertTrue(exchanges.isEmpty());
+        assertEquals(0, discoveryCalls.get());
+    }
+
+    @Test
     void providerFailureIsReportedByTypeOnly() {
         ConnectionRecord noPhase = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
                 .environment(Environment.SANDBOX).baseUrl(baseUrl()).mtlsCredentialRef("cert").build();
