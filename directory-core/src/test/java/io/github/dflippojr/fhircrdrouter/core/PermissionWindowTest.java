@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -71,7 +72,7 @@ class PermissionWindowTest {
         public static void main(String[] args) throws IOException {
             Path dir = Path.of(args[0]);
             Set<Path> created = new HashSet<>();
-            FileBasedConnectionStore.TempFileCreator checking = (parent, prefix, suffix, attrs) -> {
+            AtomicFiles.TempFileCreator checking = (parent, prefix, suffix, attrs) -> {
                 Path tmp = Files.createTempFile(parent, prefix, suffix, attrs);
                 System.out.println("create attrs " + requested(attrs) + " file " + permissions(tmp));
                 created.add(tmp);

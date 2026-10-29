@@ -50,8 +50,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     private final Path path;
     private final ObjectMapper mapper;
-    private final Mover mover;
-    private final TempFileCreator tempFiles;
+    private final AtomicFiles.Mover mover;
+    private final AtomicFiles.TempFileCreator tempFiles;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile Snapshot cache;
 
@@ -65,24 +65,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     }
 
     // Visible for tests, which inject a move that is refused the way Windows refuses it.
-    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover) {
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover) {
         this(path, mapper, mover, Files::createTempFile);
     }
 
     // Visible for tests, which check each temporary file's permissions the moment it exists.
-    FileBasedConnectionStore(Path path, ObjectMapper mapper, Mover mover, TempFileCreator tempFiles) {
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover,
+                             AtomicFiles.TempFileCreator tempFiles) {
         this.path = path;
         this.mapper = mapper;
         this.mover = mover;
         this.tempFiles = tempFiles;
-    }
-
-    /** {@link AtomicFiles.Mover} under the name this class's tests use. */
-    interface Mover extends AtomicFiles.Mover {
-    }
-
-    /** {@link AtomicFiles.TempFileCreator} under the name this class's tests use. */
-    interface TempFileCreator extends AtomicFiles.TempFileCreator {
     }
 
     private static ObjectMapper defaultMapper() {

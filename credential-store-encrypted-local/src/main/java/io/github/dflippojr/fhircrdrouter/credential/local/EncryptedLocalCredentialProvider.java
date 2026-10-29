@@ -148,7 +148,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private final long fullCompareIntervalNanos;
     private final LongSupplier nanoClock;
     private final UnaryOperator<OutputStream> outputWrapper;
-    private final TempFileCreator tempFiles;
+    private final AtomicFiles.TempFileCreator tempFiles;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
@@ -220,7 +220,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     // each temporary file's permissions the moment it exists.
     EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
                                      LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper,
-                                     TempFileCreator tempFiles) {
+                                     AtomicFiles.TempFileCreator tempFiles) {
         if (fullCompareInterval.isNegative()) {
             throw new IllegalArgumentException("fullCompareInterval must not be negative");
         }
@@ -732,9 +732,5 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         } finally {
             AtomicFiles.deleteQuietly(tmp);
         }
-    }
-
-    /** {@link AtomicFiles.TempFileCreator} under the name this class's tests use. */
-    interface TempFileCreator extends AtomicFiles.TempFileCreator {
     }
 }

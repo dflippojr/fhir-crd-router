@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -150,7 +151,7 @@ class FileBasedConnectionStoreTest {
     }
 
     /** A move that is refused {@code refusals} times, as Windows refuses it while a reader has the file open. */
-    private static FileBasedConnectionStore.Mover refusing(int refusals, AtomicInteger attempts) {
+    private static AtomicFiles.Mover refusing(int refusals, AtomicInteger attempts) {
         return (tmp, target) -> {
             if (attempts.incrementAndGet() <= refusals) {
                 throw new AccessDeniedException(tmp + " -> " + target);
@@ -159,7 +160,7 @@ class FileBasedConnectionStoreTest {
         };
     }
 
-    private static FileBasedConnectionStore storeWithMover(Path file, FileBasedConnectionStore.Mover mover) {
+    private static FileBasedConnectionStore storeWithMover(Path file, AtomicFiles.Mover mover) {
         return new FileBasedConnectionStore(file, new CountingMapper(), mover);
     }
 
