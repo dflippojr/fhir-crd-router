@@ -60,10 +60,14 @@ import java.util.function.Supplier;
  * payer should {@link #invalidate} and fetch again, since a payer can revoke
  * a token before its advertised expiry.
  *
- * <p>{@code tokenEndpoint} must be an absolute {@code https} URL, or {@code http} to a loopback host;
- * anything else throws {@link io.github.dflippojr.fhircrdrouter.client.EndpointUrlException} before the
- * secret is resolved or a request is sent (CDS Hooks 2.0,
- * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>).
+ * <p>{@code tokenEndpoint}, and {@code jwksUrl} for {@code OAUTH2_PRIVATE_KEY_JWT}, must be an absolute
+ * {@code https} URL, or {@code http} to a loopback host; anything else throws
+ * {@link io.github.dflippojr.fhircrdrouter.client.EndpointUrlException} before a cached token is returned,
+ * the secret is resolved or a request is sent (CDS Hooks 2.0,
+ * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>). Every
+ * {@link HttpClient}, the constructor's and one passed to {@code fetchAccessToken}, must not follow
+ * redirects ({@link HttpClient.Redirect#NEVER}, the JDK default): one that does throws
+ * {@link IllegalArgumentException}, since a redirect would carry the secret to an unchecked URL.
  */
 public final class OAuth2TokenClient {
 
@@ -105,7 +109,7 @@ public final class OAuth2TokenClient {
         if (requestTimeout.isNegative() || requestTimeout.isZero()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
-        this.httpClient = httpClient;
+        this.httpClient = EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient, "httpClient"));
         this.clock = clock;
         this.jwtSigner = new JwtSigner(clock);
     }
@@ -141,8 +145,10 @@ public final class OAuth2TokenClient {
      */
     public String fetchAccessToken(HttpClient client, ConnectionRecord record, Supplier<String> secret, int attempt) {
         Objects.requireNonNull(secret, "secret");
-        // The client secret or assertion must never go to the token endpoint in cleartext (#156).
-        URI endpoint = EndpointUrls.require(record, "tokenEndpoint", record.tokenEndpoint());
+        // The client secret or assertion must never go to the token endpoint in cleartext, directly or through
+        // a redirect, and the assertion's jku must be https too (#156). jwksUrl is not in the cache key.
+        EndpointUrls.requireNoRedirects(client);
+        URI endpoint = EndpointUrls.requireTokenUrls(record);
         CacheKey key = cacheKey(record);
         CachedToken cached = cache.get(key);
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {

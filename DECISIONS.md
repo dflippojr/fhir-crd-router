@@ -183,6 +183,24 @@ host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
   naming the field and `payerId`, instead of a bare `IllegalArgumentException`
   from `URI.create`. `verify` reports it with no phase. Neither repeats the
   URL, which may hold userinfo or a secret in its query.
+- **Redirect-following clients are refused, not followed by hand.** Only the
+  record's URLs are checked, so a supplied `HttpClient` that follows
+  redirects would let an `https` payer or token endpoint answer 307 to an
+  `http` URL and have the JDK resend the POST, credentials included, in
+  cleartext. `CdsHooksClient` and `OAuth2TokenClient` refuse a client whose
+  `followRedirects()` is not `NEVER` with `IllegalArgumentException`, in the
+  constructor and on every `fetchAccessToken`, before any credential is read
+  or cached token returned. Following redirects in the SDK and checking each
+  `Location` was the alternative, but CDS Hooks and RFC 6749 token calls have
+  no need for redirects, and refusing is one check with nothing to get wrong
+  about which headers to carry. The JDK default and every SDK-built client
+  already use `NEVER`.
+- **`fetchAccessToken` checks `jwksUrl` first.** Called directly, it checks
+  `tokenEndpoint` and, for `OAUTH2_PRIVATE_KEY_JWT`, `jwksUrl` before the
+  cache lookup, since `jwksUrl` is not in the cache key, and before the
+  secret supplier runs, so a failing credential provider cannot hide the
+  refusal. `EndpointUrls.requireTokenUrls` is the shared check, also used by
+  `CdsHooksClient`'s preflight.
 
 ## Not yet done
 

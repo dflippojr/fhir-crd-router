@@ -313,6 +313,15 @@ reports it as a failure instead (see "Verifying a connection").
 `ConnectionRecord` itself accepts any string, so a connections file with an
 `http` record still loads and the other payers in it still resolve.
 
+Only the record's URLs are checked, so an `HttpClient` you pass to
+`CdsHooksClient` or `OAuth2TokenClient`, or to `fetchAccessToken`, must not
+follow redirects. The JDK default, `HttpClient.Redirect.NEVER`, is fine. A
+client with `NORMAL` or `ALWAYS` throws `IllegalArgumentException` before
+anything is read or sent: the JDK would resend the request, credentials
+included, to the `Location` without this check, for example from an `https`
+payer to an `http` URL. With `NEVER`, a 3xx from a payer or token endpoint
+fails the call as a `PayerCallException` with that status.
+
 | authType | What is sent | Record fields | `credentialRef` resolves to |
 | --- | --- | --- | --- |
 | `NONE` | No `Authorization` header. | | |

@@ -52,7 +52,9 @@ import java.util.function.Supplier;
  * {@code jwksUrl} when a JWT is signed): each must be an absolute {@code https} URL with a host, or
  * {@code http} to a loopback host. Anything else throws {@link EndpointUrlException} before a
  * credential is read or a request is sent (CDS Hooks 2.0,
- * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>).
+ * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>). A supplied
+ * {@code HttpClient} must not follow redirects ({@link HttpClient.Redirect#NEVER}, the JDK default), since a
+ * followed redirect is never checked; the constructor throws {@link IllegalArgumentException} for one that does.
  */
 public final class CdsHooksClient {
 
@@ -157,7 +159,8 @@ public final class CdsHooksClient {
         this.exchangeListener = Objects.requireNonNull(exchangeListener, "exchangeListener");
         this.requestTimeout = positiveTimeout(requestTimeout);
         this.connectTimeout = positiveTimeout(connectTimeout);
-        this.httpClient = Objects.requireNonNull(httpClient);
+        // A followed redirect would bypass the https check on the record's URLs (#156).
+        this.httpClient = EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient));
         this.credentialProvider = credentialProvider;
         this.mtlsTrustStore = mtlsTrustStore;
         this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout, exchangeListener);
@@ -385,7 +388,9 @@ public final class CdsHooksClient {
      * tokens before their advertised expiry.
      */
     private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body, Supplier<HttpRequest.Builder> requestFactory) {
-        requireUsableUrls(record);
+        // CDS Hooks 2.0, Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS
+        // for every exchange: refuse the record's URLs before any credential read, token fetch or request (#156).
+        EndpointUrls.requireUsable(record);
         URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);
@@ -451,23 +456,6 @@ public final class CdsHooksClient {
                     "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
                     "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
-        }
-    }
-
-    /**
-     * Refuses the record's URLs before any credential read, token fetch or request (#156). CDS Hooks 2.0,
-     * Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS for every
-     * exchange; {@code http} is allowed only to a loopback host.
-     */
-    private static void requireUsableUrls(ConnectionRecord record) {
-        EndpointUrls.require(record, "baseUrl", record.baseUrl());
-        if (isOAuth2(record)) {
-            EndpointUrls.require(record, "tokenEndpoint", record.tokenEndpoint());
-        }
-        boolean signsJwt = record.authType() == AuthType.CDS_HOOKS_JWT
-                || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT;
-        if (signsJwt && record.jwksUrl() != null) {
-            EndpointUrls.require(record, "jwksUrl", record.jwksUrl());
         }
     }
 
