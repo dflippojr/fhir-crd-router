@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
+import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -46,6 +47,12 @@ import java.util.function.Supplier;
  * restricted to TLS 1.2+. The token endpoint for OAuth2 connections is called
  * over that same client. Connections without mutual TLS use the
  * {@code HttpClient} passed to the constructor.
+ *
+ * <p>Every call first checks the record's URLs ({@code baseUrl}, {@code tokenEndpoint} for OAuth2,
+ * {@code jwksUrl} when a JWT is signed): each must be an absolute {@code https} URL with a host, or
+ * {@code http} to a loopback host. Anything else throws {@link EndpointUrlException} before a
+ * credential is read or a request is sent (CDS Hooks 2.0,
+ * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>).
  */
 public final class CdsHooksClient {
 
@@ -262,6 +269,10 @@ public final class CdsHooksClient {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     phase, OptionalInt.empty(), "credential could not be read: "
                             + e.getCause().getClass().getSimpleName());
+        } catch (EndpointUrlException e) {
+            // No exchange was attempted, so no phase; the problem text never includes the URL.
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    null, OptionalInt.empty(), e.field() + " " + e.problem());
         } catch (RouterException | IllegalArgumentException e) {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     null, OptionalInt.empty(), "connection could not be verified: " + e.getClass().getSimpleName());
@@ -374,6 +385,7 @@ public final class CdsHooksClient {
      * tokens before their advertised expiry.
      */
     private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body, Supplier<HttpRequest.Builder> requestFactory) {
+        requireUsableUrls(record);
         URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);
@@ -439,6 +451,23 @@ public final class CdsHooksClient {
                     "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
                     "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
+        }
+    }
+
+    /**
+     * Refuses the record's URLs before any credential read, token fetch or request (#156). CDS Hooks 2.0,
+     * Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS for every
+     * exchange; {@code http} is allowed only to a loopback host.
+     */
+    private static void requireUsableUrls(ConnectionRecord record) {
+        EndpointUrls.require(record, "baseUrl", record.baseUrl());
+        if (isOAuth2(record)) {
+            EndpointUrls.require(record, "tokenEndpoint", record.tokenEndpoint());
+        }
+        boolean signsJwt = record.authType() == AuthType.CDS_HOOKS_JWT
+                || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT;
+        if (signsJwt && record.jwksUrl() != null) {
+            EndpointUrls.require(record, "jwksUrl", record.jwksUrl());
         }
     }
 

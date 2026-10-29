@@ -2,6 +2,7 @@ package io.github.dflippojr.fhircrdrouter.client.auth;
 
 import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
@@ -99,6 +100,20 @@ class OAuth2TokenClientTest {
         clock.advance(Duration.ofSeconds(1));
         assertEquals("token-2", tokenClient.fetchAccessToken(record, "secret"));
         assertEquals(2, tokenRequests.get());
+    }
+
+    @Test
+    void cleartextTokenEndpointIsRefusedBeforeTheSecretIsRead() {
+        ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-156").environment(Environment.SANDBOX)
+                .baseUrl("https://payer.example").authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .tokenEndpoint("http://auth.example/token").clientId("client").credentialRef("ref").build();
+
+        EndpointUrlException e = assertThrows(EndpointUrlException.class,
+                () -> tokenClient.fetchAccessToken(HttpClient.newHttpClient(), record,
+                        () -> fail("secret read for a refused token endpoint"), 1));
+
+        assertEquals("tokenEndpoint", e.field());
+        assertEquals(0, tokenRequests.get());
     }
 
     @Test

@@ -8,6 +8,7 @@ import com.nimbusds.jose.crypto.ECDSAVerifier;
 import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jwt.SignedJWT;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
+import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
@@ -124,6 +125,19 @@ class JwtSignerTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> PemKeys.readPrivateKey("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----"));
         assertTrue(error.getMessage().contains("openssl pkcs8"));
+    }
+
+    @Test
+    void cleartextJwksUrlIsNotPutInTheJkuHeader() {
+        KeyPair keys = TestKeys.ec("secp384r1");
+        ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-JWT").environment(Environment.SANDBOX)
+                .baseUrl("https://payer.example").authType(AuthType.CDS_HOOKS_JWT).clientId("ehr").keyId("key-1")
+                .jwksUrl("http://ehr.example/.well-known/jwks.json").credentialRef("signing-key").build();
+
+        EndpointUrlException e = assertThrows(EndpointUrlException.class,
+                () -> signer.cdsHooksJwt(record, keys.getPrivate(), SERVICE));
+
+        assertEquals("jwksUrl", e.field());
     }
 
     private static ConnectionRecord record(AuthType authType, String clientId, String tenant) {

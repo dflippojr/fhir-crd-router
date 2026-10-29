@@ -154,6 +154,36 @@ this (option A on #104). `CdsHooksClient.verify` takes the record directly
 and runs on any status, so a connection can be checked before it is
 switched back to `ACTIVE`.
 
+## Payer URLs must be https, except loopback (2026-10-29, #156)
+
+`baseUrl`, `tokenEndpoint` and `jwksUrl` must be absolute `https` URLs with a
+host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
+`[::1]`), decided from the literal host without DNS. The owner chose this on
+#156: Q1 (A), Q2 (a), Q3 (i).
+
+- **Why every environment.** [CDS Hooks 2.0, Security and
+  Safety](https://cds-hooks.hl7.org/2.0/#security-and-safety) makes TLS a
+  MUST with no sandbox carve-out, and sandbox and staging records often carry
+  real-looking secrets. Before this, a `PRODUCTION` record with an `http`
+  `baseUrl` sent its API key or bearer token in cleartext, and a set
+  `mtlsCredentialRef` changed nothing: the JDK presents no client certificate
+  over `http`. Loopback stays allowed for the quickstart, the CRD reference
+  server and Inferno jobs, and the tests.
+- **Enforced in the client, not the record.** `CdsHooksClient`,
+  `OAuth2TokenClient` and `JwtSigner` check the URLs and throw
+  `EndpointUrlException` before any credential read or request.
+  `ConnectionRecord` still accepts any string, because
+  `FileBasedConnectionStore` parses the whole file: a constructor check would
+  let one old `http` record break `resolve` for every payer.
+- **`jwksUrl` too.** The SDK never fetches it, but it goes into the `jku`
+  header, and a payer fetching our keys over `http` lets a network attacker
+  swap them. One rule for every URL on the record is easier to state.
+- **Malformed URLs fail the same way.** A URL that is not absolute, has no
+  host or has a scheme other than `http`/`https` throws the same exception
+  naming the field and `payerId`, instead of a bare `IllegalArgumentException`
+  from `URI.create`. `verify` reports it with no phase. Neither repeats the
+  URL, which may hold userinfo or a secret in its query.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
