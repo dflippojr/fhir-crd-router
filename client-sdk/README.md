@@ -72,6 +72,7 @@ discovery returns 2xx, parses as JSON and `CdsDiscoveryValidator` has no finding
 | Refused connection or timeout | empty | the phase | empty |
 | Missing credential | empty | `TOKEN` for OAuth2, else `DISCOVERY` | empty |
 | Credential provider throws (key mismatch, unreadable secrets file) | empty | `TOKEN` for OAuth2, else `DISCOVERY` | empty |
+| URL refused (`http` to a non-loopback host, or malformed; see "Endpoint URLs") | empty | empty | empty |
 
 The report also carries `payerId`, `environment`, `checkedAt`, `elapsed`,
 `serviceCount` and the sorted, deduplicated set of advertised `hooks`.
@@ -81,6 +82,9 @@ headers, credential contents or exception messages, and neither does `toString()
 Other connection setup errors, such as an unreadable signing key, are reported as
 `connection could not be verified: <exception type>` with no phase. A credential
 provider failure is reported as `credential could not be read: <exception type>`.
+A refused URL is reported as `<field> <problem>`, for example
+`baseUrl must use https: http is allowed only to a loopback host`, and never
+repeats the URL.
 A `null` record still throws, and so does an `AuditPersistenceException` from an
 `AuditedCredentialProvider`: the audit protocol says to stop and report, so `verify`
 does not swallow it.
@@ -288,6 +292,36 @@ how this library does.
 App-layer auth comes from `record.authType()`. Mutual TLS is configured
 separately (next section), so it can be combined with any of these.
 
+### Endpoint URLs
+
+`baseUrl`, `tokenEndpoint` (OAuth2) and `jwksUrl` (when a JWT is signed) must
+each be an absolute `https` URL with a host. Plain `http` is allowed only to a
+loopback host: `localhost`, an IPv4 literal in `127.0.0.0/8`, or `[::1]`. The
+check reads the literal host and never resolves it, so `localhost.evil.example`
+and `127.0.0.1.evil.example` are refused. The rule holds in every
+`Environment`, because
+[CDS Hooks 2.0, Security and Safety](https://cds-hooks.hl7.org/2.0/#security-and-safety)
+says all data "MUST be transmitted over channels secured using ... TLS" and has
+no carve-out for sandboxes.
+
+A refused or malformed URL throws `EndpointUrlException`, a `RouterException`
+whose `field()` names the field and whose message names the `payerId` but not
+the URL. It is thrown before any credential is resolved, any token is
+requested or any request is sent, from `discoverServices`, `callHook` and their
+raw forms, `OAuth2TokenClient.fetchAccessToken` and `JwtSigner`. `verify`
+reports it as a failure instead (see "Verifying a connection").
+`ConnectionRecord` itself accepts any string, so a connections file with an
+`http` record still loads and the other payers in it still resolve.
+
+Only the record's URLs are checked, so an `HttpClient` you pass to
+`CdsHooksClient` or `OAuth2TokenClient`, or to `fetchAccessToken`, must not
+follow redirects. The JDK default, `HttpClient.Redirect.NEVER`, is fine. A
+client with `NORMAL` or `ALWAYS` throws `IllegalArgumentException` before
+anything is read or sent: the JDK would resend the request, credentials
+included, to the `Location` without this check, for example from an `https`
+payer to an `http` URL. With `NEVER`, a 3xx from a payer or token endpoint
+fails the call as a `PayerCallException` with that status.
+
 | authType | What is sent | Record fields | `credentialRef` resolves to |
 | --- | --- | --- | --- |
 | `NONE` | No `Authorization` header. | | |
@@ -357,7 +391,10 @@ openssl ec -in signing-key.pem -pubout -out signing-key.pub.pem
 
 ## Mutual TLS
 
-Set `mtlsCredentialRef` on a record to connect with a client certificate. The
+Set `mtlsCredentialRef` on a record to connect with a client certificate.
+Mutual TLS needs an `https` `baseUrl` (and `tokenEndpoint`): over `http` the JDK
+sends no client certificate, so the "Endpoint URLs" rule above refuses such a
+record before the certificate is even read, except for a loopback host. The
 secret it resolves to is a PEM bundle: the certificate chain (leaf first)
 followed by the PKCS#8 private key. Each `CdsHooksClient` retains one current
 `HttpClient` per credential reference and restricts it to TLS 1.2 and 1.3.

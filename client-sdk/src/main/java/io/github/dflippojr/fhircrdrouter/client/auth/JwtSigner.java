@@ -10,6 +10,7 @@ import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 
@@ -106,7 +107,8 @@ public final class JwtSigner {
                     .type(JOSEObjectType.JWT)
                     .keyID(record.keyId());
             if (record.jwksUrl() != null) {
-                header.jwkURL(URI.create(record.jwksUrl()));
+                // The payer fetches our keys from jku: over plain http an attacker could swap them (#156).
+                header.jwkURL(EndpointUrls.require(record, "jwksUrl", record.jwksUrl()));
             }
             SignedJWT jwt = new SignedJWT(header.build(), claims);
             jwt.sign(signer);

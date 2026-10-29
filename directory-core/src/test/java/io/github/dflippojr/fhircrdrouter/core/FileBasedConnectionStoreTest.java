@@ -380,4 +380,36 @@ class FileBasedConnectionStoreTest {
         assertThrows(UncheckedIOException.class,
                 () -> store.findByPayerIdAndEnvironment("PAYER-A", Environment.SANDBOX));
     }
+
+    /**
+     * #156 enforces the https rule in the client SDK, not here: a stored record with an http or malformed
+     * URL still loads, so one old record cannot break {@code resolve} for every other payer.
+     */
+    @Test
+    void recordsWithHttpOrMalformedUrlsStillLoad(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-HTTP"
+                  environment: "PRODUCTION"
+                  baseUrl: "http://payer.example/r4"
+                  authType: "OAUTH2_CLIENT_CREDENTIALS"
+                  tokenEndpoint: "http://auth.example/token"
+                  clientId: "client"
+                  jwksUrl: "http://ehr.example/jwks.json"
+                - payerId: "PAYER-MALFORMED"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://payer example/r4"
+                  authType: "NONE"
+                - payerId: "PAYER-OK"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://ok.example/r4"
+                  authType: "NONE"
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(3, store.findAll().size());
+        assertEquals("http://payer.example/r4",
+                new PayerRouter(store).resolve("PAYER-HTTP", Environment.PRODUCTION).baseUrl());
+        assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK", Environment.PRODUCTION).baseUrl());
+    }
 }

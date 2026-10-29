@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
+import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -46,6 +47,14 @@ import java.util.function.Supplier;
  * restricted to TLS 1.2+. The token endpoint for OAuth2 connections is called
  * over that same client. Connections without mutual TLS use the
  * {@code HttpClient} passed to the constructor.
+ *
+ * <p>Every call first checks the record's URLs ({@code baseUrl}, {@code tokenEndpoint} for OAuth2,
+ * {@code jwksUrl} when a JWT is signed): each must be an absolute {@code https} URL with a host, or
+ * {@code http} to a loopback host. Anything else throws {@link EndpointUrlException} before a
+ * credential is read or a request is sent (CDS Hooks 2.0,
+ * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>). A supplied
+ * {@code HttpClient} must not follow redirects ({@link HttpClient.Redirect#NEVER}, the JDK default), since a
+ * followed redirect is never checked; the constructor throws {@link IllegalArgumentException} for one that does.
  */
 public final class CdsHooksClient {
 
@@ -150,7 +159,8 @@ public final class CdsHooksClient {
         this.exchangeListener = Objects.requireNonNull(exchangeListener, "exchangeListener");
         this.requestTimeout = positiveTimeout(requestTimeout);
         this.connectTimeout = positiveTimeout(connectTimeout);
-        this.httpClient = Objects.requireNonNull(httpClient);
+        // A followed redirect would bypass the https check on the record's URLs (#156).
+        this.httpClient = EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient));
         this.credentialProvider = credentialProvider;
         this.mtlsTrustStore = mtlsTrustStore;
         this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout, exchangeListener);
@@ -262,6 +272,10 @@ public final class CdsHooksClient {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     phase, OptionalInt.empty(), "credential could not be read: "
                             + e.getCause().getClass().getSimpleName());
+        } catch (EndpointUrlException e) {
+            // No exchange was attempted, so no phase; the problem text never includes the URL.
+            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
+                    null, OptionalInt.empty(), e.field() + " " + e.problem());
         } catch (RouterException | IllegalArgumentException e) {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     null, OptionalInt.empty(), "connection could not be verified: " + e.getClass().getSimpleName());
@@ -374,6 +388,9 @@ public final class CdsHooksClient {
      * tokens before their advertised expiry.
      */
     private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body, Supplier<HttpRequest.Builder> requestFactory) {
+        // CDS Hooks 2.0, Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS
+        // for every exchange: refuse the record's URLs before any credential read, token fetch or request (#156).
+        EndpointUrls.requireUsable(record);
         URI uri = requestFactory.get().build().uri();
         try {
             HttpClient client = httpClientFor(record);

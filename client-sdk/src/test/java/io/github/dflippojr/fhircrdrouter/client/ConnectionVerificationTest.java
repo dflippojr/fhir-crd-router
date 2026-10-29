@@ -302,6 +302,39 @@ class ConnectionVerificationTest {
     }
 
     @Test
+    void verifyReportsRefusalInsteadOfThrowing() {
+        ConnectionRecord cleartext = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
+                .environment(Environment.PRODUCTION)
+                .baseUrl("http://user:pw-SECRET-MARKER@payer.example/r4?key=SECRET-MARKER").authType(AuthType.API_KEY)
+                .credentialRef("synthetic-ref").build();
+
+        ConnectionVerification report = client().verify(cleartext);
+
+        assertFalse(report.ok());
+        assertTrue(report.failurePhase().isEmpty());
+        assertTrue(report.failureStatus().isEmpty());
+        assertTrue(report.failureReason().startsWith("baseUrl "), report.failureReason());
+        assertTrue(report.failureReason().contains("https"), report.failureReason());
+        assertFalse(report.toString().contains("SECRET-MARKER"));
+        assertTrue(exchanges.isEmpty());
+    }
+
+    @Test
+    void verifyReportsMalformedUrlByField() {
+        ConnectionRecord malformed = ConnectionRecord.builder().payerId("PAYER-SYNTHETIC")
+                .environment(Environment.SANDBOX).baseUrl(baseUrl()).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .clientId("synthetic-client").credentialRef("synthetic-ref").tokenEndpoint("auth.example/token")
+                .build();
+
+        ConnectionVerification report = client().verify(malformed);
+
+        assertFalse(report.ok());
+        assertTrue(report.failurePhase().isEmpty());
+        assertTrue(report.failureReason().startsWith("tokenEndpoint "), report.failureReason());
+        assertEquals(0, discoveryCalls.get());
+    }
+
+    @Test
     void unparseableBodyIsReportedWithoutItsContent() {
         body = "not-json BODY-MARKER";
         assertFailure(client().verify(connection(AuthType.NONE)), PayerCallPhase.DISCOVERY, 200,

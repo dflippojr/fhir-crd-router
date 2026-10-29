@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
+import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -58,6 +59,15 @@ import java.util.function.Supplier;
  * and never cached. Callers that get a 401 from the
  * payer should {@link #invalidate} and fetch again, since a payer can revoke
  * a token before its advertised expiry.
+ *
+ * <p>{@code tokenEndpoint}, and {@code jwksUrl} for {@code OAUTH2_PRIVATE_KEY_JWT}, must be an absolute
+ * {@code https} URL, or {@code http} to a loopback host; anything else throws
+ * {@link io.github.dflippojr.fhircrdrouter.client.EndpointUrlException} before a cached token is returned,
+ * the secret is resolved or a request is sent (CDS Hooks 2.0,
+ * <a href="https://cds-hooks.hl7.org/2.0/#security-and-safety">Security and Safety</a>). Every
+ * {@link HttpClient}, the constructor's and one passed to {@code fetchAccessToken}, must not follow
+ * redirects ({@link HttpClient.Redirect#NEVER}, the JDK default): one that does throws
+ * {@link IllegalArgumentException}, since a redirect would carry the secret to an unchecked URL.
  */
 public final class OAuth2TokenClient {
 
@@ -99,7 +109,7 @@ public final class OAuth2TokenClient {
         if (requestTimeout.isNegative() || requestTimeout.isZero()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
-        this.httpClient = httpClient;
+        this.httpClient = EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient, "httpClient"));
         this.clock = clock;
         this.jwtSigner = new JwtSigner(clock);
     }
@@ -135,6 +145,10 @@ public final class OAuth2TokenClient {
      */
     public String fetchAccessToken(HttpClient client, ConnectionRecord record, Supplier<String> secret, int attempt) {
         Objects.requireNonNull(secret, "secret");
+        // The client secret or assertion must never go to the token endpoint in cleartext, directly or through
+        // a redirect, and the assertion's jku must be https too (#156). jwksUrl is not in the cache key.
+        EndpointUrls.requireNoRedirects(client);
+        URI endpoint = EndpointUrls.requireTokenUrls(record);
         CacheKey key = cacheKey(record);
         CachedToken cached = cache.get(key);
         if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
@@ -152,7 +166,7 @@ public final class OAuth2TokenClient {
             if (cached != null && clock.instant().isBefore(cached.refreshAt())) {
                 result = cached;
             } else {
-                result = requestToken(client, record, secret.get(), attempt);
+                result = requestToken(client, record, endpoint, secret.get(), attempt);
                 // invalidate() during the flight detaches it: its result must not repopulate the cache.
                 if (inFlight.get(key) == mine) {
                     if (result.refreshAt() != null) {
@@ -195,14 +209,15 @@ public final class OAuth2TokenClient {
         inFlight.remove(key);
     }
 
-    private CachedToken requestToken(HttpClient client, ConnectionRecord record, String secret, int attempt) {
+    private CachedToken requestToken(HttpClient client, ConnectionRecord record, URI endpoint, String secret,
+                                     int attempt) {
         List<String> scopes = record.scopes();
         StringBuilder form = new StringBuilder("grant_type=client_credentials");
         if (!scopes.isEmpty()) {
             form.append("&scope=").append(formEncode(String.join(" ", scopes)));
         }
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(record.tokenEndpoint()))
+                .uri(endpoint)
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/x-www-form-urlencoded");
 
@@ -253,11 +268,11 @@ public final class OAuth2TokenClient {
             return new CachedToken(accessToken.textValue(), refreshAt);
         } catch (IOException e) {
             throw PayerCallException.transport("Token request I/O failure for payerId=" + record.payerId(),
-                    PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
+                    PayerCallPhase.TOKEN, record.payerId(), endpoint, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw PayerCallException.transport("Token request interrupted for payerId=" + record.payerId(),
-                    PayerCallPhase.TOKEN, record.payerId(), URI.create(record.tokenEndpoint()), e);
+                    PayerCallPhase.TOKEN, record.payerId(), endpoint, e);
         }
     }
 
