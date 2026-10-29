@@ -34,26 +34,22 @@ class AuditedMutationSequenceTest {
             "connection.create|connection|synthetic-payer|SANDBOX|ATTEMPTED|" + CREATED_FIELDS;
 
     private final List<String> calls = new ArrayList<>();
-    private final List<AuditContext> contexts = new ArrayList<>();
     private AuditEvent.Outcome failOn;
 
+    /** Every call, including the ones it fails, must carry the caller's context instance. */
     private final AuditSink sink = (c, a, k, t, env, o, f) -> {
+        assertSame(CONTEXT, c);
         if (o == failOn) {
             throw new AuditPersistenceException(new AuditEvent(1, UUID.randomUUID(), Instant.EPOCH, c, a, k, t,
                     env, o, f));
         }
         calls.add(a + "|" + k + "|" + t + "|" + env + "|" + o + "|" + f);
-        contexts.add(c);
         return null;
     };
 
     private static AuditPersistenceException delegateAuditFailure() {
         return new AuditPersistenceException(new AuditEvent(1, UUID.randomUUID(), Instant.EPOCH, CONTEXT,
                 "credential.key.create", "credential", "key-1", null, AuditEvent.Outcome.ATTEMPTED, List.of()));
-    }
-
-    private void assertContextPassedThrough() {
-        contexts.forEach(c -> assertSame(CONTEXT, c));
     }
 
     private static ConnectionRecord.Builder record() {
@@ -138,7 +134,6 @@ class AuditedMutationSequenceTest {
                         + "|SANDBOX|ATTEMPTED|" + CREATED_FIELDS,
                 "connection.create|connection|" + AuditTargets.opaque("payer with spaces")
                         + "|SANDBOX|SUCCEEDED|" + CREATED_FIELDS), calls);
-        assertContextPassedThrough();
     }
 
     @Test
@@ -159,7 +154,6 @@ class AuditedMutationSequenceTest {
                 CREATE_ATTEMPTED.replace("ATTEMPTED", "FAILED"),
                 "connection.delete_missing|connection|synthetic-payer|PRODUCTION|ATTEMPTED|[]",
                 "connection.delete_missing|connection|synthetic-payer|PRODUCTION|FAILED|[]"), calls);
-        assertContextPassedThrough();
     }
 
     @Test
@@ -240,7 +234,6 @@ class AuditedMutationSequenceTest {
                 "credential.remove|credential|ref-2|null|SUCCEEDED|[]"), calls);
         assertEquals(List.of("put(context)", "remove(context)", "put(context)", "plain put", "plain remove"),
                 contextual.delegated);
-        assertContextPassedThrough();
     }
 
     @Test
@@ -260,7 +253,6 @@ class AuditedMutationSequenceTest {
                 "credential.put|credential|ref-1|null|FAILED|[]",
                 "credential.remove|credential|ref-1|null|ATTEMPTED|[]",
                 "credential.remove|credential|ref-1|null|FAILED|[]"), calls);
-        assertContextPassedThrough();
     }
 
     @Test
