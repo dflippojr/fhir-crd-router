@@ -69,30 +69,43 @@ public final class CdsHooksClient {
     private record MtlsClient(String fingerprint, HttpClient client) { }
 
     /**
-     * A credential reference that is unset or does not resolve; keeps the existing message.
-     * {@code phase} is null when the credential belongs to the request being sent.
+     * A credential that could not be used. {@code phase} is the call the credential belongs to, or
+     * null when it belongs to the request being sent.
      */
-    private static final class MissingCredentialException extends RouterException {
+    private abstract static class CredentialFailure extends RouterException {
         private final transient PayerCallPhase phase;
 
-        MissingCredentialException(String message, PayerCallPhase phase) {
+        CredentialFailure(String message, PayerCallPhase phase) {
             super(message);
             this.phase = phase;
+        }
+
+        CredentialFailure(String message, PayerCallPhase phase, RuntimeException cause) {
+            super(message, cause);
+            this.phase = phase;
+        }
+
+        /** The phase a verify report names: the credential's own call, or discovery when it is null. */
+        PayerCallPhase phaseOrDiscovery() {
+            return phase == null ? PayerCallPhase.DISCOVERY : phase;
+        }
+    }
+
+    /** A credential reference that is unset or does not resolve; keeps the existing message. */
+    private static final class MissingCredentialException extends CredentialFailure {
+        MissingCredentialException(String message, PayerCallPhase phase) {
+            super(message, phase);
         }
     }
 
     /**
      * The credential provider threw while resolving a reference, for example a key mismatch or an
      * unreadable secrets file. The provider's exception is kept as the cause; its message is not
-     * copied, since it may describe secret material. {@code phase} is null as for
-     * {@link MissingCredentialException}.
+     * copied, since it may describe secret material.
      */
-    private static final class CredentialReadException extends RouterException {
-        private final transient PayerCallPhase phase;
-
+    private static final class CredentialReadException extends CredentialFailure {
         CredentialReadException(String message, PayerCallPhase phase, RuntimeException cause) {
-            super(message, cause);
-            this.phase = phase;
+            super(message, phase, cause);
         }
     }
 
@@ -241,11 +254,11 @@ public final class CdsHooksClient {
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     e.phase(), e.statusCode(), payerCallReason(e));
         } catch (MissingCredentialException e) {
-            PayerCallPhase phase = e.phase == null ? PayerCallPhase.DISCOVERY : e.phase;
+            PayerCallPhase phase = e.phaseOrDiscovery();
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     phase, OptionalInt.empty(), "missing credential for " + describe(phase));
         } catch (CredentialReadException e) {
-            PayerCallPhase phase = e.phase == null ? PayerCallPhase.DISCOVERY : e.phase;
+            PayerCallPhase phase = e.phaseOrDiscovery();
             return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
                     phase, OptionalInt.empty(), "credential could not be read: "
                             + e.getCause().getClass().getSimpleName());
