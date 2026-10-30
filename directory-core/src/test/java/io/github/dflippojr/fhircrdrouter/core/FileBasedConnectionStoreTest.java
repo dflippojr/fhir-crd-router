@@ -480,6 +480,8 @@ class FileBasedConnectionStoreTest {
             "\n\n",
             "\t \r\n  \n",
             "\t",
+            "\uFEFF",
+            "\uFEFF# no records yet\n",
             "# no records yet\n",
             "# no records yet",
             "  # indented comment\n\n# another\n",
