@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class JsonlAuditTrailTest {
     @TempDir Path dir;
@@ -241,5 +242,30 @@ class JsonlAuditTrailTest {
         assertThrows(IllegalArgumentException.class, () -> new AuditEvent(1, UUID.randomUUID(), NOW,
                 context, "save", "connection", "synthetic-1", null, AuditEvent.Outcome.SUCCEEDED,
                 java.util.Collections.nCopies(65, "status")));
+    }
+
+    @Test void symbolicLinkPathIsRefused() throws Exception {
+        Path target = Files.createFile(dir.resolve("target.jsonl"));
+        Path link = dir.resolve("audit.jsonl");
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (UnsupportedOperationException | IOException | SecurityException e) {
+            assumeTrue(false, "symbolic links are unavailable: " + e);
+        }
+        IOException e = assertThrows(IOException.class, () -> new JsonlAuditTrail(link, CLOCK));
+        assertEquals("Audit path must not be a symbolic link", e.getMessage());
+        assertTrue(Files.isSymbolicLink(link));
+        assertEquals(0, Files.size(target));
+    }
+
+    @Test void preExistingWideFileIsNarrowedToOwnerOnly() throws Exception {
+        assumeTrue(Files.getFileAttributeView(dir, PosixFileAttributeView.class) != null);
+        Path path = Files.createFile(dir.resolve("audit.jsonl"));
+        Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-r--r--"));
+        try (var trail = new JsonlAuditTrail(path, CLOCK)) {
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(path));
+            AuditEvent event = record(trail, context("client-1"), AuditEvent.Outcome.SUCCEEDED);
+            assertEquals(List.of(event), new AuditReader(path).query(AuditQuery.all(10)).events());
+        }
     }
 }

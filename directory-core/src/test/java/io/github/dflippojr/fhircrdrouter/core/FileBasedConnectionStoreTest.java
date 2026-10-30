@@ -245,6 +245,31 @@ class FileBasedConnectionStoreTest {
         assertTrue(new FileBasedConnectionStore(file).findByPayerId("NEW").isEmpty());
     }
 
+    @Test
+    void failedReplaceKeepsOldFileAndRemovesTemp(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        new FileBasedConnectionStore(file).save(record("KEEP-ME"));
+        byte[] before = Files.readAllBytes(file);
+        CountingMapper mapper = new CountingMapper();
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file, mapper, (tmp, target) -> {
+            throw new IOException("synthetic disk full");
+        });
+        ConnectionRecord kept = store.findByPayerIdAndEnvironment("KEEP-ME", Environment.SANDBOX).orElseThrow();
+        int parses = mapper.parses.get();
+
+        UncheckedIOException e = assertThrows(UncheckedIOException.class, () -> store.save(record("NEW")));
+
+        assertTrue(e.getMessage().startsWith("Failed writing connection store at"), e.getMessage());
+        assertEquals("synthetic disk full", e.getCause().getMessage());
+        assertArrayEquals(before, Files.readAllBytes(file));
+        try (Stream<Path> files = Files.list(tempDir)) {
+            assertEquals(List.of(file), files.toList());
+        }
+        assertEquals(List.of(kept), store.findAll());
+        assertEquals(kept, store.findByPayerIdAndEnvironment("KEEP-ME", Environment.SANDBOX).orElseThrow());
+        assertEquals(parses, mapper.parses.get(), "the cache still holds the old file's records");
+    }
+
     /**
      * Opens {@code file} for reading on another thread, as a second process's read would, and
      * closes it after {@code millis}. Returns once the handle is open.
