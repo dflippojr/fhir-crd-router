@@ -228,6 +228,88 @@ class CoverageInformationValidatorTest {
         assertEquals(List.of(), CoverageInformationValidator.validate(ext));
     }
 
+    /** #200: a sub-extension with no value[x] at all names the type it needs and nothing it found. */
+    @Test
+    void subExtensionWithNoValueNamesTheMissingType() {
+        ObjectNode ext = conformant();
+        replace("coverage", MAPPER.createObjectNode().put("url", "coverage")).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[coverage]",
+                "coverage must have a valueReference")), CoverageInformationValidator.validate(ext));
+    }
+
+    /** #200: FHIR R4 allows a logical Reference, by identifier, with or without its type. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("coverageByIdentifier")
+    void coverageByIdentifierConforms(String shape, ObjectNode reference) {
+        ObjectNode ext = conformant();
+        replace("coverage", sub("coverage", "valueReference", reference)).accept(ext);
+        assertEquals(List.of(), CoverageInformationValidator.validate(ext));
+    }
+
+    static Stream<Arguments> coverageByIdentifier() {
+        return Stream.of(
+                arguments("identifier only", coverageIdentifier(MAPPER.createObjectNode())),
+                arguments("type Coverage and identifier", coverageIdentifier(
+                        MAPPER.createObjectNode().put("type", "Coverage"))));
+    }
+
+    /** #200: a type alone does not say which Coverage. */
+    @Test
+    void coverageWithTypeOnlyIsAnError() {
+        ObjectNode ext = conformant();
+        replace("coverage", sub("coverage", "valueReference",
+                MAPPER.createObjectNode().put("type", "Coverage"))).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[coverage]",
+                "coverage valueReference has no reference or identifier")), CoverageInformationValidator.validate(ext));
+    }
+
+    /** #200: crd-ci-q7 is met by text, whatever the coding's system. */
+    @Test
+    void reasonWithForeignCodingAndTextConforms() {
+        ObjectNode ext = conformant();
+        ObjectNode concept = reasonCoding("http://example.org/reasons", "x");
+        concept.put("text", "Payer-specific reason");
+        replace("reason", sub("reason", "valueCodeableConcept", concept)).accept(ext);
+        assertEquals(List.of(), CoverageInformationValidator.validate(ext));
+    }
+
+    /** #200: a coverageAssertionReasons system with a code outside the value set still needs text. */
+    @Test
+    void reasonCodeOutsideValueSetWithoutTextBreaksQ7() {
+        ObjectNode ext = conformant();
+        replace("reason", sub("reason", "valueCodeableConcept",
+                reasonCoding("http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp", "zzz"))).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[reason]",
+                        "reason needs text when its coding is not from the coverageAssertionReasons value set "
+                                + "(crd-ci-q7)")),
+                CoverageInformationValidator.validate(ext));
+    }
+
+    /** #200: a reason of the wrong type gets the type error only; crd-ci-q7 does not fire as well. */
+    @Test
+    void reasonAsStringIsATypeErrorNotQ7() {
+        ObjectNode ext = conformant();
+        replace("reason", sub("reason", "valueString", "Clinical notes")).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[reason]",
+                        "reason must have a valueCodeableConcept, found valueString")),
+                CoverageInformationValidator.validate(ext));
+    }
+
+    /** #200: a non-text valueCode is reported against the value set by its text form. */
+    @Test
+    void numericValueCodeIsNotInTheValueSet() {
+        ObjectNode ext = conformant();
+        replace("doc-needed", sub("doc-needed", "valueCode", MAPPER.getNodeFactory().numberNode(5))).accept(ext);
+
+        assertEquals(List.of(new Violation(Severity.ERROR, "extension[doc-needed]",
+                        "doc-needed code '5' is not one of admin, clinical, conditional, indeterminate, patient")),
+                CoverageInformationValidator.validate(ext));
+    }
+
     @Test
     void unknownAbsoluteUrlIsAllowedBecauseSlicingIsOpen() {
         ObjectNode ext = conformant();
@@ -353,6 +435,17 @@ class CoverageInformationValidatorTest {
         ObjectNode sub = MAPPER.createObjectNode().put("url", url);
         sub.set(valueType, value);
         return sub;
+    }
+
+    private static ObjectNode coverageIdentifier(ObjectNode reference) {
+        reference.putObject("identifier").put("system", "http://example.org/member-id").put("value", "M123");
+        return reference;
+    }
+
+    private static ObjectNode reasonCoding(String system, String code) {
+        ObjectNode concept = MAPPER.createObjectNode();
+        concept.putArray("coding").addObject().put("system", system).put("code", code);
+        return concept;
     }
 
     private static Consumer<ObjectNode> set(Consumer<ObjectNode> change) {
