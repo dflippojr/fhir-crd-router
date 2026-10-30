@@ -94,6 +94,60 @@ class CoverageInformationTest {
         }
     }
 
+    /** CRD 2.2.1 ext-coverage-information: satisfied-pa-id names the prior auth already satisfied. */
+    @Test
+    void parsesSatisfiedPaId() throws Exception {
+        JsonNode resource = mapper.readTree("""
+                {"resourceType":"ServiceRequest","id":"sr1","extension":[
+                  {"url":"%s","extension":[
+                    {"url":"pa-needed","valueCode":"satisfied"},
+                    {"url":"satisfied-pa-id","valueString":"pa-9"}
+                  ]}
+                ]}""".formatted(CoverageInformation.EXTENSION_URL));
+
+        List<CoverageInformation> infos = CoverageInformation.fromResource(resource);
+
+        assertEquals(1, infos.size());
+        assertEquals("satisfied", infos.get(0).paNeeded());
+        assertEquals("pa-9", infos.get(0).satisfiedPaId());
+    }
+
+    /** No id means no reference, not "ServiceRequest/null". */
+    @Test
+    void resourceWithoutIdHasNoReference() throws Exception {
+        JsonNode resource = mapper.readTree("""
+                {"resourceType":"ServiceRequest","extension":[
+                  {"url":"%s","extension":[{"url":"covered","valueCode":"covered"}]}
+                ]}""".formatted(CoverageInformation.EXTENSION_URL));
+
+        List<CoverageInformation> infos = CoverageInformation.fromResource(resource);
+
+        assertEquals(1, infos.size());
+        assertNull(infos.get(0).resourceReference());
+        assertEquals("covered", infos.get(0).covered());
+    }
+
+    /** A JSON null value reads as absent: no "null" string, nothing added to the lists. */
+    @Test
+    void nullValuesReadAsAbsent() throws Exception {
+        JsonNode resource = mapper.readTree("""
+                {"resourceType":"ServiceRequest","id":"sr1","extension":[
+                  {"url":"%s","extension":[
+                    {"url":"covered","valueCode":null},
+                    {"url":"doc-needed","valueCode":null},
+                    {"url":"info-needed","valueCode":null}
+                  ]}
+                ]}""".formatted(CoverageInformation.EXTENSION_URL));
+
+        List<CoverageInformation> infos = CoverageInformation.fromResource(resource);
+
+        assertEquals(1, infos.size());
+        CoverageInformation info = infos.get(0);
+        assertNull(info.covered());
+        assertEquals(List.of(), info.docNeeded());
+        assertEquals(List.of(), info.infoNeeded());
+    }
+
     @Test
     void emptyWhenNoCoverageInformation() throws Exception {
         JsonNode raw = mapper.readTree("{\"cards\":[{\"summary\":\"hi\"}]}");

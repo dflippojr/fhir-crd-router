@@ -88,6 +88,46 @@ class CrdHookContextTest {
     }
 
     @Test
+    void orderSelectWithNullSelectionsHasEmptyList() throws Exception {
+        JsonNode bundle = mapper.readTree("{\"resourceType\":\"Bundle\"}");
+
+        CrdHookContext.OrderSelect context = new CrdHookContext.OrderSelect("Practitioner/doc1", "p1", null, null, bundle);
+
+        assertEquals(List.of(), context.selections());
+    }
+
+    @Test
+    void orderDispatchOptionalFields() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new CrdHookContext.OrderDispatch("p1", null, null, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CrdHookContext.OrderDispatch("p1", List.of("ServiceRequest/sr1"), "not-a-reference", null));
+
+        JsonNode json = mapper.valueToTree(new CrdHookContext.OrderDispatch(
+                "p1", List.of("ServiceRequest/sr1"), null, null));
+
+        assertEquals("ServiceRequest/sr1", json.at("/dispatchedOrders/0").asText());
+        assertFalse(json.has("performer"), "null performer should be omitted");
+        assertFalse(json.has("fulfillmentTasks"), "null fulfillmentTasks should be omitted");
+    }
+
+    /** CRD 2.2.1 prefetch keys; CDS Hooks 2.0: a null prefetch value means the template has no data. */
+    @Test
+    void prefetchBuilderWritesEncounterAndCoverageKeys() throws Exception {
+        JsonNode encounter = mapper.readTree("{\"resourceType\":\"Encounter\",\"id\":\"e1\"}");
+        JsonNode coverage = mapper.readTree("{\"resourceType\":\"Bundle\",\"type\":\"searchset\"}");
+
+        JsonNode prefetch = mapper.valueToTree(CrdPrefetch.builder().encounter(encounter).coverage(coverage).build());
+
+        assertEquals(encounter, prefetch.get(CrdPrefetch.ENCOUNTER));
+        assertEquals(coverage, prefetch.get(CrdPrefetch.COVERAGE));
+        assertEquals("encounter", CrdPrefetch.ENCOUNTER);
+        assertEquals("coverage", CrdPrefetch.COVERAGE);
+
+        assertEquals("{\"encounter\":null}", mapper.writeValueAsString(CrdPrefetch.builder().encounter(null).build()));
+    }
+
+    @Test
     void nullPrefetchValueSerializesAsNullNotOmitted() throws Exception {
         CdsHookRequest request = CdsHookRequest.of(
                 new CrdHookContext.OrderSign("Practitioner/doc1", "p1", null, mapper.readTree("{\"resourceType\":\"Bundle\"}")),
