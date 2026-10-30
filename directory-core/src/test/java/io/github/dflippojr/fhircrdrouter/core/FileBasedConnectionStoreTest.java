@@ -29,6 +29,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -91,6 +92,31 @@ class FileBasedConnectionStoreTest {
 
         assertTrue(store.findByPayerIdAndEnvironment("PAYER-2", Environment.SANDBOX).isEmpty());
         assertTrue(store.findByPayerIdAndEnvironment("PAYER-2", Environment.PRODUCTION).isPresent());
+    }
+
+    @Test
+    void deleteOnAMissingFileCreatesNothing(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+
+        new FileBasedConnectionStore(file).delete("X", Environment.SANDBOX);
+
+        assertTrue(Files.notExists(file));
+        assertEquals(0, tmpFileCount(tempDir));
+    }
+
+    @Test
+    void deleteOfAnAbsentRecordDoesNotRewrite(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        new FileBasedConnectionStore(file).save(record("A"));
+        byte[] before = Files.readAllBytes(file);
+        AtomicInteger moves = new AtomicInteger();
+        FileBasedConnectionStore store = storeWithMover(file, refusing(0, moves));
+
+        store.delete("B", Environment.SANDBOX);
+
+        assertEquals(0, moves.get());
+        assertArrayEquals(before, Files.readAllBytes(file));
+        assertEquals(0, tmpFileCount(tempDir));
     }
 
     private static ConnectionRecord record(String payerId) {

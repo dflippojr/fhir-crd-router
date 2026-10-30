@@ -120,8 +120,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         lock.writeLock().lock();
         try {
             List<ConnectionRecord> all = new ArrayList<>(readAll());
-            all.removeIf(r -> r.payerId().equals(payerId) && r.environment() == environment);
-            writeAll(all);
+            // No match: leave the file alone, so a no-op delete neither creates it nor
+            // risks a refused replace on Windows.
+            if (all.removeIf(r -> r.payerId().equals(payerId) && r.environment() == environment)) {
+                writeAll(all);
+            }
         } finally {
             lock.writeLock().unlock();
         }
