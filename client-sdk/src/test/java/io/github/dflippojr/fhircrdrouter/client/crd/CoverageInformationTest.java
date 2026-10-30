@@ -76,6 +76,24 @@ class CoverageInformationTest {
         assertTrue(info.extension().has("extension"), "raw extension kept for unmodeled parts");
     }
 
+    /** When a payer sends both names, coverage-assertion-id wins over the legacy identifier, in either order. */
+    @Test
+    void coverageAssertionIdWinsOverLegacyIdentifier() throws Exception {
+        String assertion = "{\"url\":\"coverage-assertion-id\",\"valueString\":\"assert-1\"}";
+        String legacy = "{\"url\":\"identifier\",\"valueString\":\"id-1\"}";
+        for (String subs : List.of(assertion + "," + legacy, legacy + "," + assertion)) {
+            JsonNode resource = mapper.readTree("""
+                    {"resourceType":"ServiceRequest","extension":[
+                      {"url":"%s","extension":[%s]}
+                    ]}""".formatted(CoverageInformation.EXTENSION_URL, subs));
+
+            List<CoverageInformation> infos = CoverageInformation.fromResource(resource);
+
+            assertEquals(1, infos.size());
+            assertEquals("assert-1", infos.get(0).coverageAssertionId(), subs);
+        }
+    }
+
     @Test
     void emptyWhenNoCoverageInformation() throws Exception {
         JsonNode raw = mapper.readTree("{\"cards\":[{\"summary\":\"hi\"}]}");

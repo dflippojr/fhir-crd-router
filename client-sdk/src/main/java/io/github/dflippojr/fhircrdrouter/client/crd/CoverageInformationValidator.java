@@ -15,6 +15,23 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERAGE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERAGE_ASSERTION_ID;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.COVERED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DATE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DETAIL;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DOC_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.DOC_PURPOSE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.EXPIRY_DATE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.EXTENSION;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.INFO_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.LEGACY_IDENTIFIER;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.PA_NEEDED;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.QUESTIONNAIRE;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.REASON;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.RI_COVERAGE_INFO;
+import static io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationUrls.SATISFIED_PA_ID;
+
 /**
  * Checks one CRD {@code ext-coverage-information} extension against the Da Vinci
  * CRD 2.2.1 profile and reports what is wrong in plain language.
@@ -84,26 +101,9 @@ public final class CoverageInformationValidator {
         }
     }
 
-    static final String COVERAGE = "coverage";
-    static final String COVERED = "covered";
-    static final String PA_NEEDED = "pa-needed";
-    static final String DOC_NEEDED = "doc-needed";
-    static final String DOC_PURPOSE = "doc-purpose";
-    static final String INFO_NEEDED = "info-needed";
-    static final String REASON = "reason";
-    static final String DATE = "date";
-    static final String EXPIRY_DATE = "expiry-date";
-    static final String COVERAGE_ASSERTION_ID = "coverage-assertion-id";
-    static final String SATISFIED_PA_ID = "satisfied-pa-id";
-    static final String QUESTIONNAIRE = "questionnaire";
-    static final String LEGACY_IDENTIFIER = "identifier";
-    static final String RI_COVERAGE_INFO = "coverageInfo";
-    static final String DETAIL = "detail";
-
     private static final String CONDITIONAL = "conditional";
     private static final String INDETERMINATE = "indeterminate";
     private static final String REASON_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp";
-    private static final String ROOT = "extension";
 
     /** A sub-extension's cardinality, allowed value types (empty for a complex one) and required codes. */
     private record Slice(int min, int max, List<String> valueTypes, Set<String> codes) {
@@ -189,14 +189,14 @@ public final class CoverageInformationValidator {
     public static List<Violation> validate(JsonNode extension) {
         List<Violation> violations = new ArrayList<>();
         if (extension == null || !extension.isObject()) {
-            violations.add(error(ROOT, "coverage-information must be a JSON object"));
+            violations.add(error(EXTENSION, "coverage-information must be a JSON object"));
             return violations;
         }
         checkRoot(extension, violations);
 
         Map<String, List<JsonNode>> byUrl = groupByUrl(extension, violations);
         for (Map.Entry<String, Slice> slice : SLICES.entrySet()) {
-            checkSlice(slice.getKey(), slice.getValue(), byUrl, "", ROOT, violations);
+            checkSlice(slice.getKey(), slice.getValue(), byUrl, "", EXTENSION, violations);
         }
         checkDetails(byUrl.getOrDefault(DETAIL, List.of()), violations);
         checkUndefined(byUrl, violations);
@@ -219,9 +219,9 @@ public final class CoverageInformationValidator {
     }
 
     private static Map<String, List<JsonNode>> groupByUrl(JsonNode extension, List<Violation> violations) {
-        JsonNode subs = extension.path(ROOT);
+        JsonNode subs = extension.path(EXTENSION);
         if (!subs.isArray()) {
-            violations.add(error(ROOT, "coverage-information has no sub-extensions"));
+            violations.add(error(EXTENSION, "coverage-information has no sub-extensions"));
             return new LinkedHashMap<>();
         }
         return groupByUrl(subs);
@@ -272,8 +272,8 @@ public final class CoverageInformationValidator {
      */
     private static void checkDetails(List<JsonNode> details, List<Violation> violations) {
         for (int i = 0; i < details.size(); i++) {
-            Map<String, List<JsonNode>> parts = groupByUrl(details.get(i).path(ROOT));
-            String parent = path(DETAIL) + "[" + i + "]." + ROOT;
+            Map<String, List<JsonNode>> parts = groupByUrl(details.get(i).path(EXTENSION));
+            String parent = path(DETAIL) + "[" + i + "]." + EXTENSION;
             for (Map.Entry<String, Slice> slice : DETAIL_SLICES.entrySet()) {
                 checkSlice(slice.getKey(), slice.getValue(), parts, DETAIL + " ", parent, violations);
             }
@@ -462,7 +462,7 @@ public final class CoverageInformationValidator {
     }
 
     private static String path(String url) {
-        return ROOT + "[" + url + "]";
+        return EXTENSION + "[" + url + "]";
     }
 
     private static Violation error(String path, String message) {
