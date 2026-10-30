@@ -493,7 +493,7 @@ class FileBasedConnectionStoreTest {
             "[]\n",
             "# leading comment\n[]\n",
     })
-    void documentWithNoRecordsReadsAsEmptyAndAcceptsTheFirstSave(String content, @TempDir Path tempDir)
+    void emptyDocumentReadsAsNoRecords(String content, @TempDir Path tempDir)
             throws Exception {
         Path file = tempDir.resolve("connections.yaml");
         Files.writeString(file, content);
@@ -527,7 +527,7 @@ class FileBasedConnectionStoreTest {
             "just a string\n",
             "--- [\n",
     })
-    void malformedOrNonListDocumentStillThrows(String content, @TempDir Path tempDir) throws Exception {
+    void malformedDocumentStillThrows(String content, @TempDir Path tempDir) throws Exception {
         Path file = tempDir.resolve("connections.yaml");
         Files.writeString(file, content);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
@@ -538,7 +538,7 @@ class FileBasedConnectionStoreTest {
     }
 
     @Test
-    void emptyFileIsParsedAtMostOnceWhileUnchanged(@TempDir Path tempDir) throws Exception {
+    void emptyDocumentIsCached(@TempDir Path tempDir) throws Exception {
         Path file = tempDir.resolve("connections.yaml");
         Files.writeString(file, "# no records yet\n");
         CountingMapper mapper = new CountingMapper();
