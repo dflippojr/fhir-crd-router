@@ -49,6 +49,15 @@ public final class TestKeys {
         }
     }
 
+    /** An Ed25519 pair: a key type the SDK refuses, for the rejection paths. */
+    public static KeyPair ed25519() {
+        try {
+            return KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** One shared RSA-2048 pair, generated only when a test first needs it. */
     public static KeyPair rsa2048() {
         return Rsa2048.KEYS;

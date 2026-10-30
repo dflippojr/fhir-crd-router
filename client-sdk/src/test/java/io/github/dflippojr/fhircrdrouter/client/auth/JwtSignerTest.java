@@ -118,6 +118,20 @@ class JwtSignerTest {
     }
 
     @Test
+    void ed25519KeysAreRejected() {
+        KeyPair ed = TestKeys.ed25519();
+        ConnectionRecord record = record(AuthType.OAUTH2_PRIVATE_KEY_JWT, "client-123", null);
+
+        IllegalArgumentException jwks = assertThrows(IllegalArgumentException.class,
+                () -> Jwks.builder().add("ed-1", ed.getPublic()));
+        RouterException signing = assertThrows(RouterException.class,
+                () -> signer.clientAssertion(record, ed.getPrivate()));
+
+        assertEquals("Unsupported public key type EdDSA", jwks.getMessage());
+        assertEquals("Unsupported signing key type EdDSA for payerId=PAYER-JWT", signing.getMessage());
+    }
+
+    @Test
     void pemKeysReadsPkcs8AndExplainsPkcs1() {
         KeyPair ec = TestKeys.ec("secp384r1");
         assertEquals(ec.getPrivate(), PemKeys.readPrivateKey(TestKeys.privateKeyPem(ec)));

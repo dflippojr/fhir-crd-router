@@ -59,6 +59,7 @@ class OAuth2TokenClientTest {
     private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
     private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
     private final AtomicBoolean tokenEndpointFails = new AtomicBoolean();
+    private final AtomicBoolean emptyTokenBody = new AtomicBoolean();
     private volatile long tokenDelayMillis;
     private OAuth2TokenClient tokenClient;
 
@@ -77,6 +78,11 @@ class OAuth2TokenClientTest {
             }
             if (tokenEndpointFails.get()) {
                 exchange.sendResponseHeaders(500, -1);
+                exchange.close();
+                return;
+            }
+            if (emptyTokenBody.get()) {
+                exchange.sendResponseHeaders(200, -1);
                 exchange.close();
                 return;
             }
@@ -259,6 +265,66 @@ class OAuth2TokenClientTest {
         assertEquals(0, tokenRequests.get());
 
         assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+    }
+
+    @Test
+    void secretSupplierErrorReachesWaitersUnwrapped() throws Exception {
+        ConnectionRecord record = record(List.of());
+        CountDownLatch leaderInSupplier = new CountDownLatch(1);
+        CountDownLatch releaseLeader = new CountDownLatch(1);
+        AtomicInteger lookups = new AtomicInteger();
+        SyntheticError broken = new SyntheticError();
+        Supplier<String> failing = () -> {
+            lookups.incrementAndGet();
+            leaderInSupplier.countDown();
+            try {
+                if (!releaseLeader.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("leader was never released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw broken;
+        };
+        HttpClient http = HttpClient.newHttpClient();
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Throwable> leader = pool.submit(() ->
+                    assertThrows(SyntheticError.class, () -> tokenClient.fetchAccessToken(http, record, failing, 1)));
+            assertTrue(leaderInSupplier.await(10, TimeUnit.SECONDS));
+            AtomicReference<Thread> waiterThread = new AtomicReference<>();
+            Future<Throwable> waiter = pool.submit(() -> {
+                waiterThread.set(Thread.currentThread());
+                return assertThrows(SyntheticError.class, () -> tokenClient.fetchAccessToken(http, record, failing, 1));
+            });
+            // The waiter parks on the leader's flight; it must get the leader's Error, not a CompletionException.
+            awaitUntil(() -> waiterThread.get() != null && waiterThread.get().getState() == Thread.State.WAITING,
+                    "waiter never parked on the leader's flight");
+            releaseLeader.countDown();
+            assertSame(broken, leader.get(10, TimeUnit.SECONDS));
+            assertSame(broken, waiter.get(10, TimeUnit.SECONDS));
+        } finally {
+            releaseLeader.countDown();
+            pool.shutdownNow();
+        }
+        assertEquals(1, lookups.get());
+        assertEquals(0, tokenRequests.get());
+
+        // The failed flight released its slot: a working supplier fetches a token.
+        assertEquals("token-1", tokenClient.fetchAccessToken(record, "secret"));
+    }
+
+    @Test
+    void emptyTokenBodyFailsAndIsNotCached() {
+        emptyTokenBody.set(true);
+        ConnectionRecord record = record(List.of());
+
+        for (int call = 1; call <= 2; call++) {
+            RouterException e = assertThrows(RouterException.class, () -> tokenClient.fetchAccessToken(record, "secret"));
+            assertEquals("Token response for payerId=PAYER-OAUTH had no usable access_token", e.getMessage());
+        }
+
+        assertEquals(2, tokenRequests.get());
     }
 
     @Test
@@ -581,6 +647,13 @@ class OAuth2TokenClientTest {
                 .credentialRef("ref")
                 .mtlsCredentialRef(mtlsCredentialRef)
                 .build();
+    }
+
+    /** An {@link Error} no JVM component throws, so only the supplier under test can be its source. */
+    private static final class SyntheticError extends Error {
+        SyntheticError() {
+            super("synthetic secret store failure");
+        }
     }
 
     private static final class MutableClock extends Clock {
