@@ -295,8 +295,11 @@ separately (next section), so it can be combined with any of these.
 ### Endpoint URLs
 
 `baseUrl`, `tokenEndpoint` (OAuth2) and `jwksUrl` (when a JWT is signed) must
-each be an absolute `https` URL with a host. Plain `http` is allowed only to a
-loopback host: `localhost`, an IPv4 literal in `127.0.0.0/8`, or `[::1]`. The
+each be an absolute `https` URL with a host. `baseUrl` must also have no
+query or fragment, since the SDK appends `/cds-services` and the service id
+to it ([CDS Hooks 2.0, Discovery](https://cds-hooks.hl7.org/2.0/#discovery)).
+Plain `http` is allowed only to a loopback host: `localhost`, an IPv4 literal
+in `127.0.0.0/8`, or `[::1]`. The
 check reads the literal host and never resolves it, so `localhost.evil.example`
 and `127.0.0.1.evil.example` are refused. The rule holds in every
 `Environment`, because
