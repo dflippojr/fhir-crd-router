@@ -31,7 +31,10 @@ public final class PayerCallException extends RouterException {
     private final HttpHeaders responseHeaders;
     private final String responseBody;
 
-    /** The body must already be sanitized for TOKEN errors; never supply a successful token body. */
+    /**
+     * The body must already be sanitized for TOKEN errors and have any credential the payer echoed
+     * redacted, before this truncates it; never supply a successful token body.
+     */
     public PayerCallException(String messagePrefix, PayerCallPhase phase, String payerId, URI uri,
                               HttpResponse<String> response, String body) {
         this(messagePrefix, phase, payerId, uri, response, body, null);

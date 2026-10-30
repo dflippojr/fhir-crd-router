@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
+import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -221,11 +222,15 @@ public final class OAuth2TokenClient {
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/x-www-form-urlencoded");
 
+        // The credential this request puts on the wire, which the token server may echo in its error.
+        String sentCredential;
         if (record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             String assertion = jwtSigner.clientAssertion(record, PemKeys.readPrivateKey(secret));
             form.append("&client_assertion_type=").append(formEncode(JwtSigner.CLIENT_ASSERTION_TYPE))
                     .append("&client_assertion=").append(formEncode(assertion));
+            sentCredential = assertion;
         } else {
+            sentCredential = secret;
             String credentials = formEncode(record.clientId()) + ":" + formEncode(secret);
             builder.header("Authorization", "Basic "
                     + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8)));
@@ -239,7 +244,7 @@ public final class OAuth2TokenClient {
             if (response.statusCode() / 100 != 2) {
                 throw new PayerCallException("Token request failed for payerId=" + record.payerId()
                         + " status=" + response.statusCode() + " body=", PayerCallPhase.TOKEN,
-                        record.payerId(), request.uri(), response, tokenErrorBody(response.body(), secret));
+                        record.payerId(), request.uri(), response, tokenErrorBody(response.body(), sentCredential));
             }
 
             JsonNode json;
@@ -298,14 +303,21 @@ public final class OAuth2TokenClient {
         return 0;
     }
 
-    private String tokenErrorBody(String body, String secret) {
+    /**
+     * Keeps only the RFC 6749 §5.2 (https://www.rfc-editor.org/rfc/rfc6749#section-5.2) {@code error} and
+     * {@code error_description}, with {@code sentCredential} redacted: §5.2 lets {@code error_description}
+     * be any human-readable text, so a server can echo what it rejected. That is the client secret for
+     * {@code client_secret_basic}, or for {@code OAUTH2_PRIVATE_KEY_JWT} the signed {@code client_assertion},
+     * which RFC 7523 §2.2 (https://www.rfc-editor.org/rfc/rfc7523#section-2.2) makes the client's credential:
+     * a bearer at any server that does not enforce {@code jti} uniqueness until it expires (#195).
+     */
+    private String tokenErrorBody(String body, String sentCredential) {
         var safe = mapper.createObjectNode();
         try {
             JsonNode json = mapper.readTree(body);
             for (String field : List.of("error", "error_description")) {
                 if (json != null && json.path(field).isTextual()) {
-                    String value = json.get(field).asText();
-                    safe.put(field, secret.isEmpty() ? value : value.replace(secret, "[REDACTED]"));
+                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential));
                 }
             }
         } catch (IOException e) {

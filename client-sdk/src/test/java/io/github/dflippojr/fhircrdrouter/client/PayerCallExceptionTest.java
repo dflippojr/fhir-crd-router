@@ -11,9 +11,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.net.http.HttpClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +26,8 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -32,6 +36,20 @@ class PayerCallExceptionTest {
     private static final CdsHookRequest REQUEST = new CdsHookRequest("order-sign", "instance", Map.of(), Map.of());
     private static final CredentialProvider CREDENTIALS = new CredentialProvider() {
         @Override public Optional<String> resolve(String ref) { return Optional.of(SECRET); }
+        @Override public void put(String ref, String value) { }
+        @Override public void remove(String ref) { }
+    };
+    private static final String API_KEY = "synthetic-api-key-123";
+    private static final String SIGNING_KEY = TestKeys.privateKeyPem(TestKeys.ec("secp384r1"));
+    /** Resolves "api-key" to {@link #API_KEY}, "signing-key" to a PEM private key and anything else to {@link #SECRET}. */
+    private static final CredentialProvider KEYED_CREDENTIALS = new CredentialProvider() {
+        @Override public Optional<String> resolve(String ref) {
+            return Optional.of(switch (ref) {
+                case "api-key" -> API_KEY;
+                case "signing-key" -> SIGNING_KEY;
+                default -> SECRET;
+            });
+        }
         @Override public void put(String ref, String value) { }
         @Override public void remove(String ref) { }
     };
@@ -209,6 +227,123 @@ class PayerCallExceptionTest {
         assertEquals(PayerCallPhase.TOKEN, error.phase());
         assertTrue(error.statusCode().isEmpty());
         assertFalse(error.timedOut());
+    }
+
+    @Test
+    void discovery401RedactsEchoedApiKey() {
+        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 401,
+                "{\"error\":\"bad key in header: " + exchange.getRequestHeaders().getFirst("Authorization") + "\"}"));
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> keyedClient().discoverServices(keyedRecord(AuthType.API_KEY)));
+        assertEquals(PayerCallPhase.DISCOVERY, error.phase());
+        assertEquals("{\"error\":\"bad key in header: Bearer [REDACTED]\"}", error.responseBody());
+        assertRedacted(error, API_KEY);
+    }
+
+    @Test
+    void hook401RedactsEchoedAccessToken() {
+        List<String> issued = new CopyOnWriteArrayList<>();
+        server.createContext("/token", exchange -> {
+            String token = "synthetic-access-token-" + issued.size();
+            issued.add(token);
+            TestResponses.respond(exchange, 200, "{\"access_token\":\"" + token + "\"}");
+        });
+        server.createContext("/cds-services/hook", exchange -> TestResponses.respond(exchange, 401,
+                "rejected " + bearer(exchange.getRequestHeaders().getFirst("Authorization"))));
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> keyedClient().callHookRaw(keyedRecord(AuthType.OAUTH2_CLIENT_CREDENTIALS), "hook", REQUEST));
+        assertEquals(PayerCallPhase.HOOK, error.phase());
+        assertEquals(2, issued.size());
+        assertEquals("rejected [REDACTED]", error.responseBody());
+        issued.forEach(token -> assertRedacted(error, token));
+    }
+
+    @Test
+    void hook401RedactsEchoedCdsHooksJwt() {
+        AtomicReference<String> received = new AtomicReference<>();
+        server.createContext("/cds-services/hook", exchange -> {
+            received.set(bearer(exchange.getRequestHeaders().getFirst("Authorization")));
+            TestResponses.respond(exchange, 401, "rejected " + received.get());
+        });
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> keyedClient().callHookRaw(keyedRecord(AuthType.CDS_HOOKS_JWT), "hook", REQUEST));
+        assertEquals(PayerCallPhase.HOOK, error.phase());
+        assertNotNull(received.get());
+        assertEquals("rejected [REDACTED]", error.responseBody());
+        assertRedacted(error, received.get());
+    }
+
+    @Test
+    void token400RedactsEchoedClientAssertion() {
+        AtomicReference<String> received = new AtomicReference<>();
+        server.createContext("/token", exchange -> {
+            received.set(formField(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8),
+                    "client_assertion"));
+            TestResponses.respond(exchange, 400, "{\"error\":\"invalid_client\",\"error_description\":"
+                    + "\"rejected assertion " + received.get() + "\"}");
+        });
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> keyedClient().discoverServices(keyedRecord(AuthType.OAUTH2_PRIVATE_KEY_JWT)));
+        assertEquals(PayerCallPhase.TOKEN, error.phase());
+        assertNotNull(received.get());
+        assertEquals("{\"error\":\"invalid_client\",\"error_description\":\"rejected assertion [REDACTED]\"}",
+                error.responseBody());
+        assertRedacted(error, received.get());
+    }
+
+    @Test
+    void echoedKeyAtTruncationBoundaryLeavesNoPrefix() {
+        // Ten characters of the key fall before the 4096-byte limit and the rest after it.
+        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 401,
+                "a".repeat(4096 - 10) + bearer(exchange.getRequestHeaders().getFirst("Authorization")) + " tail"));
+        PayerCallException error = assertThrows(PayerCallException.class,
+                () -> keyedClient().discoverServices(keyedRecord(AuthType.API_KEY)));
+        for (int i = 0; i + 8 <= API_KEY.length(); i++) {
+            String window = API_KEY.substring(i, i + 8);
+            assertFalse(error.responseBody().contains(window), window);
+            assertFalse(error.getMessage().contains(window), window);
+        }
+    }
+
+    private static void assertRedacted(PayerCallException error, String credential) {
+        assertFalse(error.getMessage().contains(credential));
+        assertFalse(error.responseBody().contains(credential));
+        assertFalse(error.toString().contains(credential));
+        assertTrue(error.responseBody().contains("[REDACTED]"));
+    }
+
+    private static String bearer(String authorization) {
+        return authorization.substring("Bearer ".length());
+    }
+
+    private static String formField(String form, String name) {
+        for (String pair : form.split("&")) {
+            int eq = pair.indexOf('=');
+            if (pair.substring(0, eq).equals(name)) {
+                return URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+            }
+        }
+        return null;
+    }
+
+    private CdsHooksClient keyedClient() {
+        return new CdsHooksClient(HttpClient.newHttpClient(), KEYED_CREDENTIALS, null,
+                Duration.ofSeconds(5), Duration.ofSeconds(1));
+    }
+
+    private ConnectionRecord keyedRecord(AuthType authType) {
+        var builder = ConnectionRecord.builder().payerId("PAYER-TEST").environment(Environment.SANDBOX).baseUrl(base)
+                .authType(authType);
+        switch (authType) {
+            case API_KEY -> builder.credentialRef("api-key");
+            case OAUTH2_CLIENT_CREDENTIALS -> builder.tokenEndpoint(base + "/token").clientId("synthetic-client")
+                    .credentialRef("secret-ref");
+            case OAUTH2_PRIVATE_KEY_JWT -> builder.tokenEndpoint(base + "/token").clientId("synthetic-client")
+                    .keyId("key-1").credentialRef("signing-key");
+            case CDS_HOOKS_JWT -> builder.clientId("synthetic-client").keyId("key-1").credentialRef("signing-key");
+            case NONE -> { }
+        }
+        return builder.build();
     }
 
     private CdsHooksClient client() {

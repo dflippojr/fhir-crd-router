@@ -428,8 +428,23 @@ timeouts from other transport errors; the cause preserves the transport error.
 containing only `WWW-Authenticate`, `Retry-After`, `Content-Type`, `X-Request-Id`
 and `X-Correlation-Id`. `responseBody()` and the body included in the message
 are limited to 4096 UTF-8 bytes, without splitting a character. Token error
-bodies include only textual RFC 6749 `error` and `error_description` fields,
-with an echoed credential redacted; non-JSON token errors become `{}`.
+bodies include only textual RFC 6749 `error` and `error_description` fields
+([§5.2](https://www.rfc-editor.org/rfc/rfc6749#section-5.2)); non-JSON token
+errors become `{}`.
+
+A payer that echoes the credential it rejected does not get it into the
+exception. Before the body is kept, and so before it is cut at 4096 bytes, each
+occurrence of the credential sent on the failing attempt becomes `[REDACTED]`:
+
+| Phase | Credential redacted |
+|---|---|
+| `DISCOVERY`, `HOOK` | the `Authorization` bearer: the API key, the OAuth2 access token or the CDS Hooks JWT |
+| `TOKEN`, `OAUTH2_CLIENT_CREDENTIALS` | the client secret, in `error` and `error_description` |
+| `TOKEN`, `OAUTH2_PRIVATE_KEY_JWT` | the signed `client_assertion` ([RFC 7523 §2.2](https://www.rfc-editor.org/rfc/rfc7523#section-2.2)), in `error` and `error_description` |
+
+Only the credential exactly as sent is matched. An echo the payer re-encodes,
+such as the Base64 `Authorization: Basic` value or a JSON-escaped `\/`, is not
+redacted.
 Successful token bodies are never attached to exceptions. Hook and discovery
 bodies may contain sensitive clinical data; take care when logging them.
 

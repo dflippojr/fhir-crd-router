@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
+import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -414,7 +415,8 @@ public final class CdsHooksClient {
             boolean reauthenticated = false;
             Duration waited = Duration.ZERO;
             while (true) {
-                HttpResponse<String> response = sendOnce(client, record, phase, body, attempt, requestFactory);
+                Attempt sent = sendOnce(client, record, phase, body, attempt, requestFactory);
+                HttpResponse<String> response = sent.response();
                 int status = response.statusCode();
                 if (status / 100 == 2) {
                     return response;
@@ -425,8 +427,10 @@ public final class CdsHooksClient {
                     attempt++;
                     continue;
                 }
+                // A payer may echo the bearer it rejected; keep it out of the exception callers log (#195).
                 PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
-                        + status + ": ", phase, record.payerId(), uri, response, response.body());
+                        + status + ": ", phase, record.payerId(), uri, response,
+                        EchoedCredentials.redact(response.body(), sent.credential()));
                 Duration wait = policy.enabled() && RetryPolicy.retryable(status)
                         && throttleRetries + 1 < policy.maxAttempts()
                         ? failure.retryAfter().orElse(null) : null;
@@ -452,14 +456,20 @@ public final class CdsHooksClient {
         }
     }
 
-    private HttpResponse<String> sendOnce(HttpClient client, ConnectionRecord record,
-                                          PayerCallPhase phase, String body, int attempt,
-                                          Supplier<HttpRequest.Builder> requestFactory)
+    /** One attempt's response, and the credential its {@code Authorization} header carried (null for none). */
+    private record Attempt(HttpResponse<String> response, String credential) { }
+
+    private Attempt sendOnce(HttpClient client, ConnectionRecord record,
+                             PayerCallPhase phase, String body, int attempt,
+                             Supplier<HttpRequest.Builder> requestFactory)
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = requestFactory.get().timeout(requestTimeout);
         URI uri = builder.copy().build().uri();
         applyAuth(client, builder, uri, record, attempt);
-        return ExchangeSender.send(client, builder.build(), body, record, phase, attempt, exchangeListener);
+        HttpRequest request = builder.build();
+        String credential = EchoedCredentials.fromAuthorization(request.headers().firstValue("Authorization").orElse(null));
+        return new Attempt(ExchangeSender.send(client, request, body, record, phase, attempt, exchangeListener),
+                credential);
     }
 
     private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt) {
