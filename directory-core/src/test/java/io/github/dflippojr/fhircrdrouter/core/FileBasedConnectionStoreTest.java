@@ -4,7 +4,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -332,9 +335,10 @@ class FileBasedConnectionStoreTest {
         assertEquals(0, tmpFileCount(tempDir));
     }
 
-    /** A YAML mapper like the store's default that counts deserializations. */
+    /** A YAML mapper like the store's default that counts deserializations and token scans. */
     private static final class CountingMapper extends ObjectMapper {
         final AtomicInteger parses = new AtomicInteger();
+        final AtomicInteger scans = new AtomicInteger();
 
         CountingMapper() {
             super(new YAMLFactory());
@@ -347,6 +351,12 @@ class FileBasedConnectionStoreTest {
         public <T> T readValue(byte[] src, Class<T> valueType) throws IOException {
             parses.incrementAndGet();
             return super.readValue(src, valueType);
+        }
+
+        @Override
+        public JsonParser createParser(byte[] content) throws IOException {
+            scans.incrementAndGet();
+            return super.createParser(content);
         }
     }
 
@@ -463,5 +473,91 @@ class FileBasedConnectionStoreTest {
         assertEquals("http://payer.example/r4",
                 new PayerRouter(store).resolve("PAYER-HTTP", Environment.PRODUCTION).baseUrl());
         assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK", Environment.PRODUCTION).baseUrl());
+    }
+
+    /**
+     * #193: every YAML document that holds no records reads as an empty store, the same as a missing
+     * file, and {@code save} can write the first record into it. The cases cover the class, not one
+     * instance: no bytes, whitespace only, comments only, a bare document marker, and the explicit
+     * empty values {@code null}, {@code ~} and {@code []} that already worked.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "",
+            " ",
+            "\n\n",
+            "\t \r\n  \n",
+            "\t",
+            "\uFEFF",
+            "\uFEFF# no records yet\n",
+            "# no records yet\n",
+            "# no records yet",
+            "  # indented comment\n\n# another\n",
+            "---\n",
+            "--- # empty document\n",
+            "---\n...\n",
+            "null\n",
+            "~\n",
+            "[]\n",
+            "# leading comment\n[]\n",
+    })
+    void emptyDocumentReadsAsNoRecords(String content, @TempDir Path tempDir)
+            throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        Files.writeString(file, content);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(List.of(), store.findAll());
+        assertEquals(List.of(), store.findByPayerId("PAYER-A"));
+        assertTrue(store.findByPayerIdAndEnvironment("PAYER-A", Environment.SANDBOX).isEmpty());
+        // Through the router an empty store is "no connection", not a store failure.
+        assertThrows(RouterException.class, () -> new PayerRouter(store).resolve("PAYER-A", Environment.SANDBOX));
+        store.delete("PAYER-A", Environment.SANDBOX);
+        assertEquals(content, Files.readString(file));
+
+        store.save(record("PAYER-A"));
+
+        List<ConnectionRecord> reloaded = new FileBasedConnectionStore(file).findAll();
+        assertEquals(List.of("PAYER-A"), reloaded.stream().map(ConnectionRecord::payerId).toList());
+    }
+
+    /**
+     * #193: reading an empty document as no records must not widen into reading a broken one as no
+     * records. Each of these is malformed YAML or not a list of records, and must still fail.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "- payerId: [\n",
+            "- payerId: [unterminated\n",
+            "# comment first\n- payerId: [\n",
+            "\"unterminated\n",
+            "payerId: PAYER-A\n",
+            "just a string\n",
+            "--- [\n",
+    })
+    void malformedDocumentStillThrows(String content, @TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        Files.writeString(file, content);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertThrows(UncheckedIOException.class, store::findAll);
+        assertThrows(UncheckedIOException.class, () -> store.save(record("PAYER-A")));
+        assertEquals(content, Files.readString(file));
+    }
+
+    @Test
+    void emptyDocumentIsCached(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("connections.yaml");
+        Files.writeString(file, "# no records yet\n");
+        CountingMapper mapper = new CountingMapper();
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file, mapper);
+
+        for (int i = 0; i < 10; i++) {
+            assertEquals(List.of(), store.findAll());
+        }
+
+        // A document with no content never reaches readValue; the content check scans it once.
+        assertEquals(0, mapper.parses.get());
+        assertEquals(1, mapper.scans.get());
     }
 }
