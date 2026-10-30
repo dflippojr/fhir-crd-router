@@ -1,5 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -27,6 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -151,6 +154,40 @@ class CdsHooksClientInputGuardsTest {
             assertTrue(response.cards().isEmpty());
             assertTrue(response.systemActions().isEmpty());
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "[]", "42", "true", "\"text\"", ""})
+    void callHookRejectsANonObjectRoot(String body) {
+        responseBody.set(body);
+
+        RouterException e = assertThrows(RouterException.class,
+                () -> new CdsHooksClient(noCredentials()).callHook(record, "s", REQUEST));
+
+        assertTrue(e.getMessage().contains("payerId=P"), e.getMessage());
+        assertTrue(e.getMessage().contains("not a JSON object"), e.getMessage());
+        if (!body.isEmpty()) {
+            assertFalse(e.getMessage().contains(body), e.getMessage());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "[]", "42", "true", "\"text\""})
+    void callHookRawKeepsANonObjectRoot(String body) throws IOException {
+        responseBody.set(body);
+
+        JsonNode raw = new CdsHooksClient(noCredentials()).callHookRaw(record, "s", REQUEST);
+
+        assertEquals(new ObjectMapper().readTree(body), raw);
+    }
+
+    @Test
+    void callHookRawReturnsAMissingNodeForAnEmptyBody() {
+        responseBody.set("");
+
+        JsonNode raw = new CdsHooksClient(noCredentials()).callHookRaw(record, "s", REQUEST);
+
+        assertTrue(raw.isMissingNode(), String.valueOf(raw));
     }
 
     @Test
