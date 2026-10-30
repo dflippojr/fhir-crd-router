@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -334,9 +335,10 @@ class FileBasedConnectionStoreTest {
         assertEquals(0, tmpFileCount(tempDir));
     }
 
-    /** A YAML mapper like the store's default that counts deserializations. */
+    /** A YAML mapper like the store's default that counts deserializations and token scans. */
     private static final class CountingMapper extends ObjectMapper {
         final AtomicInteger parses = new AtomicInteger();
+        final AtomicInteger scans = new AtomicInteger();
 
         CountingMapper() {
             super(new YAMLFactory());
@@ -349,6 +351,12 @@ class FileBasedConnectionStoreTest {
         public <T> T readValue(byte[] src, Class<T> valueType) throws IOException {
             parses.incrementAndGet();
             return super.readValue(src, valueType);
+        }
+
+        @Override
+        public JsonParser createParser(byte[] content) throws IOException {
+            scans.incrementAndGet();
+            return super.createParser(content);
         }
     }
 
@@ -544,11 +552,12 @@ class FileBasedConnectionStoreTest {
         CountingMapper mapper = new CountingMapper();
         FileBasedConnectionStore store = new FileBasedConnectionStore(file, mapper);
 
-        List<ConnectionRecord> first = store.findAll();
         for (int i = 0; i < 10; i++) {
-            assertSame(first, store.findAll());
+            assertEquals(List.of(), store.findAll());
         }
 
-        assertTrue(mapper.parses.get() <= 1);
+        // A document with no content never reaches readValue; the content check scans it once.
+        assertEquals(0, mapper.parses.get());
+        assertEquals(1, mapper.scans.get());
     }
 }
