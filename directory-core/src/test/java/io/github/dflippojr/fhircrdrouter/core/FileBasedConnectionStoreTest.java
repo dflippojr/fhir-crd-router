@@ -479,6 +479,7 @@ class FileBasedConnectionStoreTest {
             " ",
             "\n\n",
             "\t \r\n  \n",
+            "\t",
             "# no records yet\n",
             "# no records yet",
             "  # indented comment\n\n# another\n",

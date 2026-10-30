@@ -1,5 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -9,6 +10,7 @@ import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +42,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * so hand edits and other writers are seen on the next read. {@link #save}
  * and {@link #delete} refresh the cache with what they wrote. A read or parse
  * failure is thrown, never answered from the cache.
+ *
+ * <p>A file with no YAML content (empty, whitespace or comments only) reads as
+ * no records, like a missing file, and {@link #save} writes into it.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -142,7 +147,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             if (cached != null && Arrays.equals(cached.bytes, bytes)) {
                 return cached.records;
             }
-            ConnectionRecord[] records = mapper.readValue(bytes, ConnectionRecord[].class);
+            ConnectionRecord[] records = hasContent(bytes) ? mapper.readValue(bytes, ConnectionRecord[].class) : null;
             List<ConnectionRecord> parsed = records == null ? List.of() : List.of(records);
             cache = new Snapshot(bytes, parsed);
             return parsed;
@@ -150,6 +155,23 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             throw new UncheckedIOException("Failed reading connection store at " + path, e);
         } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Whether the YAML holds a value at all. An empty, whitespace-only or comment-only file has no
+     * token, and {@code readValue} rejects it instead of returning null, so it is answered here as
+     * no records, the same as a missing file or {@code null} (#193). Anything else, including a
+     * malformed document, goes on to {@code readValue} and fails there. Blank text is checked first
+     * because the YAML scanner rejects a tab where a token could start, so a tab-only file would
+     * otherwise fail.
+     */
+    private boolean hasContent(byte[] bytes) throws IOException {
+        if (new String(bytes, StandardCharsets.UTF_8).isBlank()) {
+            return false;
+        }
+        try (JsonParser parser = mapper.createParser(bytes)) {
+            return parser.nextToken() != null;
         }
     }
 
