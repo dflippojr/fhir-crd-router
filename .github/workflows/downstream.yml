@@ -69,6 +69,8 @@ jobs:
           echo "workbench=$(git -C workbench rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       # Replaces the workbench's pinned install (scripts/install-crd-router.sh):
       # both use 0.1.0-SNAPSHOT, so the workbench resolves this build instead.
+      # -DskipITs too: Failsafe still runs CrashDurabilityIT under -DskipTests, and
+      # jacoco:check would then judge the floors on that IT's coverage alone.
       - name: Install this repo into the local Maven repository
         id: install
         continue-on-error: true
@@ -77,7 +79,7 @@ jobs:
           set -o pipefail
           rm -rf ~/.m2/repository/io/github/dflippojr
           chmod +x mvnw
-          ./mvnw -B -ntp install -DskipTests 2>&1 | tee "$LOG_DIR/install.log"
+          ./mvnw -B -ntp install -DskipTests -DskipITs 2>&1 | tee "$LOG_DIR/install.log"
       - name: Workbench ./mvnw verify
         id: verify
         if: steps.install.outcome == 'success'
