@@ -42,7 +42,7 @@ class ConnectionRecordTest {
 
     @ParameterizedTest
     @MethodSource("authTypeAndField")
-    void refusesABlankFieldExactlyWhenTheAuthTypeRequiresIt(AuthType authType, String field) {
+    void refusesBlankFieldOnlyWhenRequired(AuthType authType, String field) {
         ConnectionRecord.Builder builder = withFields(authType,
                 FIELDS.stream().filter(f -> !f.equals(field)).toList());
 
@@ -70,7 +70,7 @@ class ConnectionRecordTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"", "   "})
-    void aBlankRequiredFieldIsRefusedLikeAMissingOne(String blank) {
+    void blankRequiredFieldIsRefusedLikeMissing(String blank) {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> base(AuthType.CDS_HOOKS_JWT).clientId(blank).keyId("k").build());
         assertTrue(e.getMessage().startsWith("clientId is required"), e.getMessage());

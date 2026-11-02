@@ -78,7 +78,7 @@ class EndpointUrlsTest {
 
     @ParameterizedTest
     @EnumSource(AuthType.class)
-    void refusesBaseUrlFirstWhenEveryUrlIsRemoteHttp(AuthType authType) {
+    void baseUrlIsRefusedFirstWhenAllAreRemote(AuthType authType) {
         // baseUrl is always checked before the token and JWKS URLs, so it is the one named when all three are bad.
         ConnectionRecord record = ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX)
                 .baseUrl("http://remote.example/r4").authType(authType).clientId("c").keyId("k")
