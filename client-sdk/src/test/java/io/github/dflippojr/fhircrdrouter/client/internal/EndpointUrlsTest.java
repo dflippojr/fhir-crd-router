@@ -76,6 +76,18 @@ class EndpointUrlsTest {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(AuthType.class)
+    void refusesBaseUrlFirstWhenEveryUrlIsRemoteHttp(AuthType authType) {
+        // baseUrl is always checked before the token and JWKS URLs, so it is the one named when all three are bad.
+        ConnectionRecord record = ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX)
+                .baseUrl("http://remote.example/r4").authType(authType).clientId("c").keyId("k")
+                .tokenEndpoint("http://remote.example/token").jwksUrl("http://remote.example/jwks.json").build();
+
+        assertEquals("baseUrl", assertThrows(EndpointUrlException.class,
+                () -> EndpointUrls.requireUsable(record)).field());
+    }
+
     /** A record of {@code authType} whose {@code field} is {@code http://remote.example}; every other URL is https. */
     private static ConnectionRecord recordWithRemoteHttp(AuthType authType, String field) {
         String baseUrl = field.equals("baseUrl") ? "http://remote.example/r4" : "https://payer.example/r4";
