@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -65,6 +66,14 @@ class ConnectionRecordTest {
             IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
             assertTrue(e.getMessage().startsWith(required.get(present) + " is required"), e.getMessage());
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   "})
+    void aBlankRequiredFieldIsRefusedLikeAMissingOne(String blank) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> base(AuthType.CDS_HOOKS_JWT).clientId(blank).keyId("k").build());
+        assertTrue(e.getMessage().startsWith("clientId is required"), e.getMessage());
     }
 
     static Stream<Arguments> authTypeAndField() {
