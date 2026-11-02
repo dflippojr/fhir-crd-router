@@ -108,8 +108,15 @@ class EndpointUrlsTest {
     @ParameterizedTest
     @ValueSource(strings = {"localhost.evil.example", "127.0.0.1.evil.example", "evil-localhost", "localhost.",
             "127.0.0.256", "127.0.0", "127.1", "127.000.000.001", "128.0.0.1", "0.0.0.0", "[::]", "[::2]",
-            "[fe80::1]", "[::ffff:10.0.0.1]", "[not-an-address]", "[::1", "example.org"})
+            "[fe80::1]", "[::ffff:10.0.0.1]", "[not-an-address]", "example.org"})
     void notLoopbackHosts(String host) {
+        assertFalse(EndpointUrls.isLoopback(host), host);
+    }
+
+    /** A bracket without its partner is not an IPv6 literal, so it is never parsed as one. */
+    @ParameterizedTest
+    @ValueSource(strings = {"[::1", "[localhost"})
+    void unbalancedBracketsAreNotLoopback(String host) {
         assertFalse(EndpointUrls.isLoopback(host), host);
     }
 
