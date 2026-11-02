@@ -1,7 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
 import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 
 import java.net.InetAddress;
@@ -41,8 +40,7 @@ public final class EndpointUrls {
      */
     public static void requireUsable(ConnectionRecord record) {
         require(record, "baseUrl", record.baseUrl());
-        if (record.authType() == AuthType.OAUTH2_CLIENT_CREDENTIALS
-                || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+        if (record.authType().usesOAuth2Token()) {
             requireTokenUrls(record);
         } else {
             requireJwksUrl(record);
@@ -78,9 +76,7 @@ public final class EndpointUrls {
 
     /** {@code jwksUrl}, when set on a record whose auth type signs a JWT that carries it as {@code jku}. */
     private static void requireJwksUrl(ConnectionRecord record) {
-        boolean signsJwt = record.authType() == AuthType.CDS_HOOKS_JWT
-                || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT;
-        if (signsJwt && record.jwksUrl() != null) {
+        if (record.authType().signsJwt() && record.jwksUrl() != null) {
             require(record, "jwksUrl", record.jwksUrl());
         }
     }

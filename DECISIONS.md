@@ -334,3 +334,22 @@ request, and it is one of `gate`'s needs.
   may contain a newline; split into lines, an added file named
   `a<LF>M<LF>DECISIONS.md` would pose as a changed `DECISIONS.md` and unlock
   the escape hatch.
+
+## One definition for the auth-type predicates (2026-11-02, #185)
+
+`AuthType` has two public predicates: `usesOAuth2Token()`, true for the two
+OAuth2 client-credentials types, and `signsJwt()`, true for
+`OAUTH2_PRIVATE_KEY_JWT` and `CDS_HOOKS_JWT`. `ConnectionRecord`,
+`EndpointUrls` and `CdsHooksClient` ask them, not compare constants, so a new
+auth type is decided in one place. The predicates are a small addition to the
+`directory-core` API, chosen over a `core.internal` helper so the downstream
+workbench can use them too.
+
+Both are exhaustive switches with no `default`. Adding a constant is a compile
+error until its author says which predicate it satisfies. The `||` chains they
+replace would have let a new constant fall through silently. The `switch` in
+`CdsHooksClient.applyAuth` and `OAuth2TokenClient`'s single-constant check stay
+as they are.
+
+Behaviour is unchanged. `ConnectionRecordTest` and `EndpointUrlsTest` pin, for
+all five types, which fields each requires and which URLs each checks.
