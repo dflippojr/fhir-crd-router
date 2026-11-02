@@ -48,9 +48,11 @@ import java.util.function.Supplier;
  * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
  * <p>Tokens are cached in memory per (token endpoint, client ID, scopes,
- * mTLS credential ref), so records that reach the token endpoint under different
- * client certificates, or one with and one without mTLS, never share a
- * (possibly certificate-bound, RFC 8705) token. Entries last
+ * mTLS credential ref, {@code credentialRef}, auth type), so records that reach the token
+ * endpoint under different client certificates, or one with and one without mTLS, never
+ * share a (possibly certificate-bound, RFC 8705) token, and a record is never served a
+ * token that another record's credential earned (#192). The secret passed to
+ * {@code fetchAccessToken} is not in the key, only the record's reference to it. Entries last
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
  * capped at {@link #MAX_CACHE_LIFETIME}. {@code expires_in} may be a positive whole
  * number or, for servers that send it as a string, a numeric string such as
@@ -328,15 +330,20 @@ public final class OAuth2TokenClient {
 
     // tokenEndpoint and clientId presence are already enforced by ConnectionRecord for this authType.
     private static CacheKey cacheKey(ConnectionRecord record) {
-        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef());
+        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef(),
+                record.credentialRef(), record.authType());
     }
 
     private static String formEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    /** {@code mtlsCredentialRef} is null for records without mTLS. */
-    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef) { }
+    /**
+     * {@code mtlsCredentialRef} is null for records without mTLS, and {@code credentialRef} for records without
+     * one. OAuth2TokenCacheKeyTest fails when a new {@code ConnectionRecord} component is not classified.
+     */
+    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef,
+                            String credentialRef, AuthType authType) { }
 
     private record CachedToken(String accessToken, Instant refreshAt) { }
 }

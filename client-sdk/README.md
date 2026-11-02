@@ -331,9 +331,13 @@ fails the call as a `PayerCallException` with that status.
 | `CDS_HOOKS_JWT` | A CDS Hooks 2.0 client JWT, signed per request | `clientId` (the `iss`), `keyId`, `jwksUrl`?, `tenant`? | PKCS#8 PEM private key |
 
 OAuth2 tokens are cached in memory per (token endpoint, client ID, scopes,
-`mtlsCredentialRef`), so connections that call the token endpoint under
-different client certificates, or one with and one without mTLS, never share a
-token (an RFC 8705 certificate-bound token only works with its own certificate).
+`mtlsCredentialRef`, `credentialRef`, `authType`), so connections that call the
+token endpoint under different client certificates, or one with and one without
+mTLS, never share a token (an RFC 8705 certificate-bound token only works with its
+own certificate), and a connection is never served a token that another
+connection's credential earned. `keyId` and `jwksUrl` are not in the key, so a wrong
+`keyId` on a connection that shares a cached token is not noticed until that token
+expires.
 Entries last until 30 seconds before `expires_in`, with `expires_in` capped at 24 hours.
 `expires_in` is accepted as a positive whole number or, for authorization servers
 that send it as a string (older Azure AD endpoints), a numeric string such as
