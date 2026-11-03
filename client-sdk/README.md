@@ -63,6 +63,14 @@ retries when they apply) through the same pipeline as `discoverServicesRaw`, so 
 exchange listener sees it as usual. It never calls a hook. `ok` is true only when
 discovery returns 2xx, parses as JSON and `CdsDiscoveryValidator` has no findings.
 
+On an OAuth2 connection `verify` always exchanges a fresh token: exactly one token
+request per call, whatever the cache holds, so a secret rotated to a bad value under
+the same `credentialRef` fails `verify` with the token endpoint's status instead of
+passing until the cached token expires. Payer calls keep using the cache. `verify`
+neither reads nor changes the cache: a failure leaves a cached token in place and a
+success does not refresh it. Its token serves only that call and its configured
+retries, and a discovery 401 is reported without a second exchange.
+
 | Outcome | `findings` | `failurePhase` | `failureStatus` |
 | --- | --- | --- | --- |
 | Valid catalog | empty | empty | empty |
@@ -350,7 +358,7 @@ fetches for the same cache key share one token request.
 
 For both OAuth2 auth types, the client secret or private key is looked up from
 the `CredentialProvider` only when a token request is actually sent: on a cold
-cache, after expiry, or after a 401. A call served from a cached token does not
+cache, after expiry, after a 401, or on every `verify`. A call served from a cached token does not
 resolve it, so an audited provider records no `credential.resolve.*` event for
 it. As a result, a secret that is missing from the provider, or removed after a
 token was issued, is reported when the next token request needs it, not on calls
@@ -543,6 +551,8 @@ Exchanges are delivered before parsing, including failed or malformed responses.
 
 OAuth2's 401 retry reports TOKEN 1, HOOK 401 attempt 1, TOKEN 2, HOOK attempt 2
 when a fresh token is required initially. Cached tokens produce no HTTP exchange.
+`verify` always reports one TOKEN exchange on an OAuth2 connection, and does not
+repeat it after a discovery 401.
 Discovery retries use the same attempt numbering. Callbacks run synchronously in
 send order; exceptions from the listener are ignored. Keep callbacks brief, and
 make listeners thread safe if you share the SDK client across threads. No logging,
