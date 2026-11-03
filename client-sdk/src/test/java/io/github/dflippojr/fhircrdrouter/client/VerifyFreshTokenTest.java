@@ -71,6 +71,8 @@ class VerifyFreshTokenTest {
 
     @Test
     void aSecretRotatedToAWrongValueFailsTheNextVerifyDespiteAWarmCache() {
+        // verify never fills the cache, so a payer call warms it.
+        client.callHook(record(), "order-sign-crd", REQUEST);
         assertTrue(client.verify(record()).ok());
         secret = "wrong-secret";
 
