@@ -119,11 +119,11 @@ class SharedRegistrationCredentialTest {
 
     @Test
     void aFailedRecordLeavesTheWorkingRecordsTokenCached() {
-        assertTrue(client.verify(record("good")).ok());
+        client.callHook(record("good"), "order-sign-crd", REQUEST);
         assertFalse(client.verify(record("bad")).ok());
         assertEquals(1, goodResolves.get());
 
-        assertTrue(client.verify(record("good")).ok());
+        client.callHook(record("good"), "order-sign-crd", REQUEST);
 
         assertEquals(1, goodResolves.get(), "a warm call must not read the secret (#52)");
         assertEquals(2, tokenRequests.get());
