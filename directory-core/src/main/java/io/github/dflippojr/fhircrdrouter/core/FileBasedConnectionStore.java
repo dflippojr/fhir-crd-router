@@ -197,11 +197,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         Path dir = path.toAbsolutePath().getParent();
         Path tmp = null;
         try {
-            Files.createDirectories(dir);
             // Under the write lock and, by the single-process assumption, the only writer of this
-            // file: every <name>.*.tmp here is a killed writer's orphan (#120).
+            // file: every <name>.*.tmp here is a killed writer's orphan (#120). A missing directory
+            // has none, and the sweep ignores it; the temp-file call below creates it.
             AtomicFiles.sweepOrphanedTemps(dir, path, sweepDeleter);
-            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, path);
+            tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, path);
             mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             mapper.writeValue(buffer, records);

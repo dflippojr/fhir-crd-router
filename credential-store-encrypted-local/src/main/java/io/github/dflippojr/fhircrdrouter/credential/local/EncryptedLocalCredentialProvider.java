@@ -600,9 +600,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             KeyGenerator keyGen = KeyGenerator.getInstance(AES);
             keyGen.init(KEY_BITS);
             SecretKey generated = keyGen.generateKey();
-            Path dir = keyFile.toAbsolutePath().getParent();
-            Files.createDirectories(dir);
-            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, keyFile);
+            tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, keyFile);
             AtomicFiles.writeDurably(tmp, generated.getEncoded(), outputWrapper);
             if (publishWithoutReplacing(tmp)) {
                 audit(context, AuditEvent.Outcome.SUCCEEDED);
@@ -746,9 +744,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             props.store(buffer, "fhir-crd-router encrypted credential references — values are AES-GCM ciphertext, not raw secrets");
             byte[] bytes = buffer.toByteArray();
-            Path dir = secretsFile.toAbsolutePath().getParent();
-            Files.createDirectories(dir);
-            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, secretsFile);
+            tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, secretsFile);
             AtomicFiles.writeDurably(tmp, bytes, outputWrapper);
             AtomicFiles.replace(tmp, secretsFile);
             tmp = null;
