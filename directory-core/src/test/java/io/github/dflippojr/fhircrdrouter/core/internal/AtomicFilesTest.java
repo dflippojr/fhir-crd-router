@@ -77,6 +77,55 @@ class AtomicFilesTest {
     }
 
     @Test
+    void temporaryFileNextToATargetIsCreatedInItsDirectoryCreatingTheMissingParents(@TempDir Path dir)
+            throws IOException {
+        Path target = dir.resolve("a/b/store.yaml");
+        List<Path> parents = new ArrayList<>();
+        List<String> requested = new ArrayList<>();
+        AtomicFiles.TempFileCreator recording = (parent, prefix, suffix, attrs) -> {
+            parents.add(parent);
+            requested.add(requested(attrs));
+            return Files.createTempFile(parent, prefix, suffix, attrs);
+        };
+
+        Path tmp = AtomicFiles.createOwnerOnlyTempNextTo(recording, target);
+
+        assertEquals(List.of(dir.resolve("a/b")), parents);
+        assertEquals(List.of(POSIX ? "rw-------" : "none"), requested);
+        assertEquals(dir.resolve("a/b"), tmp.getParent());
+        String name = tmp.getFileName().toString();
+        assertTrue(name.startsWith("store.yaml.") && name.endsWith(".tmp"), name);
+        if (POSIX) {
+            assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(tmp)));
+        }
+    }
+
+    @Test
+    void temporaryFileNextToARelativeTargetIsCreatedInItsAbsoluteDirectory() throws IOException {
+        Path target = Path.of("store.yaml");
+        List<Path> parents = new ArrayList<>();
+        AtomicFiles.TempFileCreator recording = (parent, prefix, suffix, attrs) -> {
+            parents.add(parent);
+            return parent.resolve(prefix + "x" + suffix);
+        };
+
+        AtomicFiles.createOwnerOnlyTempNextTo(recording, target);
+
+        assertEquals(List.of(target.toAbsolutePath().getParent()), parents);
+    }
+
+    @Test
+    void restrictToOwnerNarrowsAWideFileToReadWriteForTheOwnerAlone(@TempDir Path dir) throws IOException {
+        assumeTrue(POSIX);
+        Path file = Files.createFile(dir.resolve("f"));
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rwxrwxrwx"));
+
+        AtomicFiles.restrictToOwner(file);
+
+        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+    }
+
+    @Test
     void posixFollowsTheFileSystemOfThePathAsked(@TempDir Path dir) throws IOException {
         assertEquals(POSIX, AtomicFiles.posix(dir));
         try (FileSystem zip = zipFileSystem(dir)) {

@@ -67,6 +67,21 @@ public final class AtomicFiles {
         return PosixFilePermissions.asFileAttribute(OWNER_ONLY);
     }
 
+    /** Sets {@code path}'s mode to 600, for a file that already exists where {@link #posix} holds. */
+    public static void restrictToOwner(Path path) throws IOException {
+        Files.setPosixFilePermissions(path, OWNER_ONLY);
+    }
+
+    /**
+     * As {@link #createOwnerOnlyTemp(TempFileCreator, Path, Path)} in {@code target}'s directory,
+     * creating that directory and its parents first if they do not exist.
+     */
+    public static Path createOwnerOnlyTempNextTo(TempFileCreator tempFiles, Path target) throws IOException {
+        Path dir = target.toAbsolutePath().getParent();
+        Files.createDirectories(dir);
+        return createOwnerOnlyTemp(tempFiles, dir, target);
+    }
+
     /**
      * A {@code <target>.*.tmp} file in {@code dir}, owner-only from creation where POSIX permissions
      * exist (#99): the mode is set by the create call itself, never by a later chmod.
