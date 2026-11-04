@@ -10,7 +10,6 @@ import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
@@ -429,7 +428,7 @@ public final class CdsHooksClient {
                 if (status / 100 == 2) {
                     return response;
                 }
-                if (status == 401 && isOAuth2(record) && freshToken == null && !reauthenticated) {
+                if (status == 401 && record.authType().usesOAuth2Token() && freshToken == null && !reauthenticated) {
                     reauthenticated = true;
                     oauth2TokenClient.invalidate(record);
                     attempt++;
@@ -505,11 +504,6 @@ public final class CdsHooksClient {
         }
     }
 
-    private static boolean isOAuth2(ConnectionRecord record) {
-        return record.authType() == AuthType.OAUTH2_CLIENT_CREDENTIALS
-                || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT;
-    }
-
     /** The shared client, or one bound to this record's client certificate when mutual TLS is configured. */
     HttpClient httpClientFor(ConnectionRecord record) {
         if (record.mtlsCredentialRef() == null) {
@@ -561,7 +555,7 @@ public final class CdsHooksClient {
 
     private String requireSecret(ConnectionRecord record) {
         // An OAuth2 secret authenticates the token exchange; any other secret, the request itself.
-        PayerCallPhase phase = isOAuth2(record) ? PayerCallPhase.TOKEN : null;
+        PayerCallPhase phase = record.authType().usesOAuth2Token() ? PayerCallPhase.TOKEN : null;
         if (record.credentialRef() == null) {
             throw new MissingCredentialException("authType=" + record.authType()
                     + " but no credentialRef set for payerId=" + record.payerId(), phase);
