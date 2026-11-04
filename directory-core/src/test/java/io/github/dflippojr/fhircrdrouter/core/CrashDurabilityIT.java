@@ -226,6 +226,7 @@ class CrashDurabilityIT {
                 }
             }
             probeWrite(dir.resolve("connections.yaml"));
+            checkPermissions(where);
             assertEquals(List.of(), temporaryFiles(), where + ": a write left another writer's temporary file behind");
         }
 

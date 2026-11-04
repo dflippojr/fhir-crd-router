@@ -242,6 +242,7 @@ class CrashDurabilityIT {
             fresh.remove(PROBE);
             assertEquals(beforeProbe, entries(main.resolve("secrets.properties")),
                     where + ": the probe write changed the references in main");
+            checkPermissions(where);
             assertEquals(List.of(), temporaryFiles(), where + ": a write left another writer's temporary file behind");
         }
 

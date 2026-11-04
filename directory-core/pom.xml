@@ -18,7 +18,7 @@
   </description>
 
   <properties>
-    <!-- JaCoCo floor (see the parent pom): measured 2026-11-03 at 0.9705 line, 0.9478 branch (#120). -->
+    <!-- JaCoCo floor (see the parent pom): measured 2026-11-03 on Linux at 0.9705 line, 0.9478 branch (#120). -->
     <jacoco.minimum.line>0.9605</jacoco.minimum.line>
     <jacoco.minimum.branch>0.9378</jacoco.minimum.branch>
   </properties>
