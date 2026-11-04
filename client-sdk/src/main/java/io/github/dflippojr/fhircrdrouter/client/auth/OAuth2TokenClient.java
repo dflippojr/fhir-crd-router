@@ -189,6 +189,20 @@ public final class OAuth2TokenClient {
         }
     }
 
+    /**
+     * Always sends one token request and returns the token it earns, for a caller that must prove the
+     * credential works now ({@code CdsHooksClient.verify}, #218). Neither reads nor changes the cache, and
+     * neither joins nor detaches an in-flight fetch: a failure leaves a cached token in place.
+     *
+     * @param secret supplies the client secret, or the PEM private key for {@code OAUTH2_PRIVATE_KEY_JWT}
+     */
+    public String exchangeFreshToken(HttpClient client, ConnectionRecord record, Supplier<String> secret, int attempt) {
+        Objects.requireNonNull(secret, "secret");
+        EndpointUrls.requireNoRedirects(client);
+        URI endpoint = EndpointUrls.requireTokenUrls(record);
+        return requestToken(client, record, endpoint, secret.get(), attempt).accessToken();
+    }
+
     private static CachedToken await(CompletableFuture<CachedToken> flight) {
         try {
             return flight.join();

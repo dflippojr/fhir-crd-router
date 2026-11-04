@@ -205,7 +205,7 @@ public final class CdsHooksClient {
      */
     public JsonNode discoverServicesRaw(ConnectionRecord record) {
         String context = discoveryContext(record);
-        return readBody(sendDiscovery(record, context), context);
+        return readBody(sendDiscovery(record, context, null), context);
     }
 
     /**
@@ -217,6 +217,12 @@ public final class CdsHooksClient {
      * headers, credential contents or exception messages. The one exception is an
      * {@link AuditPersistenceException} from an audited provider, which propagates because the
      * audit protocol says to stop and report; a null record throws {@link NullPointerException}.
+     *
+     * <p>An OAuth2 connection always exchanges a fresh token: exactly one token request per call, whatever
+     * the cache holds, so a secret rotated to a bad value fails here rather than when the cached token
+     * expires (#218). That token is used only for this call, including its configured retries. A discovery
+     * 401 is reported without a second exchange. The token cache is neither read nor changed, so payer calls
+     * are unaffected by a failed {@code verify} and are not refreshed by a successful one.
      *
      * <p>Runs on a record of any {@link io.github.dflippojr.fhircrdrouter.core.ConnectionStatus}, so an
      * {@code INACTIVE} or {@code DEPRECATED} connection can be checked before it is reactivated;
@@ -232,7 +238,7 @@ public final class CdsHooksClient {
         Instant checkedAt = Instant.now();
         long started = System.nanoTime();
         try {
-            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record));
+            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record), new FreshToken());
             JsonNode catalog;
             try {
                 catalog = mapper.readTree(response.body());
@@ -314,8 +320,8 @@ public final class CdsHooksClient {
         }
     }
 
-    private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context) {
-        return send(record, PayerCallPhase.DISCOVERY, context, null, () -> HttpRequest.newBuilder()
+    private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context, FreshToken freshToken) {
+        return send(record, PayerCallPhase.DISCOVERY, context, null, freshToken, () -> HttpRequest.newBuilder()
                 .uri(URI.create(servicesUrl(record)))
                 .GET());
     }
@@ -330,7 +336,7 @@ public final class CdsHooksClient {
         } catch (IOException e) {
             throw new RouterException(context + " could not serialize request", e);
         }
-        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, () -> HttpRequest.newBuilder()
+        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
                 .uri(URI.create(servicesUrl(record) + "/" + segment))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
@@ -399,9 +405,11 @@ public final class CdsHooksClient {
     /**
      * Sends a request with auth applied. For OAuth2 connections a 401 drops the
      * cached token and retries once with a fresh one, since payers can revoke
-     * tokens before their advertised expiry.
+     * tokens before their advertised expiry. With a {@code freshToken} the call bypasses the cache: a 401 on
+     * the token just issued is the result, so nothing is dropped and nothing is retried.
      */
-    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body, Supplier<HttpRequest.Builder> requestFactory) {
+    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body,
+                                      FreshToken freshToken, Supplier<HttpRequest.Builder> requestFactory) {
         // CDS Hooks 2.0, Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS
         // for every exchange: refuse the record's URLs before any credential read, token fetch or request (#156).
         EndpointUrls.requireUsable(record);
@@ -414,13 +422,13 @@ public final class CdsHooksClient {
             boolean reauthenticated = false;
             Duration waited = Duration.ZERO;
             while (true) {
-                Attempt sent = sendOnce(client, record, phase, body, attempt, requestFactory);
+                Attempt sent = sendOnce(client, record, phase, body, attempt, freshToken, requestFactory);
                 HttpResponse<String> response = sent.response();
                 int status = response.statusCode();
                 if (status / 100 == 2) {
                     return response;
                 }
-                if (status == 401 && record.authType().usesOAuth2Token() && !reauthenticated) {
+                if (status == 401 && record.authType().usesOAuth2Token() && freshToken == null && !reauthenticated) {
                     reauthenticated = true;
                     oauth2TokenClient.invalidate(record);
                     attempt++;
@@ -459,24 +467,38 @@ public final class CdsHooksClient {
     private record Attempt(HttpResponse<String> response, String credential) { }
 
     private Attempt sendOnce(HttpClient client, ConnectionRecord record,
-                             PayerCallPhase phase, String body, int attempt,
+                             PayerCallPhase phase, String body, int attempt, FreshToken freshToken,
                              Supplier<HttpRequest.Builder> requestFactory)
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = requestFactory.get().timeout(requestTimeout);
         URI uri = builder.copy().build().uri();
-        applyAuth(client, builder, uri, record, attempt);
+        applyAuth(client, builder, uri, record, attempt, freshToken);
         HttpRequest request = builder.build();
         String credential = EchoedCredentials.fromAuthorization(request.headers().firstValue("Authorization").orElse(null));
         return new Attempt(ExchangeSender.send(client, request, body, record, phase, attempt, exchangeListener),
                 credential);
     }
 
-    private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt) {
+    /** The one token of a call that bypasses the cache: exchanged on first use, then reused by its retries. */
+    private final class FreshToken {
+        private String token;
+
+        String get(HttpClient client, ConnectionRecord record, int attempt) {
+            if (token == null) {
+                token = oauth2TokenClient.exchangeFreshToken(client, record, () -> requireSecret(record), attempt);
+            }
+            return token;
+        }
+    }
+
+    private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt,
+                           FreshToken freshToken) {
         switch (record.authType()) {
             case NONE -> { /* no-op */ }
             case API_KEY -> builder.header("Authorization", "Bearer " + requireApiKey(record));
             case OAUTH2_CLIENT_CREDENTIALS, OAUTH2_PRIVATE_KEY_JWT -> builder.header("Authorization",
-                    "Bearer " + oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt));
+                    "Bearer " + (freshToken != null ? freshToken.get(client, record, attempt)
+                            : oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt)));
             case CDS_HOOKS_JWT -> builder.header("Authorization",
                     "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
         }
