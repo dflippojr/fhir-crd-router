@@ -56,7 +56,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * They can also fail: a writer's sweep may delete the temporary file another
  * instance is still filling, and that instance's write then fails with an
  * {@link UncheckedIOException} and leaves the file as it was. Threads sharing
- * one instance are safe.
+ * one instance are safe. A {@link #save} or {@link #delete} also sweeps any
+ * {@code <name>.*.tmp} as an orphan, so keep the file in a directory where no
+ * other file name extends this one's (for example {@code a.yaml} and
+ * {@code a.yaml.x}).
  */
 public final class FileBasedConnectionStore implements ConnectionStore {
 
