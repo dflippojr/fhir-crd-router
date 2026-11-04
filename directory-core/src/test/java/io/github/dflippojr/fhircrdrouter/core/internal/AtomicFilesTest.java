@@ -289,7 +289,7 @@ class AtomicFilesTest {
         Path target = dir.resolve("store.yaml");
         List<String> orphans = List.of("store.yaml.1.tmp", "store.yaml.x.tmp", "store.yaml...tmp", "store.yaml.a.b.tmp");
         List<String> survivors = List.of("store.yaml", "store.yaml.tmp", "store.yaml..tmp", "store.yaml.1.bak", "store.yaml.1.tmp.bak",
-                "other.yaml.1.tmp", "astore.yaml.1.tmp", "store.yml.1.tmp", "STORE.YAML.1.tmp");
+                "other.yaml.1.tmp", "astore.yaml.1.tmp", "store.yml.1.tmp", "STORE.YAML.9.tmp");
         for (String name : orphans) {
             Files.writeString(dir.resolve(name), name);
         }
