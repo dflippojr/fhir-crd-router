@@ -3,7 +3,14 @@ package io.github.dflippojr.fhircrdrouter.core;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
+
 import java.io.IOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -47,6 +54,49 @@ class FileBasedConnectionStoreSweepTest {
 
         planted.assertOnlyOrphansRemoved();
         assertEquals(List.of(record("PAYER-1")), new FileBasedConnectionStore(dir.resolve(NAME)).findAll());
+    }
+
+    @Test
+    void aSweepThatCannotDeleteNeverFailsTheWrite(@TempDir Path dir) throws IOException {
+        Path orphan = write(dir.resolve(NAME + ".1.tmp"));
+        List<Path> refused = new ArrayList<>();
+        AtomicFiles.Deleter refusing = file -> {
+            refused.add(file.getFileName());
+            throw new AccessDeniedException(file.toString());
+        };
+        var store = new FileBasedConnectionStore(dir.resolve(NAME), mapper(), AtomicFiles::move,
+                Files::createTempFile, refusing);
+
+        store.save(record("PAYER-1"));
+        store.save(record("PAYER-2"));
+        store.delete("PAYER-1", Environment.SANDBOX);
+
+        assertEquals(List.of(record("PAYER-2")), new FileBasedConnectionStore(dir.resolve(NAME)).findAll());
+        assertEquals(List.of(orphan.getFileName(), orphan.getFileName(), orphan.getFileName()), refused);
+        assertTrue(Files.exists(orphan));
+    }
+
+    @Test
+    void readsRemoveNothing(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve(NAME);
+        new FileBasedConnectionStore(file).save(record("PAYER-1"));
+        Path orphan = write(dir.resolve(NAME + ".1.tmp"));
+        var store = new FileBasedConnectionStore(file);
+
+        assertEquals(1, store.findAll().size());
+        assertEquals(1, store.findByPayerId("PAYER-1").size());
+        assertTrue(store.findByPayerIdAndEnvironment("PAYER-1", Environment.SANDBOX).isPresent());
+        // A delete that matches nothing writes nothing, so it does not sweep either.
+        store.delete("PAYER-9", Environment.SANDBOX);
+
+        assertTrue(Files.exists(orphan), "a read removed an orphaned temporary file");
+    }
+
+    private static ObjectMapper mapper() {
+        return new ObjectMapper(new YAMLFactory())
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     /** Orphans of {@link #NAME} and the files next to them that a sweep must leave alone. */

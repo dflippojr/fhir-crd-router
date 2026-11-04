@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -13,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -72,6 +74,48 @@ class EncryptedLocalCredentialProviderSweepTest {
         var fresh = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
         assertEquals(Optional.empty(), fresh.resolve("gone"));
         assertEquals(Optional.of("synthetic-secret-kept"), fresh.resolve("kept"));
+    }
+
+    @Test
+    void aSweepThatCannotDeleteNeverFailsTheWrite(@TempDir Path dir) throws IOException {
+        Path secretsOrphan = write(dir.resolve("secrets.properties.1.tmp"));
+        Path keyOrphan = write(dir.resolve("key.bin.2.tmp"));
+        List<Path> refused = new ArrayList<>();
+        var provider = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO, System::nanoTime,
+                UnaryOperator.identity(), Files::createTempFile, file -> {
+                    refused.add(file.getFileName());
+                    throw new AccessDeniedException(file.toString());
+                });
+
+        provider.put("first", "synthetic-secret-first");
+        provider.put("second", "synthetic-secret-second");
+        provider.remove("first");
+
+        var fresh = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
+        assertEquals(Optional.empty(), fresh.resolve("first"));
+        assertEquals(Optional.of("synthetic-secret-second"), fresh.resolve("second"));
+        List<Path> expected = new ArrayList<>();
+        for (int write = 0; write < 3; write++) {
+            expected.add(secretsOrphan.getFileName());
+            expected.add(keyOrphan.getFileName());
+        }
+        assertEquals(expected, refused);
+        assertTrue(Files.exists(secretsOrphan));
+        assertTrue(Files.exists(keyOrphan));
+    }
+
+    @Test
+    void resolveRemovesNothing(@TempDir Path dir) throws IOException {
+        new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO).put("ref", "synthetic-secret");
+        Path secretsOrphan = write(dir.resolve("secrets.properties.1.tmp"));
+        Path keyOrphan = write(dir.resolve("key.bin.2.tmp"));
+
+        var fresh = new EncryptedLocalCredentialProvider(dir, null, Duration.ZERO);
+        assertEquals(Optional.of("synthetic-secret"), fresh.resolve("ref"));
+        assertEquals(Optional.empty(), fresh.resolve("missing"));
+
+        assertTrue(Files.exists(secretsOrphan), "resolve removed an orphaned temporary file");
+        assertTrue(Files.exists(keyOrphan), "resolve removed an orphaned temporary file");
     }
 
     /** {@code key.bin} and {@code secrets.lock}, which a sweep never touches. */
