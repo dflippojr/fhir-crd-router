@@ -225,7 +225,10 @@ class CrashDurabilityIT {
                             operations.isAcknowledged("create", name), where);
                 }
             }
+            List<ConnectionRecord> beforeProbe = fresh.findAll();
             probeWrite(dir.resolve("connections.yaml"));
+            assertEquals(beforeProbe, new FileBasedConnectionStore(dir.resolve("connections.yaml")).findAll(),
+                    where + ": the probe write changed the records in connections.yaml");
             checkPermissions(where);
             assertEquals(List.of(), temporaryFiles(), where + ": a write left another writer's temporary file behind");
         }
