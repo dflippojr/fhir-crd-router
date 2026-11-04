@@ -54,6 +54,8 @@ class CrashDurabilityIT {
     private static final int ITERATIONS_PER_LANE = 25;
     private static final int MAX_KILL_DELAY_MS = 250;
     private static final boolean POSIX = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    /** The payer the parent's probe writes save and delete; children name theirs {@code P-i<n>-<m>}. */
+    private static final String PROBE = "PROBE-120";
 
     @Test
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -214,17 +216,32 @@ class CrashDurabilityIT {
             unknown.removeAll(operations.started("save"));
             assertEquals(Set.of(), unknown, where + ": the store holds records nobody saved");
 
+            // Checked and counted before any probe write sweeps the temporary files that kills left.
+            checkPermissions(where);
+            leftovers += temporaryFiles().size();
             for (String name : operations.started("create")) {
                 if (name.startsWith("P-i" + iteration + "-")) {
                     checkFirstSave(dir.resolve("first-use").resolve(name + ".yaml"), name,
                             operations.isAcknowledged("create", name), where);
                 }
             }
+            List<ConnectionRecord> beforeProbe = fresh.findAll();
+            probeWrite(dir.resolve("connections.yaml"));
+            assertEquals(beforeProbe, new FileBasedConnectionStore(dir.resolve("connections.yaml")).findAll(),
+                    where + ": the probe write changed the records in connections.yaml");
             checkPermissions(where);
-            // #120: nothing removes the temporary file of a write that a kill interrupted, so "no .tmp
-            // files are left behind" does not hold yet. Until it does, a kill may leave at most one.
-            leftovers = temporaryFiles().size();
-            assertTrue(leftovers <= iteration + 1, where + ": more temporary files than kills: " + temporaryFiles());
+            assertEquals(List.of(), temporaryFiles(), where + ": a write left another writer's temporary file behind");
+        }
+
+        /**
+         * One completed write to {@code file}, which removes the temporary files that killed writers
+         * left next to it (#120): a save and a delete of a reserved record no child ever saves, so the
+         * store's records are as they were.
+         */
+        private static void probeWrite(Path file) {
+            var store = new FileBasedConnectionStore(file);
+            store.save(record(PROBE));
+            store.delete(PROBE, Environment.SANDBOX);
         }
 
         private List<Path> temporaryFiles() throws IOException {
@@ -242,6 +259,9 @@ class CrashDurabilityIT {
             } else {
                 assertTrue(all.isEmpty() || all.equals(List.of(record(payerId))), where + ": " + file.getFileName());
             }
+            probeWrite(file);
+            assertEquals(all, new FileBasedConnectionStore(file).findAll(), where + ": the probe write changed "
+                    + file.getFileName());
         }
 
         /** Every file in the lane is owner-only where POSIX applies, including temporary files a kill left. */

@@ -202,6 +202,41 @@ host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
   refusal. `EndpointUrls.requireTokenUrls` is the shared check, also used by
   `CdsHooksClient`'s preflight.
 
+## Writes sweep killed writers' temporary files (2026-11-03, #120)
+
+Both file stores write a `<target>.<random>.tmp` file and then move it into
+place. A writer killed in between leaves the temporary file behind, one per
+interrupted write. `CrashDurabilityIT` (#99) found them. Now the next write
+deletes them first with `AtomicFiles.sweepOrphanedTemps`. It deletes only
+regular files named `<target>.` + one or more characters + `.tmp`, does not
+follow links or recurse, and ignores any failure, so a sweep never fails the
+write that runs it. Reads never sweep: they take no lock that would make
+them the only writer.
+
+- **Credential store: under the store lock.** Every
+  `secrets.properties.*.tmp` and `key.bin.*.tmp` is created while holding
+  the per-directory mutex and the OS lock on `secrets.lock`. So a `put` or
+  `remove` that holds both knows any such file is an orphan, whichever
+  process left it, and sweeps before it changes anything.
+- **Connection store: under the instance's write lock, by assumption.**
+  `FileBasedConnectionStore` has no cross-process lock. Its class Javadoc
+  already says one process, and ideally one instance, owns the file. The
+  sweep runs inside `save`/`delete`'s write lock and relies on that
+  assumption. If the assumption is broken, another instance's in-flight
+  temporary file can be deleted under it, and that instance's write fails
+  with an `UncheckedIOException` and leaves the file as it was. That is no
+  worse than the lost updates the assumption already allows. A cross-process
+  lock is out of scope.
+- **No age threshold.** Sweeping only files older than some age would
+  protect a writer in another process that breaks the assumption. But it
+  would leave a fresh orphan in place, so "a completed write leaves no
+  temporary files" could not be asserted without a clock seam. The liaison
+  accepted this on #120.
+- **Name collisions.** The pattern is a prefix match, so a connection file
+  named `a.yaml.x` in the same directory as `a.yaml` has temporary files
+  (`a.yaml.x.<n>.tmp`) that `a.yaml`'s sweep also matches. Keep connection
+  files in a directory where no file name extends another's.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub

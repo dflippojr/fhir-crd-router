@@ -6,10 +6,14 @@ import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -20,7 +24,8 @@ import java.util.function.UnaryOperator;
  * The atomic file write shared by the file-backed stores: create a {@code <target>.*.tmp} file
  * next to the target, owner-only from creation (#99), write it and force it to disk, then move it
  * over the target, so a reader sees either the old or the new complete file and a crash or full
- * disk leaves the previous content intact.
+ * disk leaves the previous content intact. A writer killed before the move leaves its temporary
+ * file behind; {@link #sweepOrphanedTemps} removes such files (#120).
  *
  * <p>Internal to this project: public only so that the store modules can call it. It is not part
  * of the library's API and may change in any release.
@@ -28,6 +33,7 @@ import java.util.function.UnaryOperator;
 public final class AtomicFiles {
 
     private static final int REPLACE_ATTEMPTS = 25;
+    private static final String TEMP_SUFFIX = ".tmp";
     private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rw-------");
 
     private AtomicFiles() {
@@ -43,6 +49,12 @@ public final class AtomicFiles {
     @FunctionalInterface
     public interface Mover {
         void move(Path tmp, Path target) throws IOException;
+    }
+
+    /** Deletes a file, as {@link Files#deleteIfExists(Path)}. */
+    @FunctionalInterface
+    public interface Deleter {
+        void delete(Path file) throws IOException;
     }
 
     /** Whether {@code path}'s file system has POSIX permissions. */
@@ -62,9 +74,50 @@ public final class AtomicFiles {
     public static Path createOwnerOnlyTemp(TempFileCreator tempFiles, Path dir, Path target) throws IOException {
         String prefix = target.getFileName() + ".";
         if (posix(dir)) {
-            return tempFiles.create(dir, prefix, ".tmp", ownerOnly());
+            return tempFiles.create(dir, prefix, TEMP_SUFFIX, ownerOnly());
         }
-        return tempFiles.create(dir, prefix, ".tmp");
+        return tempFiles.create(dir, prefix, TEMP_SUFFIX);
+    }
+
+    /** As {@link #sweepOrphanedTemps(Path, Path, Deleter)} with {@link Files#deleteIfExists}. */
+    public static void sweepOrphanedTemps(Path dir, Path target) {
+        sweepOrphanedTemps(dir, target, Files::deleteIfExists);
+    }
+
+    /**
+     * Deletes the temporary files that writers of {@code target} left in {@code dir} when they were
+     * killed before moving them into place (#120): the regular files whose name is
+     * {@code <target file name>.} followed by one or more characters and {@code .tmp}, the names
+     * {@link #createOwnerOnlyTemp} creates. Symbolic links and directories are left alone, links are
+     * not followed and {@code dir} is not searched recursively.
+     *
+     * <p>The caller must be the only writer of {@code target}, or a temporary file another writer is
+     * still filling is deleted under it. Best effort: a failure to list {@code dir} or to delete a
+     * file is ignored, so the sweep never fails the write that runs it.
+     */
+    public static void sweepOrphanedTemps(Path dir, Path target, Deleter deleter) {
+        String prefix = target.getFileName() + ".";
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
+            for (Path entry : entries) {
+                String name = entry.getFileName().toString();
+                if (name.length() > prefix.length() + TEMP_SUFFIX.length()
+                        && name.startsWith(prefix) && name.endsWith(TEMP_SUFFIX)) {
+                    deleteIfRegularFile(entry, deleter);
+                }
+            }
+        } catch (IOException | DirectoryIteratorException ignored) {
+            // Best effort; the next write sweeps again.
+        }
+    }
+
+    private static void deleteIfRegularFile(Path file, Deleter deleter) {
+        try {
+            if (Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
+                deleter.delete(file);
+            }
+        } catch (IOException ignored) {
+            // Best effort: on Windows, for example, a file another handle has open cannot be deleted.
+        }
     }
 
     /** Replaces the content of the existing {@code file} with {@code bytes} and forces it to disk. */

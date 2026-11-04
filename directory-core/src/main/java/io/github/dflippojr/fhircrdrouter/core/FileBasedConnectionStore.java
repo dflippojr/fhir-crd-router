@@ -27,7 +27,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *
  * <p>Each write goes to a temporary file ({@code <name>.*.tmp}) in the same
  * directory, is flushed to disk, and is then moved over the target, so a
- * crash or full disk never leaves a truncated file behind.
+ * crash or full disk never leaves a truncated file behind. A writer killed
+ * before the move leaves its temporary file behind; the next {@link #save} or
+ * {@link #delete} that writes the file removes every such file under its write
+ * lock (#120). That relies on the single-process assumption below. Reads remove
+ * nothing.
  *
  * <p>Windows refuses to replace a file that any other handle has open, even a
  * read-only one, so on Windows a {@link #save} or {@link #delete} waits briefly
@@ -49,7 +53,13 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
  * writers in separate processes or instances can lose each other's updates.
- * Threads sharing one instance are safe.
+ * They can also fail: a writer's sweep may delete the temporary file another
+ * instance is still filling, and that instance's write then fails with an
+ * {@link UncheckedIOException} and leaves the file as it was. Threads sharing
+ * one instance are safe. A {@link #save} or {@link #delete} also sweeps any
+ * {@code <name>.*.tmp} as an orphan, so keep the file in a directory where no
+ * other file name extends this one's (for example {@code a.yaml} and
+ * {@code a.yaml.x}).
  */
 public final class FileBasedConnectionStore implements ConnectionStore {
 
@@ -57,6 +67,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     private final ObjectMapper mapper;
     private final AtomicFiles.Mover mover;
     private final AtomicFiles.TempFileCreator tempFiles;
+    private final AtomicFiles.Deleter sweepDeleter;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile Snapshot cache;
 
@@ -77,10 +88,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     // Visible for tests, which check each temporary file's permissions the moment it exists.
     FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover,
                              AtomicFiles.TempFileCreator tempFiles) {
+        this(path, mapper, mover, tempFiles, Files::deleteIfExists);
+    }
+
+    // Visible for tests, which make the sweep of orphaned temporary files fail.
+    FileBasedConnectionStore(Path path, ObjectMapper mapper, AtomicFiles.Mover mover,
+                             AtomicFiles.TempFileCreator tempFiles, AtomicFiles.Deleter sweepDeleter) {
         this.path = path;
         this.mapper = mapper;
         this.mover = mover;
         this.tempFiles = tempFiles;
+        this.sweepDeleter = sweepDeleter;
     }
 
     private static ObjectMapper defaultMapper() {
@@ -180,6 +198,9 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         Path tmp = null;
         try {
             Files.createDirectories(dir);
+            // Under the write lock and, by the single-process assumption, the only writer of this
+            // file: every <name>.*.tmp here is a killed writer's orphan (#120).
+            AtomicFiles.sweepOrphanedTemps(dir, path, sweepDeleter);
             tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, path);
             mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
