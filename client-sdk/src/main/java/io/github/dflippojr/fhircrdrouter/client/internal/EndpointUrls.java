@@ -35,12 +35,18 @@ public final class EndpointUrls {
     private EndpointUrls() { }
 
     /**
-     * Every URL the SDK will use for this record: {@code baseUrl}, then {@link #requireTokenUrls} for
-     * OAuth2, or {@code jwksUrl} when a {@code CDS_HOOKS_JWT} is signed. Call before any credential read,
-     * token fetch or request (#156).
+     * Every URL the SDK will use for this record: {@code baseUrl}, which must also have no query or
+     * fragment, then {@link #requireTokenUrls} for OAuth2, or {@code jwksUrl} when a {@code CDS_HOOKS_JWT}
+     * is signed. Call before any credential read, token fetch or request (#156).
      */
     public static void requireUsable(ConnectionRecord record) {
-        require(record, "baseUrl", record.baseUrl());
+        URI base = require(record, "baseUrl", record.baseUrl());
+        // CDS Hooks 2.0, Discovery (https://cds-hooks.hl7.org/2.0/#discovery): the SDK appends /cds-services to
+        // baseUrl. After a query or fragment that suffix would land in the query or be dropped, and the request
+        // would go to the base path itself.
+        if (base.getRawQuery() != null || base.getRawFragment() != null) {
+            throw refused(record, "baseUrl", "must not have a query or fragment");
+        }
         if (record.authType() == AuthType.OAUTH2_CLIENT_CREDENTIALS
                 || record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             requireTokenUrls(record);
