@@ -83,8 +83,8 @@ public record ConnectionRecord(
         this.createdAt = createdAt == null ? Instant.now() : createdAt;
         this.updatedAt = updatedAt == null ? Instant.now() : updatedAt;
 
-        boolean oauth2 = authType == AuthType.OAUTH2_CLIENT_CREDENTIALS || authType == AuthType.OAUTH2_PRIVATE_KEY_JWT;
-        boolean signsJwt = authType == AuthType.OAUTH2_PRIVATE_KEY_JWT || authType == AuthType.CDS_HOOKS_JWT;
+        boolean oauth2 = authType.usesOAuth2Token();
+        boolean signsJwt = authType.signsJwt();
         if (oauth2) {
             requireForAuthType(tokenEndpoint, "tokenEndpoint");
         }
