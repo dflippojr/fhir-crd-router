@@ -107,6 +107,11 @@ import java.util.function.UnaryOperator;
  * overlapping file locks. A writer waits for the lock without a timeout. {@code resolve} takes no
  * file lock; the atomic replace already gives it a complete file.
  *
+ * <p>Do not reset the store directory while a process holds a provider instance. An instance loads
+ * {@code key.bin} once and never checks it again, so after the file is deleted or replaced its next
+ * {@code put} can encrypt under the old key into a file that holds entries under another key. The
+ * store is designed for a single owner.
+ *
  * <p>Damaged material fails with an {@link IllegalStateException} that names the problem and
  * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
  * {@code put} then writes nothing either, so secrets under two different keys never mix), a

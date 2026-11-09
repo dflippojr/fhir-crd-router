@@ -10,7 +10,8 @@ import java.util.Objects;
  * call fails immediately with the {@link PayerCallException}. CDS Hooks calls are interactive,
  * so keep both limits small.
  *
- * @param maxAttempts total HTTP attempts per call, including the first; 1 disables retry
+ * @param maxAttempts at most this many throttled attempts per call, including the first, plus one
+ *     OAuth2 re-authentication, which is not counted; 1 disables retry
  * @param maxTotalWait the most time a single call may spend sleeping between attempts
  */
 public record RetryPolicy(int maxAttempts, Duration maxTotalWait) {
