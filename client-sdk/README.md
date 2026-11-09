@@ -509,7 +509,7 @@ Retry is **off by default**. To opt in, give the client a `RetryPolicy`:
 
 ```java
 client.retryPolicy(new RetryPolicy(2, Duration.ofSeconds(3)));
-// at most 2 HTTP attempts per call, at most 3 seconds of total waiting
+// at most 2 throttled attempts per call, plus one re-authentication; at most 3 seconds of total waiting
 ```
 
 Only 429 and 503 responses with a usable `Retry-After` are retried, and only
