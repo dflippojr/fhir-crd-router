@@ -151,6 +151,24 @@ class ExchangeSenderTest {
     }
 
     @Test
+    void escapedSlashAndTrailingBackslashEchoesAreRedactedWhole() throws Exception {
+        // #229 review: JSON may write "/" as "\/", and a raw match must not eat the start of an escaped one.
+        String token = "a/b\\";
+        String sent = "{\"fhirAuthorization\":{\"access_token\":\"a/b\\\\\"}}";
+        String echo = "{\"slash\":\"a\\/b\\\\\",\"plain\":\"a/b\\\\\",\"raw\":\"x " + token.replace("\\", "") + "\"}";
+        server.createContext("/cds-services/x", e -> TestResponses.respond(e, 200, echo));
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
+                .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
+
+        send(request, sent, PayerCallPhase.HOOK);
+
+        PayerExchange exchange = exchanges.get(0);
+        assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", exchange.requestBody());
+        assertEquals("{\"slash\":\"[REDACTED]\",\"plain\":\"[REDACTED]\",\"raw\":\"x a/b\"}", exchange.responseBody());
+        new com.fasterxml.jackson.databind.ObjectMapper().readTree(exchange.responseBody());
+    }
+
+    @Test
     void discoveryBodiesPassThrough() throws Exception {
         server.createContext("/cds-services", e -> TestResponses.respond(e, 200, "{\"services\":[]}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services"))

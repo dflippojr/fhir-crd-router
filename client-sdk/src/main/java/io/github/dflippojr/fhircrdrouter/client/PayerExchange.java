@@ -17,8 +17,9 @@ import java.util.OptionalInt;
  *       {@code expires_in} and {@code scope};</li>
  *   <li>in a HOOK request body, {@code fhirAuthorization.access_token}, the EHR's FHIR token, becomes
  *       {@code [REDACTED]}, as does any other copy of that token in the request or response body spelled
- *       exactly as sent or with standard JSON escapes (#164). A copy spelled any other way, such as with
- *       <code>&#92;uXXXX</code> escapes or base64-encoded, is not found. If the HOOK request body cannot be read as
+ *       exactly as sent, JSON-escaped the way Jackson writes it, or that way with {@code /} written as
+ *       <code>&#92;/</code> (#164). A copy spelled any other way, such as with <code>&#92;uXXXX</code>
+ *       escapes, base64-encoded or split up, is not found. If the HOOK request body cannot be read as
  *       JSON, both bodies are null. The rest of a HOOK body is as sent or received.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty

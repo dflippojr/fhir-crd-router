@@ -21,6 +21,8 @@ import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -224,13 +226,20 @@ public final class ExchangeSender {
         return new HookBody(redactToken(json.toString(), secret), secret);
     }
 
-    /** {@code text} with {@code token} removed, both as is and as it reads escaped inside a JSON string. */
+    /**
+     * {@code text} with {@code token} removed: as is, as Jackson escapes it inside a JSON string, and that
+     * escaped form with {@code /} written as {@code \/}. Longest first, so the raw token never consumes
+     * only the start of an escaped spelling (a token ending in a backslash, say) and leaves a stray tail.
+     */
     private static String redactToken(String text, String token) {
         if (token == null || token.isEmpty()) {
             return text;
         }
-        String escaped = MAPPER.getNodeFactory().textNode(token).toString();
-        return EchoedCredentials.redact(text, token, escaped.substring(1, escaped.length() - 1));
+        String quoted = MAPPER.getNodeFactory().textNode(token).toString();
+        String escaped = quoted.substring(1, quoted.length() - 1);
+        String[] spellings = new LinkedHashSet<>(List.of(escaped.replace("/", "\\/"), escaped, token))
+                .stream().sorted(Comparator.comparingInt(String::length).reversed()).toArray(String[]::new);
+        return EchoedCredentials.redact(text, spellings);
     }
 
     private static String safeBody(PayerCallPhase phase, String body, HookBody hook) {

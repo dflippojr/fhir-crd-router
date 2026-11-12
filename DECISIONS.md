@@ -244,8 +244,9 @@ FHIR server ([CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#passing-the-access-t
 `PayerExchange.requestBody` used to hold it verbatim, so a listener that
 logged the exchange logged a live bearer token. `ExchangeSender` now replaces
 `/fhirAuthorization/access_token` with `[REDACTED]` before delivery, and
-replaces every other copy of the token, raw or JSON-escaped, in that HOOK
-request and response body.
+replaces every other copy of the token in that HOOK request and response
+body: raw, JSON-escaped as Jackson writes it, or that with `/` as `\/`,
+longest spelling first so a raw match never splits an escaped one.
 
 - **Redact the field, not the bodies.** The alternative was a `toString()`
   that omits or summarises the bodies. Listeners exist to debug payer calls,
