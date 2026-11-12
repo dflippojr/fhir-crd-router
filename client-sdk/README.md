@@ -151,7 +151,9 @@ token is restricted to. `expiresIn` is the token's lifetime in seconds, so
 the record also rejects an `expiresIn` of 0 or less: if the token is about to
 expire, refresh it rather than send a lifetime that has run out.
 `toString()` prints `accessToken=[REDACTED]` in place of the token; the JSON
-sent to the payer still carries it. A `fhirAuthorization` without a `fhirServer` is
+sent to the payer still carries it, and a `PayerExchangeListener` sees
+`"access_token":"[REDACTED]"` in its place (see
+[Exchange logging and tracing](#exchange-logging-and-tracing)). A `fhirAuthorization` without a `fhirServer` is
 [not allowed](https://cds-hooks.hl7.org/2.0/#http-request_1), so
 `withFhirServer(null, auth)` throws `IllegalArgumentException`.
 
@@ -562,11 +564,17 @@ Before delivery, the SDK replaces Authorization values with their scheme plus
 `[REDACTED]` and drops Set-Cookie headers. TOKEN request bodies are omitted (`null`),
 and TOKEN response bodies become JSON containing only scalar `token_type`,
 `expires_in` and `scope` fields; malformed or non-JSON responses become `{}`.
-These rules also apply to unsuccessful token requests.
+These rules also apply to unsuccessful token requests. In a HOOK request body,
+`fhirAuthorization.access_token` (the EHR's FHIR token) becomes `"[REDACTED]"`,
+and every other copy of that token in the HOOK request or response body becomes
+`[REDACTED]` too, so a payer that echoes it back cannot leak it into your logs.
+The rest of the body, including the other `fhirAuthorization` fields, is kept as
+sent. A HOOK request body that is not JSON is delivered as `null`; the SDK always
+sends JSON. Nothing else in a body is redacted.
 
-**PHI:** HOOK request and response bodies pass through exactly as sent and received.
-They may contain protected health information (PHI), including any FHIR authorization
-supplied in a hook request. The listener owns what it logs, traces, stores and retains;
+**PHI:** apart from that token, HOOK request and response bodies pass through exactly
+as sent and received. They may contain protected health information (PHI). The
+listener owns what it logs, traces, stores and retains;
 apply your deployment's access and retention controls. Discovery bodies also pass
 through. The quickstart prints metadata only, one line per HTTP exchange.
 

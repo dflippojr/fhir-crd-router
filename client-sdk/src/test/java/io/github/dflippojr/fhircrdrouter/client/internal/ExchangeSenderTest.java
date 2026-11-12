@@ -72,6 +72,72 @@ class ExchangeSenderTest {
         }
     }
 
+    @Test
+    void hookBodyWithoutAccessTokenPassesThroughUnchanged() {
+        for (String body : List.of("{\"hook\":\"x\",\"n\":1.10}", "[]", "null", "{\"fhirAuthorization\":\"s\"}",
+                "{\"fhirAuthorization\":{\"scope\":\"s\"}}")) {
+            assertEquals(new ExchangeSender.HookBody(body, null), ExchangeSender.redactFhirAuthorization(body));
+        }
+        assertEquals(new ExchangeSender.HookBody(null, null), ExchangeSender.redactFhirAuthorization(null));
+    }
+
+    @Test
+    void unparseableHookBodyIsOmitted() {
+        assertEquals(new ExchangeSender.HookBody(null, null),
+                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"tok-164\""));
+        assertEquals(new ExchangeSender.HookBody("", null), ExchangeSender.redactFhirAuthorization(""));
+    }
+
+    @Test
+    void hookBodyRedactsTokenEverywhereAndKeepsNumbersExact() {
+        String body = "{\"fhirAuthorization\":{\"access_token\":\"tok-164\",\"expires_in\":300},"
+                + "\"context\":{\"copy\":\"tok-164\",\"price\":1.10,\"big\":1E+2,\"n\":12345678901234567890}}";
+
+        ExchangeSender.HookBody safe = ExchangeSender.redactFhirAuthorization(body);
+
+        assertEquals("tok-164", safe.accessToken());
+        assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\",\"expires_in\":300},"
+                + "\"context\":{\"copy\":\"[REDACTED]\",\"price\":1.10,\"big\":1E+2,\"n\":12345678901234567890}}",
+                safe.body());
+    }
+
+    @Test
+    void nonTextOrEmptyTokenIsStillReplaced() {
+        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", null),
+                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":{\"k\":\"tok-164\"}}}"));
+        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"x\":\"\"}", ""),
+                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"\"},\"x\":\"\"}"));
+    }
+
+    @Test
+    void tokenNeedingJsonEscapesIsRedactedFromRequestAndEchoedResponse() throws Exception {
+        String token = "tok\"164\\x";
+        String sent = "{\"fhirAuthorization\":{\"access_token\":\"tok\\\"164\\\\x\"}}";
+        server.createContext("/cds-services/x", e -> TestResponses.respond(e, 200,
+                "{\"echo\":\"tok\\\"164\\\\x\",\"raw\":\"" + token.replace("\"", "") + "\"}"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
+                .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
+
+        send(request, sent, PayerCallPhase.HOOK);
+
+        PayerExchange exchange = exchanges.get(0);
+        assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", exchange.requestBody());
+        assertEquals("{\"echo\":\"[REDACTED]\",\"raw\":\"tok164\\x\"}", exchange.responseBody());
+        assertFalse(exchange.toString().contains("164\\\\x"), exchange.toString());
+    }
+
+    @Test
+    void discoveryBodiesPassThrough() throws Exception {
+        server.createContext("/cds-services", e -> TestResponses.respond(e, 200, "{\"services\":[]}"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services"))
+                .timeout(Duration.ofSeconds(5)).GET().build();
+
+        send(request, null, PayerCallPhase.DISCOVERY);
+
+        assertEquals("{\"services\":[]}", exchanges.get(0).responseBody());
+        assertEquals(null, exchanges.get(0).requestBody());
+    }
+
     private void send(HttpRequest request, String body, PayerCallPhase phase) throws Exception {
         ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
                 .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential")

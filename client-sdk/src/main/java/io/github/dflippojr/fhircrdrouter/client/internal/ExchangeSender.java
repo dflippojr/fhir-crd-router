@@ -1,7 +1,11 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
@@ -31,6 +35,10 @@ import java.util.concurrent.TimeoutException;
 /** Shared SDK implementation detail for payer and OAuth2 HTTP attempts. */
 public final class ExchangeSender {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** Reads decimals exactly, so a redacted hook body keeps every number as it was sent. */
+    private static final ObjectMapper EXACT = JsonMapper.builder()
+            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+            .nodeFactory(JsonNodeFactory.withExactBigDecimals(true)).build();
 
     private ExchangeSender() { }
 
@@ -57,13 +65,18 @@ public final class ExchangeSender {
         } finally {
             Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
             if (listener != PayerExchangeListener.NOOP) {
+                HookBody hook = phase == PayerCallPhase.HOOK ? redactFhirAuthorization(body) : null;
                 report(listener, new PayerExchange(phase, record.payerId(), record.environment(),
                         request.method(), request.uri(), attempt, startedAt, elapsed,
                         response == null ? OptionalInt.empty() : OptionalInt.of(response.statusCode()),
                         safeHeaders(request.headers(), true),
                         response == null ? HttpHeaders.of(Map.of(), (k, v) -> true) : safeHeaders(response.headers(), false),
-                        phase == PayerCallPhase.TOKEN ? null : body,
-                        response == null ? null : safeBody(phase, response.body()), error));
+                        switch (phase) {
+                            case TOKEN -> null;
+                            case HOOK -> hook.body();
+                            case DISCOVERY -> body;
+                        },
+                        response == null ? null : safeBody(phase, response.body(), hook), error));
             }
         }
     }
@@ -172,7 +185,49 @@ public final class ExchangeSender {
         return space > 0 ? value.substring(0, space) + " [REDACTED]" : "[REDACTED]";
     }
 
-    private static String safeBody(PayerCallPhase phase, String body) {
+    /** A HOOK request body as a listener sees it, and the EHR access token it hid ({@code null} if none). */
+    record HookBody(String body, String accessToken) { }
+
+    /**
+     * Replaces {@code /fhirAuthorization/access_token}, the EHR's live FHIR token
+     * (<a href="https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service">CDS Hooks 2.0,
+     * Passing the Access Token to the CDS Service</a>), with {@link EchoedCredentials#MARKER}, along with any
+     * other copy of the token in the body (#164). Everything else is kept. A body that is not JSON is
+     * omitted ({@code null}), since it cannot be checked; the SDK always sends JSON.
+     */
+    static HookBody redactFhirAuthorization(String body) {
+        if (body == null) {
+            return new HookBody(null, null);
+        }
+        JsonNode json;
+        try {
+            json = EXACT.readTree(body);
+        } catch (IOException e) {
+            return new HookBody(null, null);
+        }
+        if (!(json.get("fhirAuthorization") instanceof ObjectNode auth) || !auth.has("access_token")) {
+            return new HookBody(body, null);
+        }
+        JsonNode token = auth.get("access_token");
+        auth.put("access_token", EchoedCredentials.MARKER);
+        String secret = token.isTextual() ? token.asText() : null;
+        return new HookBody(redactToken(json.toString(), secret), secret);
+    }
+
+    /** {@code text} with {@code token} removed, both as is and as it reads escaped inside a JSON string. */
+    private static String redactToken(String text, String token) {
+        if (token == null || token.isEmpty()) {
+            return text;
+        }
+        String escaped = MAPPER.getNodeFactory().textNode(token).toString();
+        return EchoedCredentials.redact(text, token, escaped.substring(1, escaped.length() - 1));
+    }
+
+    private static String safeBody(PayerCallPhase phase, String body, HookBody hook) {
+        if (phase == PayerCallPhase.HOOK) {
+            // A payer that echoes the EHR token back must not leak it into the listener either.
+            return redactToken(body, hook.accessToken());
+        }
         if (phase != PayerCallPhase.TOKEN) {
             return body;
         }

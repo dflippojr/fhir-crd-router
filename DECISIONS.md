@@ -237,6 +237,33 @@ them the only writer.
   (`a.yaml.x.<n>.tmp`) that `a.yaml`'s sweep also matches. Keep connection
   files in a directory where no file name extends another's.
 
+## Listeners never see the EHR's FHIR token (2026-11-12, #164)
+
+A HOOK request may carry `fhirAuthorization`, an OAuth2 token for the EHR's
+FHIR server ([CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service)).
+`PayerExchange.requestBody` used to hold it verbatim, so a listener that
+logged the exchange logged a live bearer token. `ExchangeSender` now replaces
+`/fhirAuthorization/access_token` with `[REDACTED]` before delivery, and
+replaces every other copy of the token, raw or JSON-escaped, in that HOOK
+request and response body.
+
+- **Redact the field, not the bodies.** The alternative was a `toString()`
+  that omits or summarises the bodies. Listeners exist to debug payer calls,
+  and the body is the part they need. A `toString()` change would also leave
+  `requestBody()` itself carrying the token, so a listener that serialised
+  the record or logged the body field would still leak it. Redacting the
+  one field closes both and keeps the rest of the body as sent.
+- **Response echoes too.** A payer can echo the token back, for example in
+  an error message. The token is known at the time of delivery, so removing
+  it from the HOOK response body costs one string replace.
+- **Exact re-serialisation.** Only a body with a `fhirAuthorization.access_token`
+  is re-serialised. It is read with exact decimals so numbers keep their
+  original text. A HOOK body that is not JSON is delivered as `null`, since
+  it cannot be checked; the SDK always sends JSON.
+- **Not covered.** A token pasted by the caller into another field under a
+  different spelling (base64 of it, say) is not found. `PayerCallException`
+  bodies are a separate path and are not changed here.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
