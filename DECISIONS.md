@@ -283,6 +283,18 @@ response header name and value.
   caller's `PayerCallException`. A parser error quoting a HOOK response gets
   the same treatment as the cause of its `RouterException`. Keeping the kind
   keeps `timedOut()` and `PayerExchangeMetadata` outcomes working.
+- **One context per call, every boundary.** Fixing exposure paths one at
+  a time kept missing the next one, so the token is now handled as a class.
+  `callHook` and `callHookRaw` open an `EhrRedaction` context from the
+  request when they start. It is thread-local, because all of a call's
+  sends and listener callbacks run on the calling thread, and that reaches
+  the token client without changing its API. Each boundary reads it:
+  `ExchangeSender` for every listener exchange of every phase (HOOK, TOKEN,
+  a refresh after a 401), the token client's error body before truncation,
+  and `EhrRedaction.exception` for every exception leaving either method.
+  As a last check, an exchange that still shows the token is not
+  delivered, and an exception copy that still shows it is replaced by a
+  `RouterException` naming only the original class.
 - **Payer call errors.** A HOOK `PayerCallException` gets the same treatment
   for its body (and so its message) and its kept headers, through
   `ExchangeSender.safeHookFailure`.

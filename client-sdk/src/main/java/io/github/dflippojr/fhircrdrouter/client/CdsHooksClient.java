@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
+import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -341,36 +342,49 @@ public final class CdsHooksClient {
                 .GET());
     }
 
-    /** Invokes a named hook (raw passthrough form). */
+    /**
+     * Invokes a named hook (raw passthrough form). The request's EHR {@code fhirAuthorization} token is
+     * kept out of every listener exchange and every exception of the call (#164).
+     */
     public JsonNode callHookRaw(ConnectionRecord record, String serviceId, CdsHookRequest request) {
-        String segment = encodeServiceId(serviceId);
-        String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
-        String body;
-        try {
-            body = mapper.writeValueAsString(request);
-        } catch (IOException e) {
-            throw new RouterException(context + " could not serialize request", e);
+        EhrRedaction redaction = EhrRedaction.of(ehrToken(request));
+        try (EhrRedaction.Scope ignored = redaction.open()) {
+            String segment = encodeServiceId(serviceId);
+            String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
+            String body;
+            try {
+                body = mapper.writeValueAsString(request);
+            } catch (IOException e) {
+                throw new RouterException(context + " could not serialize request", withoutToken(e, ehrToken(request)));
+            }
+            HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
+                    .uri(URI.create(servicesUrl(record) + "/" + segment))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body)));
+            return readBody(response, context, ehrToken(request));
+        } catch (RuntimeException e) {
+            throw redaction.exception(e);
         }
-        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
-                .uri(URI.create(servicesUrl(record) + "/" + segment))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body)));
-        return readBody(response, context, ehrToken(request));
     }
 
     /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
     public CdsHookResponse callHook(ConnectionRecord record, String serviceId, CdsHookRequest request) {
-        JsonNode raw = callHookRaw(record, serviceId, request);
-        // CDS Hooks 2.0 HTTP Response (https://cds-hooks.hl7.org/2.0/#http-response): the body is a JSON
-        // object. Any other root would read as "no cards", so it fails instead. The body is not echoed.
-        if (raw == null || !raw.isObject()) {
-            throw new RouterException("Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId
-                    + " returned a response body that is not a JSON object");
+        EhrRedaction redaction = EhrRedaction.of(ehrToken(request));
+        try (EhrRedaction.Scope ignored = redaction.open()) {
+            JsonNode raw = callHookRaw(record, serviceId, request);
+            // CDS Hooks 2.0 HTTP Response (https://cds-hooks.hl7.org/2.0/#http-response): the body is a JSON
+            // object. Any other root would read as "no cards", so it fails instead. The body is not echoed.
+            if (raw == null || !raw.isObject()) {
+                throw new RouterException("Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId
+                        + " returned a response body that is not a JSON object");
+            }
+            return new CdsHookResponse(
+                    parseArray(record, raw, "cards", Card.class, ehrToken(request)),
+                    parseArray(record, raw, "systemActions", SystemAction.class, ehrToken(request)),
+                    raw);
+        } catch (RuntimeException e) {
+            throw redaction.exception(e);
         }
-        return new CdsHookResponse(
-                parseArray(record, raw, "cards", Card.class, ehrToken(request)),
-                parseArray(record, raw, "systemActions", SystemAction.class, ehrToken(request)),
-                raw);
     }
 
     private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type,

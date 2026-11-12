@@ -1,0 +1,148 @@
+package io.github.dflippojr.fhircrdrouter.client.internal;
+
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import javax.net.ssl.SSLSession;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** The per-call context and the exception boundary of {@link EhrRedaction} (#164). */
+class EhrRedactionTest {
+    private static final String TOKEN = "ctxToken164";
+    private static final URI URI_ = URI.create("https://payer.example.org/cds-services/x");
+    private final EhrRedaction redaction = EhrRedaction.of(TOKEN);
+
+    @Test
+    void contextIsPerThreadAndScopesNest() {
+        assertSame(EhrRedaction.NONE, EhrRedaction.of(null));
+        assertSame(EhrRedaction.NONE, EhrRedaction.of(""));
+        assertSame(EhrRedaction.NONE, EhrRedaction.current());
+        try (EhrRedaction.Scope outer = redaction.open()) {
+            assertEquals(TOKEN, EhrRedaction.current().token());
+            try (EhrRedaction.Scope inner = EhrRedaction.of("other").open()) {
+                assertEquals("other", EhrRedaction.current().token());
+            }
+            assertEquals(TOKEN, EhrRedaction.current().token());
+        }
+        assertSame(EhrRedaction.NONE, EhrRedaction.current());
+    }
+
+    @Test
+    void textRedactsOrFallsBackToTheMarker() {
+        assertNull(redaction.text(null));
+        assertEquals("x", EhrRedaction.NONE.text("x"));
+        assertEquals("a [REDACTED] b", redaction.text("a " + TOKEN + " b"));
+        assertEquals("[REDACTED]", redaction.text("a \\u0063txToken164"));
+    }
+
+    @Test
+    void exceptionsWithoutTheTokenPassThrough() {
+        RouterException clean = new RouterException("fine", new IOException("also fine"));
+        assertSame(clean, redaction.exception(clean));
+        RouterException leaky = new RouterException(TOKEN);
+        assertSame(leaky, EhrRedaction.NONE.exception(leaky));
+    }
+
+    @Test
+    void eachExceptionClassIsCopiedWithoutTheToken() {
+        assertCopy(new RouterException("m " + TOKEN, new IOException(TOKEN)), RouterException.class);
+        assertCopy(new IllegalArgumentException("m " + TOKEN), IllegalArgumentException.class);
+        assertCopy(new IllegalStateException("m", new IllegalStateException(TOKEN)), IllegalStateException.class);
+        RuntimeException other = assertCopy(new UnsupportedOperationException(TOKEN), RouterException.class);
+        assertTrue(other.getMessage().startsWith(UnsupportedOperationException.class.getName()), other.getMessage());
+        RouterException suppressed = new RouterException("m");
+        suppressed.addSuppressed(new IOException(TOKEN));
+        assertEquals(0, assertCopy(suppressed, RouterException.class).getSuppressed().length);
+        RuntimeException withError = assertCopy(new RouterException("m", new AssertionError(TOKEN)), RouterException.class);
+        assertNull(withError.getCause());
+        RuntimeException cleanError = new RouterException("m " + TOKEN, new AssertionError("fine"));
+        assertInstanceOf(AssertionError.class, redaction.exception(cleanError).getCause());
+    }
+
+    @Test
+    void payerCallExceptionsKeepTheirFields() {
+        PayerCallException transport = PayerCallException.transport("failed " + TOKEN, PayerCallPhase.TOKEN, "payer",
+                URI_, new IOException(TOKEN));
+        PayerCallException safeTransport = (PayerCallException) assertCopy(transport, PayerCallException.class);
+        assertTrue(safeTransport.statusCode().isEmpty());
+        assertEquals(PayerCallPhase.TOKEN, safeTransport.phase());
+        assertInstanceOf(IOException.class, safeTransport.getCause());
+
+        HttpHeaders headers = HttpHeaders.of(Map.of("X-Request-Id", List.of(TOKEN), "Retry-After", List.of("5")),
+                (k, v) -> true);
+        PayerCallException http = new PayerCallException("Hook failed: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(503, headers), "{\"error\":\"" + TOKEN + "\"}");
+        PayerCallException safeHttp = (PayerCallException) assertCopy(http, PayerCallException.class);
+        assertEquals(503, safeHttp.statusCode().orElseThrow());
+        assertEquals("{\"error\":\"[REDACTED]\"}", safeHttp.responseBody());
+        assertEquals("Hook failed: {\"error\":\"[REDACTED]\"}", safeHttp.getMessage());
+        assertEquals(List.of("[REDACTED]"), safeHttp.responseHeaders().allValues("X-Request-Id"));
+        assertEquals(Optional.of(java.time.Duration.ofSeconds(5)), safeHttp.retryAfter());
+
+        PayerCallException headerOnly = new PayerCallException("Hook failed: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(500, headers), null);
+        assertCopy(headerOnly, PayerCallException.class);
+        PayerCallException hidden = new PayerCallException("Hook failed: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(500, HttpHeaders.of(Map.of(), (k, v) -> true)), "<p>\\u0063txToken164</p>");
+        assertEquals("[REDACTED]", ((PayerCallException) assertCopy(hidden, PayerCallException.class)).responseBody());
+    }
+
+    @Test
+    void aCopyThatWouldStillShowTheTokenFallsBackToTheClassName() {
+        RouterException named = new RouterException("x") {
+            @Override
+            public String toString() {
+                return "named " + TOKEN;
+            }
+        };
+        RuntimeException safe = redaction.exception(named);
+        assertEquals(RouterException.class, safe.getClass());
+        assertFalse(printed(safe).contains(TOKEN), printed(safe));
+    }
+
+    private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {
+        RuntimeException safe = redaction.exception(error);
+        assertNotSame(error, safe);
+        assertEquals(kind, safe.getClass());
+        assertFalse(printed(safe).contains(TOKEN), printed(safe));
+        assertArrayEquals(error.getStackTrace(), safe.getStackTrace());
+        if (safe instanceof PayerCallException failure) {
+            assertFalse(String.valueOf(failure.responseBody()).contains(TOKEN));
+            assertFalse(failure.responseHeaders().map().toString().contains(TOKEN));
+        }
+        return safe;
+    }
+
+    private static String printed(Throwable error) {
+        StringWriter out = new StringWriter();
+        error.printStackTrace(new PrintWriter(out));
+        return out.toString();
+    }
+
+    private static HttpResponse<String> response(int status, HttpHeaders headers) {
+        return new HttpResponse<>() {
+            @Override public int statusCode() { return status; }
+            @Override public HttpRequest request() { return null; }
+            @Override public Optional<HttpResponse<String>> previousResponse() { return Optional.empty(); }
+            @Override public HttpHeaders headers() { return headers; }
+            @Override public String body() { return null; }
+            @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
+            @Override public URI uri() { return URI_; }
+            @Override public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }
+        };
+    }
+}

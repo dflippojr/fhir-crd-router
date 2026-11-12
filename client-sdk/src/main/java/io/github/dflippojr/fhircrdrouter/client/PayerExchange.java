@@ -28,6 +28,9 @@ import java.util.OptionalInt;
  *       message shows the token is replaced by an exception of the same kind with the token removed and no
  *       cause, and the call's exception carries that copy too. The rest of a HOOK exchange is as sent or
  *       received.</li>
+ *   <li>during a hook call, every exchange of every phase (HOOK, and TOKEN including a refresh after a
+ *       401) has that token removed from its headers, bodies and error, after the TOKEN rules above; an
+ *       exchange that would still show it is not delivered.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty
  * headers/status. Nothing else is redacted: hook bodies may contain PHI, and the listener owns their

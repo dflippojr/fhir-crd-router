@@ -603,6 +603,20 @@ the token reaches the listener as an exception of the same kind (`IOException`,
 with the token removed and no cause, and the `PayerCallException` your call throws
 carries that same copy as its cause. Nothing else is redacted.
 
+During `callHook` and `callHookRaw`, one redaction context for the request's EHR
+token covers the whole call. Every exchange the listener receives during the call
+is redacted with it, whatever its phase: the HOOK attempts, and the TOKEN
+exchanges, including a token refresh after a 401 (the TOKEN allowlist above still
+applies first, and then the token is removed from its `scope`, headers and error).
+Every exception that leaves either method is checked as well: if the token shows
+in its message, cause or suppressed chain, printed stack trace, or a
+`PayerCallException`'s body or headers, you get a copy of the same class
+(`PayerCallException`, `RouterException`, `IllegalArgumentException`,
+`IllegalStateException`; any other class becomes a `RouterException` naming it)
+with the token removed, a redacted cause and no suppressed exceptions, and the
+original stack trace. An exchange that would still show the token after all of
+this is not delivered.
+
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
 listener owns what it logs, traces, stores and retains;

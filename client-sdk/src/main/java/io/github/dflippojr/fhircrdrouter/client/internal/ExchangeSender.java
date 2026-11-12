@@ -75,20 +75,16 @@ public final class ExchangeSender {
         long start = System.nanoTime();
         HttpResponse<String> response = null;
         Exception error = null;
-        HookBody hook = null;
+        Redaction redaction = null;
         try {
             response = await(client.sendAsync(request, boundedString(CdsHooksClient.MAX_RESPONSE_BYTES)),
                     request.timeout().orElse(null));
             return response;
         } catch (IOException | InterruptedException e) {
-            if (phase != PayerCallPhase.HOOK) {
-                error = e;
-                throw e;
-            }
             // A transport error can quote what the payer sent; neither the caller nor a listener keeps the
-            // EHR token from it (#164).
-            hook = redactFhirAuthorization(body);
-            error = safeError(e, hook.accessToken(), !hook.readable());
+            // EHR token from it, in any phase (#164).
+            redaction = Redaction.of(phase, body);
+            error = safeError(e, redaction.token(), redaction.unreadable());
             if (error instanceof InterruptedException interrupted) {
                 throw interrupted;
             }
@@ -96,25 +92,51 @@ public final class ExchangeSender {
         } finally {
             Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
             if (listener != PayerExchangeListener.NOOP) {
-                if (hook == null && phase == PayerCallPhase.HOOK) {
-                    hook = redactFhirAuthorization(body);
-                }
-                String token = hook == null ? null : hook.accessToken();
-                boolean unreadable = hook != null && !hook.readable();
-                report(listener, new PayerExchange(phase, record.payerId(), record.environment(),
+                Redaction r = redaction == null ? Redaction.of(phase, body) : redaction;
+                String token = r.token();
+                report(listener, checked(new PayerExchange(phase, record.payerId(), record.environment(),
                         request.method(), request.uri(), attempt, startedAt, elapsed,
                         response == null ? OptionalInt.empty() : OptionalInt.of(response.statusCode()),
-                        safeHeaders(request.headers(), true, null),
-                        response == null || unreadable ? HttpHeaders.of(Map.of(), (k, v) -> true)
+                        safeHeaders(request.headers(), true, token),
+                        response == null || r.unreadable() ? HttpHeaders.of(Map.of(), (k, v) -> true)
                                 : safeHeaders(response.headers(), false, token),
                         switch (phase) {
                             case TOKEN -> null;
-                            case HOOK -> hook.body();
-                            case DISCOVERY -> body;
+                            case HOOK -> r.hook().body();
+                            case DISCOVERY -> redactResponse(body, token);
                         },
-                        response == null ? null : safeBody(phase, response.body(), hook), error));
+                        response == null || r.unreadable() ? null : safeBody(phase, response.body(), token),
+                        error), token));
             }
         }
+    }
+
+    /**
+     * What one attempt redacts: the call's EHR token from {@link EhrRedaction#current()}, or, for a HOOK
+     * attempt sent outside a call's context, the token in its own body. {@code unreadable} means a HOOK
+     * body that could not be read with no token known, so nothing from the payer can be checked.
+     */
+    private record Redaction(String token, boolean unreadable, HookBody hook) {
+        static Redaction of(PayerCallPhase phase, String body) {
+            String known = EhrRedaction.current().token();
+            if (phase != PayerCallPhase.HOOK) {
+                return new Redaction(known, false, null);
+            }
+            HookBody hook = redactRequest(body, known);
+            return new Redaction(hook.accessToken(), !hook.readable(), hook);
+        }
+    }
+
+    /**
+     * The last check before a listener sees {@code exchange}: everything above redacts each field, and if
+     * the token still shows in its string form or its error chain anyway, it is not delivered (null).
+     */
+    private static PayerExchange checked(PayerExchange exchange, String token) {
+        if (token == null) {
+            return exchange;
+        }
+        boolean shows = shows(exchange.toString(), token) || exchange.error() != null && mentions(exchange.error(), token);
+        return shows ? null : exchange;
     }
 
     private static HttpResponse<String> await(CompletableFuture<HttpResponse<String>> future, Duration deadline)
@@ -197,6 +219,9 @@ public final class ExchangeSender {
     }
 
     private static void report(PayerExchangeListener listener, PayerExchange exchange) {
+        if (exchange == null) {
+            return;
+        }
         try {
             listener.onExchange(exchange);
         } catch (Exception ignored) {
@@ -211,7 +236,7 @@ public final class ExchangeSender {
      * cannot be read leaves the token unknown, so the headers become empty and the body null.
      */
     public static SafeFailure safeHookFailure(HttpResponse<String> response, String body, String hookBody) {
-        HookBody hook = redactFhirAuthorization(hookBody);
+        HookBody hook = redactRequest(hookBody, EhrRedaction.current().token());
         if (!hook.readable()) {
             return new SafeFailure(withHeaders(response, HttpHeaders.of(Map.of(), (k, v) -> true)), null);
         }
@@ -254,7 +279,7 @@ public final class ExchangeSender {
     }
 
     /** Adds a header with {@code token} removed from its name and values; names that then collide merge. */
-    private static void putRedacted(Map<String, List<String>> headers, String name, List<String> values, String token) {
+    static void putRedacted(Map<String, List<String>> headers, String name, List<String> values, String token) {
         headers.merge(EchoedCredentials.redact(name, token),
                 values.stream().map(value -> EchoedCredentials.redact(value, token)).toList(),
                 (a, b) -> Stream.concat(a.stream(), b.stream()).toList());
@@ -286,29 +311,44 @@ public final class ExchangeSender {
      * it cannot be checked, so it and the response are omitted.
      */
     static HookBody redactFhirAuthorization(String body) {
+        return redactRequest(body, null);
+    }
+
+    /**
+     * {@link #redactFhirAuthorization} with {@code known}, the call's token, redacted as well; when it is
+     * known, a body that cannot be read is null but still readable, since the token to look for is known.
+     */
+    static HookBody redactRequest(String body, String known) {
         if (body == null) {
-            return new HookBody(null, null);
+            return new HookBody(null, known);
         }
         JsonNode json;
         try {
             json = EXACT.readTree(body);
         } catch (IOException e) {
-            return HookBody.UNREADABLE;
+            return known == null ? HookBody.UNREADABLE : new HookBody(null, known);
         }
-        if (!(json.get("fhirAuthorization") instanceof ObjectNode auth) || !auth.has("access_token")) {
-            return new HookBody(body, null);
+        String own = null;
+        boolean changed = false;
+        if (json.get("fhirAuthorization") instanceof ObjectNode auth && auth.has("access_token")) {
+            JsonNode token = auth.get("access_token");
+            own = token.isTextual() && !token.asText().isEmpty() ? token.asText() : null;
+            auth.put("access_token", EchoedCredentials.MARKER);
+            changed = true;
         }
-        JsonNode token = auth.get("access_token");
-        auth.put("access_token", EchoedCredentials.MARKER);
-        String secret = token.isTextual() && !token.asText().isEmpty() ? token.asText() : null;
+        String secret = known != null ? known : own;
         if (secret == null) {
-            return new HookBody(json.toString(), null);
+            return new HookBody(changed ? json.toString() : body, null);
         }
-        scrub(json, secret);
-        String safe = json.toString();
+        changed |= scrub(json, secret) != null;
+        if (own != null && !own.equals(secret)) {
+            changed |= scrub(json, own) != null;
+        }
+        String safe = changed ? json.toString() : body;
         // Re-serialising can put characters next to each other that were apart in the decoded strings; a
         // body that still shows the token, as is or decoded, is not delivered.
-        return new HookBody(shows(safe, secret) ? null : safe, secret);
+        boolean survives = shows(safe, secret) || own != null && shows(safe, own);
+        return new HookBody(survives ? null : safe, secret);
     }
 
     /**
@@ -351,7 +391,7 @@ public final class ExchangeSender {
      * value and key, and is re-serialised only if one changed. Any other body has the raw and JSON-escaped
      * spellings replaced; if a loose JSON decoding of what is left still shows the token, it is omitted.
      */
-    private static String redactResponse(String body, String token) {
+    static String redactResponse(String body, String token) {
         if (token == null || body == null) {
             return body;
         }
@@ -372,7 +412,8 @@ public final class ExchangeSender {
      * (a malformed status line, or a parser quoting the body, say), so if any message, cause or suppressed
      * exception in the chain shows the token, or the token is unknown because the request could not be
      * read, this returns a copy of the same kind ({@link HttpConnectTimeoutException},
-     * {@link HttpTimeoutException}, {@link InterruptedException}, otherwise {@link IOException}) whose
+     * {@link HttpTimeoutException}, {@link InterruptedException}, {@link RuntimeException}, otherwise
+     * {@link IOException}) whose
      * message names the original class, with the token removed, the original stack trace, and no cause or
      * suppressed exceptions. Otherwise it returns {@code error} itself.
      */
@@ -392,6 +433,8 @@ public final class ExchangeSender {
             safe = new HttpTimeoutException(message);
         } else if (error instanceof InterruptedException) {
             safe = new InterruptedException(message);
+        } else if (error instanceof RuntimeException) {
+            safe = new RuntimeException(message);
         } else {
             safe = new IOException(message);
         }
@@ -399,7 +442,7 @@ public final class ExchangeSender {
         return safe;
     }
 
-    private static boolean mentions(Throwable error, String token) {
+    static boolean mentions(Throwable error, String token) {
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> todo = new ArrayDeque<>(List.of(error));
         while (!todo.isEmpty()) {
@@ -419,7 +462,7 @@ public final class ExchangeSender {
     }
 
     /** Whether {@code text} shows {@code token} as is or once its JSON escapes are decoded. */
-    private static boolean shows(String text, String token) {
+    static boolean shows(String text, String token) {
         return text.contains(token) || looselyDecoded(text).contains(token);
     }
 
@@ -461,7 +504,7 @@ public final class ExchangeSender {
      * escaped form with {@code /} written as {@code \/}. Longest first, so the raw token never consumes
      * only the start of an escaped spelling (a token ending in a backslash, say) and leaves a stray tail.
      */
-    private static String redactToken(String text, String token) {
+    static String redactToken(String text, String token) {
         String quoted = MAPPER.getNodeFactory().textNode(token).toString();
         String escaped = quoted.substring(1, quoted.length() - 1);
         String[] spellings = new LinkedHashSet<>(List.of(escaped.replace("/", "\\/"), escaped, token))
@@ -469,15 +512,16 @@ public final class ExchangeSender {
         return EchoedCredentials.redact(text, spellings);
     }
 
-    private static String safeBody(PayerCallPhase phase, String body, HookBody hook) {
-        if (phase == PayerCallPhase.HOOK) {
-            // A payer that echoes the EHR token back must not leak it into the listener either. If the
-            // request could not be read, the token is unknown, so the response cannot be checked: omit it.
-            return hook.readable() ? redactResponse(body, hook.accessToken()) : null;
-        }
+    private static String safeBody(PayerCallPhase phase, String body, String token) {
         if (phase != PayerCallPhase.TOKEN) {
-            return body;
+            // A payer that echoes the EHR token back must not leak it into the listener either.
+            return redactResponse(body, token);
         }
+        return redactResponse(tokenSummary(body), token);
+    }
+
+    /** A TOKEN response reduced to its scalar {@code token_type}, {@code expires_in} and {@code scope}. */
+    private static String tokenSummary(String body) {
         var safe = MAPPER.createObjectNode();
         try {
             JsonNode json = MAPPER.readTree(body);

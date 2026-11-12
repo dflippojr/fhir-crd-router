@@ -345,6 +345,47 @@ class ExchangeSenderTest {
     }
 
     @Test
+    void anExchangeThatStillShowsTheTokenIsNotDelivered() throws Exception {
+        server.createContext("/cds-services/ctxToken164", e -> TestResponses.respond(e, 200, "{}"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/ctxToken164"))
+                .timeout(Duration.ofSeconds(5)).GET().build();
+
+        try (EhrRedaction.Scope ignored = EhrRedaction.of("ctxToken164").open()) {
+            ExchangeSender.send(HttpClient.newHttpClient(), request, null, record(), PayerCallPhase.DISCOVERY, 1,
+                    exchanges::add);
+        }
+
+        assertTrue(exchanges.isEmpty(), exchanges.toString());
+    }
+
+    @Test
+    void theCallContextRedactsEveryPhase() throws Exception {
+        server.createContext("/token", e -> {
+            e.getResponseHeaders().add("X-Echo", "ctxToken164");
+            TestResponses.respond(e, 200, "{\"access_token\":\"a\",\"scope\":\"ctxToken164\",\"expires_in\":5}");
+        });
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/token")).timeout(Duration.ofSeconds(5))
+                .POST(HttpRequest.BodyPublishers.ofString("grant_type=client_credentials")).build();
+
+        try (EhrRedaction.Scope ignored = EhrRedaction.of("ctxToken164").open()) {
+            send(request, "grant_type=client_credentials", PayerCallPhase.TOKEN);
+        }
+
+        PayerExchange exchange = exchanges.get(0);
+        assertEquals("{\"expires_in\":5,\"scope\":\"[REDACTED]\"}", exchange.responseBody());
+        assertEquals(List.of("[REDACTED]"), exchange.responseHeaders().allValues("X-Echo"));
+    }
+
+    @Test
+    void aKnownTokenStillRedactsAnUnreadableHookBody() {
+        assertEquals(new ExchangeSender.HookBody(null, "t/k"), ExchangeSender.redactRequest("{", "t/k"));
+        assertEquals(new ExchangeSender.HookBody(null, "t/k"), ExchangeSender.redactRequest(null, "t/k"));
+        assertEquals(new ExchangeSender.HookBody("{\"x\":1}", "t/k"), ExchangeSender.redactRequest("{\"x\":1}", "t/k"));
+        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"y\":\"[REDACTED] [REDACTED]\"}", "t/k"),
+                ExchangeSender.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"},\"y\":\"own t/k\"}", "t/k"));
+    }
+
+    @Test
     void looseDecodingHandlesEveryEscape() {
         assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
         assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));
