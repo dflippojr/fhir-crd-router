@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
@@ -22,12 +24,14 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
@@ -68,11 +72,14 @@ public final class ExchangeSender {
             Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
             if (listener != PayerExchangeListener.NOOP) {
                 HookBody hook = phase == PayerCallPhase.HOOK ? redactFhirAuthorization(body) : null;
+                String token = hook == null ? null : hook.accessToken();
+                boolean unreadable = hook != null && !hook.readable();
                 report(listener, new PayerExchange(phase, record.payerId(), record.environment(),
                         request.method(), request.uri(), attempt, startedAt, elapsed,
                         response == null ? OptionalInt.empty() : OptionalInt.of(response.statusCode()),
-                        safeHeaders(request.headers(), true),
-                        response == null ? HttpHeaders.of(Map.of(), (k, v) -> true) : safeHeaders(response.headers(), false),
+                        safeHeaders(request.headers(), true, null),
+                        response == null || unreadable ? HttpHeaders.of(Map.of(), (k, v) -> true)
+                                : safeHeaders(response.headers(), false, token),
                         switch (phase) {
                             case TOKEN -> null;
                             case HOOK -> hook.body();
@@ -170,13 +177,16 @@ public final class ExchangeSender {
         }
     }
 
-    private static HttpHeaders safeHeaders(HttpHeaders headers, boolean request) {
+    /** Redacts request {@code Authorization}, drops {@code Set-Cookie}, and removes {@code token} from names and values. */
+    private static HttpHeaders safeHeaders(HttpHeaders headers, boolean request, String token) {
         Map<String, List<String>> safe = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         headers.map().forEach((name, values) -> {
             if (request && name.equalsIgnoreCase("Authorization")) {
                 safe.put(name, values.stream().map(ExchangeSender::redactAuthorization).toList());
             } else if (!name.equalsIgnoreCase("Set-Cookie")) {
-                safe.put(name, values);
+                safe.merge(EchoedCredentials.redact(name, token),
+                        values.stream().map(value -> EchoedCredentials.redact(value, token)).toList(),
+                        (a, b) -> Stream.concat(a.stream(), b.stream()).toList());
             }
         });
         return HttpHeaders.of(safe, (k, v) -> true);
@@ -202,8 +212,8 @@ public final class ExchangeSender {
     /**
      * Replaces {@code /fhirAuthorization/access_token}, the EHR's live FHIR token
      * (<a href="https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service">CDS Hooks 2.0,
-     * Passing the Access Token to the CDS Service</a>), with {@link EchoedCredentials#MARKER}, along with any
-     * literal or standard JSON-escaped copy of the token in the body (#164). Everything else is kept. A
+     * Passing the Access Token to the CDS Service</a>), with {@link EchoedCredentials#MARKER}, along with the
+     * token wherever it appears in another decoded string value or key (#164). Everything else is kept. A
      * body that cannot be read as JSON (not JSON, or past Jackson's read limits) is {@link HookBody#UNREADABLE}:
      * it cannot be checked, so it and the response are omitted.
      */
@@ -222,8 +232,98 @@ public final class ExchangeSender {
         }
         JsonNode token = auth.get("access_token");
         auth.put("access_token", EchoedCredentials.MARKER);
-        String secret = token.isTextual() ? token.asText() : null;
-        return new HookBody(redactToken(json.toString(), secret), secret);
+        String secret = token.isTextual() && !token.asText().isEmpty() ? token.asText() : null;
+        if (secret != null) {
+            scrub(json, secret);
+        }
+        return new HookBody(json.toString(), secret);
+    }
+
+    /**
+     * Replaces {@code token} with {@link EchoedCredentials#MARKER} in every string value and key of
+     * {@code node}, compared after JSON decoding, so no escape spelling hides it. Containers change in
+     * place. Returns the replacement node, or null if nothing changed.
+     */
+    private static JsonNode scrub(JsonNode node, String token) {
+        if (node.isTextual()) {
+            String text = node.asText();
+            return text.contains(token) ? TextNode.valueOf(text.replace(token, EchoedCredentials.MARKER)) : null;
+        }
+        boolean changed = false;
+        if (node instanceof ArrayNode array) {
+            for (int i = 0; i < array.size(); i++) {
+                JsonNode safe = scrub(array.get(i), token);
+                if (safe != null) {
+                    array.set(i, safe);
+                    changed = true;
+                }
+            }
+        } else if (node instanceof ObjectNode object) {
+            Map<String, JsonNode> fields = new LinkedHashMap<>();
+            for (Map.Entry<String, JsonNode> field : object.properties()) {
+                JsonNode safe = scrub(field.getValue(), token);
+                String name = field.getKey().replace(token, EchoedCredentials.MARKER);
+                changed |= safe != null || !name.equals(field.getKey());
+                fields.put(name, safe == null ? field.getValue() : safe);
+            }
+            if (changed) {
+                object.removeAll();
+                object.setAll(fields);
+            }
+        }
+        return changed ? node : null;
+    }
+
+    /**
+     * A HOOK response body with {@code token} removed. A JSON body has it removed from every decoded string
+     * value and key, and is re-serialised only if one changed. Any other body has the raw and JSON-escaped
+     * spellings replaced; if a loose JSON decoding of what is left still shows the token, it is omitted.
+     */
+    private static String redactResponse(String body, String token) {
+        if (token == null || body == null) {
+            return body;
+        }
+        try {
+            JsonNode json = EXACT.readTree(body);
+            JsonNode safe = scrub(json, token);
+            return safe == null ? body : safe.toString();
+        } catch (IOException notJson) {
+            String safe = redactToken(body, token);
+            return looselyDecoded(safe).contains(token) ? null : safe;
+        }
+    }
+
+    /** {@code text} with JSON string escapes decoded wherever they appear; unknown escapes are kept. */
+    static String looselyDecoded(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != '\\' || i + 1 == text.length()) {
+                out.append(c);
+                continue;
+            }
+            char next = text.charAt(i + 1);
+            int simple = "\"\\/bfnrt".indexOf(next);
+            if (simple >= 0) {
+                out.append("\"\\/\b\f\n\r\t".charAt(simple));
+                i++;
+            } else if (next == 'u' && i + 6 <= text.length() && isHex(text, i + 2, i + 6)) {
+                out.append((char) Integer.parseInt(text.substring(i + 2, i + 6), 16));
+                i += 5;
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean isHex(String text, int from, int to) {
+        for (int i = from; i < to; i++) {
+            if (Character.digit(text.charAt(i), 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -232,9 +332,6 @@ public final class ExchangeSender {
      * only the start of an escaped spelling (a token ending in a backslash, say) and leaves a stray tail.
      */
     private static String redactToken(String text, String token) {
-        if (token == null || token.isEmpty()) {
-            return text;
-        }
         String quoted = MAPPER.getNodeFactory().textNode(token).toString();
         String escaped = quoted.substring(1, quoted.length() - 1);
         String[] spellings = new LinkedHashSet<>(List.of(escaped.replace("/", "\\/"), escaped, token))
@@ -246,7 +343,7 @@ public final class ExchangeSender {
         if (phase == PayerCallPhase.HOOK) {
             // A payer that echoes the EHR token back must not leak it into the listener either. If the
             // request could not be read, the token is unknown, so the response cannot be checked: omit it.
-            return hook.readable() ? redactToken(body, hook.accessToken()) : null;
+            return hook.readable() ? redactResponse(body, hook.accessToken()) : null;
         }
         if (phase != PayerCallPhase.TOKEN) {
             return body;

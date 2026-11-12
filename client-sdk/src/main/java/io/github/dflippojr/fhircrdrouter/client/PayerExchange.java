@@ -16,11 +16,14 @@ import java.util.OptionalInt;
  *   <li>TOKEN requests have a null body, and TOKEN responses keep only scalar {@code token_type},
  *       {@code expires_in} and {@code scope};</li>
  *   <li>in a HOOK request body, {@code fhirAuthorization.access_token}, the EHR's FHIR token, becomes
- *       {@code [REDACTED]}, as does any other copy of that token in the request or response body spelled
- *       exactly as sent, JSON-escaped the way Jackson writes it, or that way with {@code /} written as
- *       <code>&#92;/</code> (#164). A copy spelled any other way, such as with <code>&#92;uXXXX</code>
- *       escapes, base64-encoded or split up, is not found. If the HOOK request body cannot be read as
- *       JSON, both bodies are null. The rest of a HOOK body is as sent or received.</li>
+ *       {@code [REDACTED]} (#164). The token is also replaced wherever else it appears: in every string
+ *       value and key of a JSON request or response body, compared after JSON decoding, so no escape
+ *       spelling hides it, and in every response header name and value. A JSON body is re-serialised only
+ *       when something in it changed. A non-JSON response body has the raw and JSON-escaped spellings
+ *       replaced, and is null if a loose JSON decoding of the rest still shows the token. A copy that is
+ *       transformed (base64-encoded or split up, say) is not found. If the HOOK request body cannot be
+ *       read as JSON, both bodies are null and the response headers are empty. The rest of a HOOK
+ *       exchange is as sent or received.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty
  * headers/status. Nothing else is redacted: hook bodies may contain PHI, and the listener owns their

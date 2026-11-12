@@ -129,7 +129,7 @@ class ExchangeSenderTest {
     void nonTextOrEmptyTokenIsStillReplaced() {
         assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", null),
                 ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":{\"k\":\"tok-164\"}}}"));
-        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"x\":\"\"}", ""),
+        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"x\":\"\"}", null),
                 ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"\"},\"x\":\"\"}"));
     }
 
@@ -166,6 +166,48 @@ class ExchangeSenderTest {
         assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", exchange.requestBody());
         assertEquals("{\"slash\":\"[REDACTED]\",\"plain\":\"[REDACTED]\",\"raw\":\"x a/b\"}", exchange.responseBody());
         new com.fasterxml.jackson.databind.ObjectMapper().readTree(exchange.responseBody());
+    }
+
+    @Test
+    void tokenInKeysAndEscapedValuesIsRedactedAfterDecoding() {
+        String body = "{\"fhirAuthorization\":{\"access_token\":\"t/k\"},\"context\":{\"t\\/k\":[\"x t\\u002fk\",1,{\"t/k\":2}]}}";
+
+        assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},"
+                        + "\"context\":{\"[REDACTED]\":[\"x [REDACTED]\",1,{\"[REDACTED]\":2}]}}",
+                ExchangeSender.redactFhirAuthorization(body).body());
+    }
+
+    @Test
+    void jsonResponseWithoutTheTokenKeepsItsBytes() throws Exception {
+        String reply = "{ \"cards\" : [ ],\n \"n\":1.50 }";
+        hookWithResponse("t/k", 200, reply);
+
+        assertEquals(reply, exchanges.get(0).responseBody());
+    }
+
+    @Test
+    void nonJsonResponseIsRedactedOrOmittedWhenATokenSpellingSurvives() throws Exception {
+        hookWithResponse("t/k", 502, "<html>t/k and t\\/k \\q \\u00zz end\\</html>");
+        assertEquals("<html>[REDACTED] and [REDACTED] \\q \\u00zz end\\</html>", exchanges.get(0).responseBody());
+
+        exchanges.clear();
+        hookWithResponse("t/k", 502, "<html>t\\u002fk</html>");
+        assertNull(exchanges.get(0).responseBody());
+    }
+
+    @Test
+    void looseDecodingHandlesEveryEscape() {
+        assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
+        assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));
+    }
+
+    private void hookWithResponse(String token, int status, String reply) throws Exception {
+        String path = "/cds-services/r" + exchanges.size() + status + reply.length();
+        server.createContext(path, e -> TestResponses.respond(e, status, reply));
+        String sent = "{\"fhirAuthorization\":{\"access_token\":\"" + token + "\"}}";
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + path))
+                .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
+        send(request, sent, PayerCallPhase.HOOK);
     }
 
     @Test

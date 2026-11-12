@@ -565,17 +565,21 @@ Before delivery, the SDK replaces Authorization values with their scheme plus
 and TOKEN response bodies become JSON containing only scalar `token_type`,
 `expires_in` and `scope` fields; malformed or non-JSON responses become `{}`.
 These rules also apply to unsuccessful token requests. In a HOOK request body,
-`fhirAuthorization.access_token` (the EHR's FHIR token) becomes `"[REDACTED]"`,
-and every other copy of that token in the HOOK request or response body becomes
-`[REDACTED]` too, so a payer that echoes it back verbatim cannot leak it into your
-logs. A copy is found only when it is spelled exactly as sent, JSON-escaped the
-way Jackson writes it (`\"`, `\\`, `\n` and so on), or that way with `/` written
-as `\/`. One written with `\uXXXX` escapes, base64-encoded or split up is not. The
-rest of the body, including the other `fhirAuthorization` fields, is kept as sent.
-If the HOOK request body cannot be read as JSON (it is not JSON, or it is past
-Jackson's read limits, such as a string over 20 million characters), the token
-cannot be found, so both the request and response bodies are delivered as `null`.
-Nothing else in a body is redacted.
+`fhirAuthorization.access_token` (the EHR's FHIR token) becomes `"[REDACTED]"`.
+The token is also replaced with `[REDACTED]` wherever else it appears in the HOOK
+exchange, so a payer that echoes it back cannot leak it into your logs: in every
+string value and object key of a JSON request or response body, compared after
+JSON decoding so no escape spelling (`\/`, `\uXXXX` and so on) hides it, and in
+every response header name and value. A JSON body is re-serialised only if
+something in it changed; otherwise it is delivered byte for byte. A response body
+that is not JSON (an HTML error page, say) has the raw and JSON-escaped spellings
+replaced, and is delivered as `null` if a loose JSON decoding of what is left still
+shows the token. A copy that has been transformed, such as base64-encoded or split
+up, is not found. The rest of the body, including the other `fhirAuthorization`
+fields, is kept as sent. If the HOOK request body cannot be read as JSON (it is not
+JSON, or it is past Jackson's read limits, such as a string over 20 million
+characters), the token cannot be found, so the request and response bodies are
+delivered as `null` and the response headers as empty. Nothing else is redacted.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The

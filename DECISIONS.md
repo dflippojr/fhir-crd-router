@@ -244,9 +244,9 @@ FHIR server ([CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#passing-the-access-t
 `PayerExchange.requestBody` used to hold it verbatim, so a listener that
 logged the exchange logged a live bearer token. `ExchangeSender` now replaces
 `/fhirAuthorization/access_token` with `[REDACTED]` before delivery, and
-replaces every other copy of the token in that HOOK request and response
-body: raw, JSON-escaped as Jackson writes it, or that with `/` as `\/`,
-longest spelling first so a raw match never splits an escaped one.
+replaces the token wherever else it appears in that HOOK exchange: every
+string value and key of a JSON body, compared after decoding, and every
+response header name and value.
 
 - **Redact the field, not the bodies.** The alternative was a `toString()`
   that omits or summarises the bodies. Listeners exist to debug payer calls,
@@ -255,16 +255,24 @@ longest spelling first so a raw match never splits an escaped one.
   the record or logged the body field would still leak it. Redacting the
   one field closes both and keeps the rest of the body as sent.
 - **Response echoes too.** A payer can echo the token back, for example in
-  an error message. The token is known at the time of delivery, so removing
-  it from the HOOK response body costs one string replace.
-- **Exact re-serialisation.** Only a body with a `fhirAuthorization.access_token`
-  is re-serialised. It is read with exact decimals so numbers keep their
+  an error message or a header. The token is known at the time of delivery,
+  so it is removed from the HOOK response body and headers as well.
+- **Decode, don't enumerate.** JSON offers many spellings of one string, so
+  a JSON body is parsed and each decoded string value and key is checked,
+  rather than matching a list of escaped spellings in the text. A body that
+  is not JSON has no decoding to apply: the raw and JSON-escaped spellings
+  are replaced, and if a loose JSON decoding of the rest still shows the
+  token, the body is omitted.
+- **Exact re-serialisation.** A request body is re-serialised only when it
+  has a `fhirAuthorization.access_token`, and a response body only when a
+  string in it changed. It is read with exact decimals so numbers keep their
   original text. A HOOK body that cannot be read as JSON (not JSON, or past
-  Jackson's read limits) is delivered as `null`, and so is its response: with
-  the token unknown, neither can be checked, so both fail closed.
+  Jackson's read limits) is delivered as `null`, and so is its response, with
+  empty response headers: with the token unknown, none can be checked, so all
+  fail closed.
 - **Not covered.** A token pasted by the caller into another field under a
-  different spelling (base64 of it, say) is not found. `PayerCallException`
-  bodies are a separate path and are not changed here.
+  transformed spelling (base64 of it, say) is not found.
+  `PayerCallException` is a separate path and is not changed here.
 
 ## Not yet done
 
