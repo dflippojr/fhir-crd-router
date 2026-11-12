@@ -334,6 +334,17 @@ class ExchangeSenderTest {
     }
 
     @Test
+    void serialisedRequestThatWouldStillContainTheTokenIsOmitted() {
+        String body = "{\"fhirAuthorization\":{\"access_token\":\"tab164\"},\"context\":{\"x\":\"\\tab164\"}}";
+
+        ExchangeSender.HookBody safe = ExchangeSender.redactFhirAuthorization(body);
+
+        assertEquals("tab164", safe.accessToken());
+        assertTrue(safe.readable());
+        assertNull(safe.body());
+    }
+
+    @Test
     void looseDecodingHandlesEveryEscape() {
         assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
         assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));
