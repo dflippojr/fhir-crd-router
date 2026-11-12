@@ -182,7 +182,13 @@ public final class OAuth2TokenClient {
             }
             mine.complete(result);
             return result.accessToken();
-        } catch (RuntimeException | Error e) {
+        } catch (RuntimeException e) {
+            // Other calls may be waiting on this flight: redact the failure under this call's EHR context
+            // before any of them can see it (#164).
+            RuntimeException safe = EhrRedaction.current().exception(e);
+            mine.completeExceptionally(safe);
+            throw safe;
+        } catch (Error e) {
             mine.completeExceptionally(e);
             throw e;
         } finally {

@@ -293,6 +293,8 @@ response header name and value.
   `ExchangeSender` for every listener exchange of every phase (HOOK, TOKEN,
   a refresh after a 401), the token client's error body before truncation,
   and `EhrRedaction.exception` for every exception leaving either method.
+  A token fetch shared by concurrent calls is redacted under the context
+  of the call that sent it before any waiting call can see its failure.
   As a last check, an exchange that still shows the token is not
   delivered, and an exception copy that still shows it is replaced by a
   `RouterException` naming only the original class.

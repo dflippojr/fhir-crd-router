@@ -617,8 +617,10 @@ in its message, cause or suppressed chain, printed stack trace, or a
 (`PayerCallException`, `RouterException`, `IllegalArgumentException`,
 `IllegalStateException`; any other class becomes a `RouterException` naming it)
 with the token removed, a redacted cause and no suppressed exceptions, and the
-original stack trace. An exchange that would still show the token after all of
-this is not delivered.
+original stack trace. When concurrent calls share one token fetch and it fails,
+the failure is redacted with the context of the call that sent it before the other
+calls receive it. An exchange that would still show the token after all of this is
+not delivered.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
