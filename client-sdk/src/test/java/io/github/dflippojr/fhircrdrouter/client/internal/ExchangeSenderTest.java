@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /** What {@link ExchangeSender} hands a listener: the redaction arms the client-level tests never reach (#201). */
 class ExchangeSenderTest {
@@ -245,6 +246,36 @@ class ExchangeSenderTest {
             assertFalse(exchange.toString().contains(token), exchange.toString());
             assertFalse(chain(exchange.error()).contains(token), chain(exchange.error()));
         }
+    }
+
+    @Test
+    void safeErrorKeepsTheKindAndDropsTheToken() {
+        IOException clean = new IOException("connection reset");
+        assertSame(clean, ExchangeSender.safeError(clean, "t/k", false));
+        assertSame(clean, ExchangeSender.safeError(clean, null, false));
+        assertNull(ExchangeSender.safeError(null, "t/k", true));
+
+        assertSafe(new java.net.http.HttpConnectTimeoutException("t/k"), java.net.http.HttpConnectTimeoutException.class);
+        assertSafe(new java.net.http.HttpTimeoutException("x t/k"), java.net.http.HttpTimeoutException.class);
+        assertSafe(new InterruptedException("t\\/k"), InterruptedException.class);
+        IOException wrapped = new IOException("outer", new IllegalStateException("t/k"));
+        assertSafe(wrapped, IOException.class);
+        IOException suppressed = new IOException("outer");
+        suppressed.addSuppressed(new IOException("t/k"));
+        suppressed.addSuppressed(suppressed.getSuppressed()[0]);
+        assertSafe(suppressed, IOException.class);
+
+        Exception unreadable = ExchangeSender.safeError(new java.net.http.HttpTimeoutException("anything"), null, true);
+        assertEquals("java.net.http.HttpTimeoutException: [message omitted]", unreadable.getMessage());
+        assertEquals(java.net.http.HttpTimeoutException.class, unreadable.getClass());
+    }
+
+    private static void assertSafe(Exception error, Class<?> kind) {
+        Exception safe = ExchangeSender.safeError(error, "t/k", false);
+        assertEquals(kind, safe.getClass());
+        assertNull(safe.getCause());
+        assertFalse(ExchangeSender.looselyDecoded(chain(safe)).contains("t/k"), chain(safe));
+        assertTrue(safe.getMessage().startsWith(error.getClass().getName() + ": "), safe.getMessage());
     }
 
     private static String chain(Throwable error) {

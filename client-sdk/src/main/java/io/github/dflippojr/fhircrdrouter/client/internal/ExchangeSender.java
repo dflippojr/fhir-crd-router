@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -19,16 +20,22 @@ import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
@@ -44,6 +51,9 @@ public final class ExchangeSender {
     /** Reads decimals exactly, so a redacted hook body keeps every number as it was sent. */
     private static final ObjectMapper EXACT = JsonMapper.builder()
             .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+            // A body Jackson would read only in part (trailing text, a repeated key) is not JSON here.
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .nodeFactory(JsonNodeFactory.withExactBigDecimals(true)).build();
 
     private ExchangeSender() { }
@@ -85,7 +95,8 @@ public final class ExchangeSender {
                             case HOOK -> hook.body();
                             case DISCOVERY -> body;
                         },
-                        response == null ? null : safeBody(phase, response.body(), hook), error));
+                        response == null ? null : safeBody(phase, response.body(), hook),
+                        safeError(error, token, unreadable)));
             }
         }
     }
@@ -283,14 +294,65 @@ public final class ExchangeSender {
         if (token == null || body == null) {
             return body;
         }
+        String safe;
         try {
             JsonNode json = EXACT.readTree(body);
-            JsonNode safe = scrub(json, token);
-            return safe == null ? body : safe.toString();
+            JsonNode scrubbed = scrub(json, token);
+            safe = scrubbed == null ? body : scrubbed.toString();
         } catch (IOException notJson) {
-            String safe = redactToken(body, token);
-            return looselyDecoded(safe).contains(token) ? null : safe;
+            safe = redactToken(body, token);
         }
+        // Whatever path ran, a body that still decodes to the token is not delivered.
+        return looselyDecoded(safe).contains(token) ? null : safe;
+    }
+
+    /**
+     * The transport error as a listener sees it. A message can quote what the payer sent (a malformed
+     * status line, say), so if any message in the chain shows the token, or the token is unknown because
+     * the request could not be read, the listener gets a copy of the same kind with the token removed and
+     * no cause. The caller still gets the original.
+     */
+    static Exception safeError(Exception error, String token, boolean unreadable) {
+        if (error == null || !unreadable && (token == null || !mentions(error, token))) {
+            return error;
+        }
+        String message = unreadable ? "[message omitted]" : redactToken(String.valueOf(error.getMessage()), token);
+        if (!unreadable && looselyDecoded(message).contains(token)) {
+            message = EchoedCredentials.MARKER;
+        }
+        message = error.getClass().getName() + ": " + message;
+        Exception safe;
+        if (error instanceof HttpConnectTimeoutException) {
+            safe = new HttpConnectTimeoutException(message);
+        } else if (error instanceof HttpTimeoutException) {
+            safe = new HttpTimeoutException(message);
+        } else if (error instanceof InterruptedException) {
+            safe = new InterruptedException(message);
+        } else {
+            safe = new IOException(message);
+        }
+        safe.setStackTrace(error.getStackTrace());
+        return safe;
+    }
+
+    private static boolean mentions(Throwable error, String token) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> todo = new ArrayDeque<>(List.of(error));
+        while (!todo.isEmpty()) {
+            Throwable t = todo.pop();
+            if (!seen.add(t)) {
+                continue;
+            }
+            if (looselyDecoded(String.valueOf(t.getMessage())).contains(token)
+                    || looselyDecoded(t.toString()).contains(token)) {
+                return true;
+            }
+            if (t.getCause() != null) {
+                todo.push(t.getCause());
+            }
+            todo.addAll(List.of(t.getSuppressed()));
+        }
+        return false;
     }
 
     /** {@code text} with JSON string escapes decoded wherever they appear; unknown escapes are kept. */
