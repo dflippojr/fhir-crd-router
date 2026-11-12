@@ -161,6 +161,30 @@ class PayerExchangeFhirAuthorizationTest {
         assertEquals(503, e.statusCode().orElseThrow());
     }
 
+    @Test
+    void retryTimingStillComesFromThePayerWhenTheRequestCannotBeRead() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger calls = new AtomicInteger();
+        server.createContext("/cds-services/x", e -> {
+            e.getRequestBody().readAllBytes();
+            boolean first = calls.getAndIncrement() == 0;
+            if (first) {
+                e.getResponseHeaders().add("Retry-After", "0");
+            }
+            TestResponses.respond(e, first ? 429 : 200, "{\"cards\":[]}");
+        });
+        server.start();
+        servers.add(server);
+        // A prefetch string past Jackson's read limit: valid to send, but the SDK cannot read it back.
+        CdsHookRequest large = new CdsHookRequest("order-sign", "instance", Map.of("patientId", "pat-1"),
+                Map.of("big", "x".repeat(com.fasterxml.jackson.core.StreamReadConstraints.DEFAULT_MAX_STRING_LEN + 1)))
+                .withFhirServer(EHR, AUTH);
+
+        client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(2))).callHook(record(server), "x", large);
+
+        assertEquals(2, calls.get());
+    }
+
     private static void collectStrings(JsonNode node, List<String> out) {
         if (node.isTextual()) {
             out.add(node.asText());

@@ -270,6 +270,14 @@ class ExchangeSenderTest {
         assertEquals(java.net.http.HttpTimeoutException.class, unreadable.getClass());
     }
 
+    @Test
+    void safeErrorFindsARawTokenThatDecodingWouldHide() {
+        // A backslash right before the token turns its first character into an escape when decoded.
+        Exception safe = ExchangeSender.safeError(new IOException("status \\tok-164"), "tok-164", false);
+
+        assertFalse(chain(safe).contains("tok-164"), chain(safe));
+    }
+
     private static void assertSafe(Exception error, Class<?> kind) {
         Exception safe = ExchangeSender.safeError(error, "t/k", false);
         assertEquals(kind, safe.getClass());
