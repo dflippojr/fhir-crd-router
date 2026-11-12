@@ -151,7 +151,9 @@ token is restricted to. `expiresIn` is the token's lifetime in seconds, so
 the record also rejects an `expiresIn` of 0 or less: if the token is about to
 expire, refresh it rather than send a lifetime that has run out.
 `toString()` prints `accessToken=[REDACTED]` in place of the token; the JSON
-sent to the payer still carries it. A `fhirAuthorization` without a `fhirServer` is
+sent to the payer still carries it, and a `PayerExchangeListener` sees
+`"access_token":"[REDACTED]"` in its place (see
+[Exchange logging and tracing](#exchange-logging-and-tracing)). A `fhirAuthorization` without a `fhirServer` is
 [not allowed](https://cds-hooks.hl7.org/2.0/#http-request_1), so
 `withFhirServer(null, auth)` throws `IllegalArgumentException`.
 
@@ -434,7 +436,9 @@ of `RouterException`, so existing catch blocks still work. `phase()` returns
 `PayerCallPhase.DISCOVERY`, `TOKEN` or `HOOK`; `payerId()` and `uri()` identify
 the call. `statusCode()` is an `OptionalInt`, empty for transport failures,
 interruptions and timeouts. `timedOut()` distinguishes HTTP request/connect
-timeouts from other transport errors; the cause preserves the transport error.
+timeouts from other transport errors; the cause preserves the transport error,
+except in a hook call whose request carries a `fhirAuthorization`, where no cause
+is attached (see [Exchange logging and tracing](#exchange-logging-and-tracing)).
 
 `responseHeaders()` returns immutable, case-insensitive Java `HttpHeaders`
 containing only `WWW-Authenticate`, `Retry-After`, `Content-Type`, `X-Request-Id`
@@ -457,8 +461,20 @@ occurrence of the credential sent on the failing attempt becomes `[REDACTED]`:
 Only the credential exactly as sent is matched. An echo the payer re-encodes,
 such as the Base64 `Authorization: Basic` value or a JSON-escaped `\/`, is not
 redacted.
-Successful token bodies are never attached to exceptions. Hook and discovery
-bodies may contain sensitive clinical data; take care when logging them.
+
+On a `HOOK` failure the EHR's `fhirAuthorization` token is also removed, the same
+way as for an exchange listener (see [Exchange logging and
+tracing](#exchange-logging-and-tracing)): from every decoded string in a JSON
+body, from the raw and JSON-escaped spellings in any other body (which is dropped
+if a loose decoding still shows the token), and from the kept header names and
+values. This happens before the body is cut at 4096 bytes. When the hook request
+carries a `fhirAuthorization`, every exception the call throws is a fresh one with
+no cause (see below): a transport failure's `PayerCallException` keeps
+`timedOut()` without one, and the class name of each cause is listed in the
+message as `(cause: <class>)` (cause messages are left out: a credential
+provider's can describe secret material). Successful token bodies are never
+attached to exceptions. Hook and discovery bodies may contain sensitive clinical
+data; take care when logging them.
 
 ```java
 try {
@@ -562,11 +578,62 @@ Before delivery, the SDK replaces Authorization values with their scheme plus
 `[REDACTED]` and drops Set-Cookie headers. TOKEN request bodies are omitted (`null`),
 and TOKEN response bodies become JSON containing only scalar `token_type`,
 `expires_in` and `scope` fields; malformed or non-JSON responses become `{}`.
-These rules also apply to unsuccessful token requests.
+These rules also apply to unsuccessful token requests. In a HOOK request body,
+`fhirAuthorization.access_token` (the EHR's FHIR token) becomes `"[REDACTED]"`.
+The token is also replaced with `[REDACTED]` wherever else it appears in the HOOK
+exchange, so a payer that echoes it back cannot leak it into your logs: in every
+string value and object key of a JSON request or response body, compared after
+JSON decoding so no escape spelling (`\/`, `\uXXXX` and so on) hides it, and in
+every response header name and value. A JSON body is re-serialised only if
+something in it changed; otherwise it is delivered byte for byte. A response body
+that is not JSON (an HTML error page, say) has the raw and JSON-escaped spellings
+replaced, and is delivered as `null` if a loose JSON decoding of what is left
+still shows the token. A copy that has been transformed, such as base64-encoded or
+split up, is not found. A JSON body whose re-serialised text would still contain
+the token anywhere is delivered as `null`. The rest of the body, including the
+other `fhirAuthorization` fields, is kept as sent. If the HOOK request body cannot
+be read as JSON (it is not JSON, or it is past Jackson's read limits, such as a
+string over 20 million characters), its request body is delivered as `null`.
+Within `callHook` and `callHookRaw` the token is still known from the request, so
+the response body and headers are redacted as usual. Only when the token is
+unknown as well (an exchange outside such a call whose body cannot be read) are
+the response body delivered as `null` and the response headers as empty. A
+response body counts as JSON only if all of it is one JSON value with no repeated
+key; anything else takes the non-JSON path. When the token is known, a transport
+error always reaches the listener as a fresh exception of the same kind
+(`IOException`, `HttpTimeoutException`, `HttpConnectTimeoutException` or
+`InterruptedException`) whose message names the original class, with the token
+removed and no cause. Nothing else is redacted.
 
-**PHI:** HOOK request and response bodies pass through exactly as sent and received.
-They may contain protected health information (PHI), including any FHIR authorization
-supplied in a hook request. The listener owns what it logs, traces, stores and retains;
+During `callHook` and `callHookRaw`, one redaction context for the request's EHR
+token covers the whole call. Every exchange the listener receives during the call
+is redacted with it, whatever its phase: the HOOK attempts, and the TOKEN
+exchanges, including a token refresh after a 401 (the TOKEN allowlist above still
+applies first, and then the token is removed from its `scope`, headers and error).
+Every exception that leaves either method is replaced by a fresh one, whether or
+not its text shows the token, because an exception can also reach the token
+through objects it references (a parser's path back to the request it was writing,
+say). The fresh exception is built only from the original's message with the token
+removed, the class names of its causes, its class, and its stack frames with the
+token removed from any frame naming it. It has no cause and no suppressed
+exceptions. Its class is the original's: `PayerCallException` keeps phase, payer,
+status, `timedOut()`, the redacted body and kept headers, and the URI with the
+token replaced by `REDACTED` (or no URI if that is not enough);
+`EndpointUrlException` keeps `field()`, `payerId()` and `problem()`; any other
+public JDK or SDK exception with a public `(String)` constructor
+(`IllegalArgumentException`, `RouterException`, ...) is rebuilt as the same class.
+Any other class, such as your own credential provider's exception type, becomes a
+`RouterException` naming it. A call whose request has no `fhirAuthorization`
+throws its exceptions unchanged. So does an `AuditPersistenceException` from an
+audited credential provider: callers must receive it by type, and it holds only a
+fixed message, an operation state and ids. When concurrent calls share one token
+fetch and it fails, the failure is redacted with the context of the call that sent
+it before the other calls receive it. An exchange that would still show the token
+after all of this is not delivered.
+
+**PHI:** apart from that token, HOOK request and response bodies pass through exactly
+as sent and received. They may contain protected health information (PHI). The
+listener owns what it logs, traces, stores and retains;
 apply your deployment's access and retention controls. Discovery bodies also pass
 through. The quickstart prints metadata only, one line per HTTP exchange.
 

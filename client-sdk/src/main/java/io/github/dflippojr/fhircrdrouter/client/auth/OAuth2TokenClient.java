@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
+import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -181,7 +182,13 @@ public final class OAuth2TokenClient {
             }
             mine.complete(result);
             return result.accessToken();
-        } catch (RuntimeException | Error e) {
+        } catch (RuntimeException e) {
+            // Other calls may be waiting on this flight: redact the failure under this call's EHR context
+            // before any of them can see it (#164).
+            RuntimeException safe = EhrRedaction.current().exception(e);
+            mine.completeExceptionally(safe);
+            throw safe;
+        } catch (Error e) {
             mine.completeExceptionally(e);
             throw e;
         } finally {
@@ -333,7 +340,10 @@ public final class OAuth2TokenClient {
             JsonNode json = mapper.readTree(body);
             for (String field : List.of("error", "error_description")) {
                 if (json != null && json.path(field).isTextual()) {
-                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential));
+                    // During a hook call, the EHR's fhirAuthorization token is removed too (#164), before
+                    // PayerCallException truncates the body.
+                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential,
+                            EhrRedaction.current().token()));
                 }
             }
         } catch (IOException e) {

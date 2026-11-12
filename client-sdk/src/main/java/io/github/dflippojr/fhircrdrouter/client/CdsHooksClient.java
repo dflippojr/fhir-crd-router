@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
+import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -22,6 +23,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
@@ -313,11 +315,25 @@ public final class CdsHooksClient {
     }
 
     private JsonNode readBody(HttpResponse<String> response, String context) {
+        return readBody(response, context, null);
+    }
+
+    /** Reads a JSON body; a parse error that quotes {@code ehrToken} is reported without it (#164). */
+    private JsonNode readBody(HttpResponse<String> response, String context, String ehrToken) {
         try {
             return mapper.readTree(response.body());
         } catch (IOException e) {
-            throw new RouterException(context + " returned an unparseable body", e);
+            throw new RouterException(context + " returned an unparseable body", withoutToken(e, ehrToken));
         }
+    }
+
+    /** {@code error}, or a copy of it without {@code ehrToken} in its diagnostics if any of them shows it. */
+    private static Exception withoutToken(Exception error, String ehrToken) {
+        return ehrToken == null ? error : ExchangeSender.safeError(error, ehrToken, false);
+    }
+
+    private static String ehrToken(CdsHookRequest request) {
+        return request.fhirAuthorization() == null ? null : request.fhirAuthorization().accessToken();
     }
 
     private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context, FreshToken freshToken) {
@@ -326,39 +342,53 @@ public final class CdsHooksClient {
                 .GET());
     }
 
-    /** Invokes a named hook (raw passthrough form). */
+    /**
+     * Invokes a named hook (raw passthrough form). The request's EHR {@code fhirAuthorization} token is
+     * kept out of every listener exchange and every exception of the call (#164).
+     */
     public JsonNode callHookRaw(ConnectionRecord record, String serviceId, CdsHookRequest request) {
-        String segment = encodeServiceId(serviceId);
-        String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
-        String body;
-        try {
-            body = mapper.writeValueAsString(request);
-        } catch (IOException e) {
-            throw new RouterException(context + " could not serialize request", e);
+        EhrRedaction redaction = EhrRedaction.of(ehrToken(request));
+        try (EhrRedaction.Scope ignored = redaction.open()) {
+            String segment = encodeServiceId(serviceId);
+            String context = "Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId;
+            String body;
+            try {
+                body = mapper.writeValueAsString(request);
+            } catch (IOException e) {
+                throw new RouterException(context + " could not serialize request", withoutToken(e, ehrToken(request)));
+            }
+            HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
+                    .uri(URI.create(servicesUrl(record) + "/" + segment))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body)));
+            return readBody(response, context, ehrToken(request));
+        } catch (RuntimeException e) {
+            throw redaction.exception(e);
         }
-        HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
-                .uri(URI.create(servicesUrl(record) + "/" + segment))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body)));
-        return readBody(response, context);
     }
 
     /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
     public CdsHookResponse callHook(ConnectionRecord record, String serviceId, CdsHookRequest request) {
-        JsonNode raw = callHookRaw(record, serviceId, request);
-        // CDS Hooks 2.0 HTTP Response (https://cds-hooks.hl7.org/2.0/#http-response): the body is a JSON
-        // object. Any other root would read as "no cards", so it fails instead. The body is not echoed.
-        if (raw == null || !raw.isObject()) {
-            throw new RouterException("Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId
-                    + " returned a response body that is not a JSON object");
+        EhrRedaction redaction = EhrRedaction.of(ehrToken(request));
+        try (EhrRedaction.Scope ignored = redaction.open()) {
+            JsonNode raw = callHookRaw(record, serviceId, request);
+            // CDS Hooks 2.0 HTTP Response (https://cds-hooks.hl7.org/2.0/#http-response): the body is a JSON
+            // object. Any other root would read as "no cards", so it fails instead. The body is not echoed.
+            if (raw == null || !raw.isObject()) {
+                throw new RouterException("Hook call for payerId=" + record.payerId() + " serviceId=" + serviceId
+                        + " returned a response body that is not a JSON object");
+            }
+            return new CdsHookResponse(
+                    parseArray(record, raw, "cards", Card.class, ehrToken(request)),
+                    parseArray(record, raw, "systemActions", SystemAction.class, ehrToken(request)),
+                    raw);
+        } catch (RuntimeException e) {
+            throw redaction.exception(e);
         }
-        return new CdsHookResponse(
-                parseArray(record, raw, "cards", Card.class),
-                parseArray(record, raw, "systemActions", SystemAction.class),
-                raw);
     }
 
-    private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type) {
+    private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type,
+                                   String ehrToken) {
         JsonNode array = raw.path(field);
         if (!array.isMissingNode() && !array.isNull() && !array.isArray()) {
             throw new RouterException("Expected " + field + " to be an array for payerId=" + record.payerId());
@@ -373,7 +403,8 @@ public final class CdsHooksClient {
                 }
                 items.add(item);
             } catch (IOException e) {
-                throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(), e);
+                throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(),
+                        withoutToken(e, ehrToken));
             }
         }
         return items;
@@ -435,12 +466,22 @@ public final class CdsHooksClient {
                     continue;
                 }
                 // A payer may echo the bearer it rejected; keep it out of the exception callers log (#195).
+                // On a HOOK call it may also echo the EHR's fhirAuthorization token; remove that too (#164).
+                String failed = EchoedCredentials.redact(response.body(), sent.credential());
+                HttpResponse<String> kept = response;
+                if (phase == PayerCallPhase.HOOK) {
+                    ExchangeSender.SafeFailure safe = ExchangeSender.safeHookFailure(response, failed, body);
+                    kept = safe.response();
+                    failed = safe.body();
+                }
                 PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
-                        + status + ": ", phase, record.payerId(), uri, response,
-                        EchoedCredentials.redact(response.body(), sent.credential()));
+                        + status + ": ", phase, record.payerId(), uri, kept, failed);
+                // Retry timing comes from the payer's own response: the exception's headers may be sanitised.
                 Duration wait = policy.enabled() && RetryPolicy.retryable(status)
                         && throttleRetries + 1 < policy.maxAttempts()
-                        ? failure.retryAfter().orElse(null) : null;
+                        ? response.headers().firstValue("Retry-After")
+                                .flatMap(v -> PayerCallException.parseRetryAfter(v, Clock.systemUTC())).orElse(null)
+                        : null;
                 if (wait == null || wait.compareTo(policy.maxTotalWait().minus(waited)) > 0) {
                     throw failure;
                 }
