@@ -435,9 +435,16 @@ public final class CdsHooksClient {
                     continue;
                 }
                 // A payer may echo the bearer it rejected; keep it out of the exception callers log (#195).
+                // On a HOOK call it may also echo the EHR's fhirAuthorization token; remove that too (#164).
+                String failed = EchoedCredentials.redact(response.body(), sent.credential());
+                HttpResponse<String> kept = response;
+                if (phase == PayerCallPhase.HOOK) {
+                    ExchangeSender.SafeFailure safe = ExchangeSender.safeHookFailure(response, failed, body);
+                    kept = safe.response();
+                    failed = safe.body();
+                }
                 PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
-                        + status + ": ", phase, record.payerId(), uri, response,
-                        EchoedCredentials.redact(response.body(), sent.credential()));
+                        + status + ": ", phase, record.payerId(), uri, kept, failed);
                 Duration wait = policy.enabled() && RetryPolicy.retryable(status)
                         && throttleRetries + 1 < policy.maxAttempts()
                         ? failure.retryAfter().orElse(null) : null;

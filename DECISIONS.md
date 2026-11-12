@@ -271,8 +271,18 @@ response header name and value.
   empty response headers: with the token unknown, none can be checked, so all
   fail closed.
 - **Not covered.** A token pasted by the caller into another field under a
-  transformed spelling (base64 of it, say) is not found.
-  `PayerCallException` is a separate path and is not changed here.
+  transformed spelling (base64 of it, say) is not found. A transport
+  failure's `PayerCallException` cause is the JDK's exception, unchanged.
+- **Partly readable JSON is not JSON.** The reader rejects trailing content
+  and repeated keys, so a body Jackson would read only in part takes the
+  non-JSON path. Whatever path a response body takes, if a loose JSON
+  decoding of the result still shows the token, it is dropped.
+- **Errors too.** The listener's `error` is replaced by an exception of the
+  same kind, with the token removed and no cause, when any message in its
+  chain shows the token. The caller still gets the original.
+- **Payer call errors.** A HOOK `PayerCallException` gets the same treatment
+  for its body (and so its message) and its kept headers, through
+  `ExchangeSender.safeHookFailure`.
 
 ## Not yet done
 

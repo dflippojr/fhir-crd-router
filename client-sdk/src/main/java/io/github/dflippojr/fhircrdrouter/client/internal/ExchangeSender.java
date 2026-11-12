@@ -1,8 +1,8 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -16,11 +16,12 @@ import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
@@ -34,16 +35,19 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Stream;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
+
+import javax.net.ssl.SSLSession;
 
 /** Shared SDK implementation detail for payer and OAuth2 HTTP attempts. */
 public final class ExchangeSender {
@@ -188,6 +192,42 @@ public final class ExchangeSender {
         }
     }
 
+    /**
+     * {@code response} as a {@link io.github.dflippojr.fhircrdrouter.client.PayerCallException} may keep it,
+     * for a HOOK call that sent {@code hookBody}: the EHR token is removed from its header names and values,
+     * and its body is {@code body} with the token removed as for a listener (#164). A request body that
+     * cannot be read leaves the token unknown, so the headers become empty and the body null.
+     */
+    public static SafeFailure safeHookFailure(HttpResponse<String> response, String body, String hookBody) {
+        HookBody hook = redactFhirAuthorization(hookBody);
+        if (!hook.readable()) {
+            return new SafeFailure(withHeaders(response, HttpHeaders.of(Map.of(), (k, v) -> true)), null);
+        }
+        String token = hook.accessToken();
+        if (token == null) {
+            return new SafeFailure(response, body);
+        }
+        Map<String, List<String>> safe = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        response.headers().map().forEach((name, values) -> putRedacted(safe, name, values, token));
+        return new SafeFailure(withHeaders(response, HttpHeaders.of(safe, (k, v) -> true)), redactResponse(body, token));
+    }
+
+    /** A failed response with sanitised headers, and its sanitised body. */
+    public record SafeFailure(HttpResponse<String> response, String body) { }
+
+    private static HttpResponse<String> withHeaders(HttpResponse<String> response, HttpHeaders headers) {
+        return new HttpResponse<>() {
+            @Override public int statusCode() { return response.statusCode(); }
+            @Override public HttpRequest request() { return response.request(); }
+            @Override public Optional<HttpResponse<String>> previousResponse() { return Optional.empty(); }
+            @Override public HttpHeaders headers() { return headers; }
+            @Override public String body() { return null; }
+            @Override public Optional<SSLSession> sslSession() { return response.sslSession(); }
+            @Override public URI uri() { return response.uri(); }
+            @Override public HttpClient.Version version() { return response.version(); }
+        };
+    }
+
     /** Redacts request {@code Authorization}, drops {@code Set-Cookie}, and removes {@code token} from names and values. */
     private static HttpHeaders safeHeaders(HttpHeaders headers, boolean request, String token) {
         Map<String, List<String>> safe = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
@@ -195,12 +235,17 @@ public final class ExchangeSender {
             if (request && name.equalsIgnoreCase("Authorization")) {
                 safe.put(name, values.stream().map(ExchangeSender::redactAuthorization).toList());
             } else if (!name.equalsIgnoreCase("Set-Cookie")) {
-                safe.merge(EchoedCredentials.redact(name, token),
-                        values.stream().map(value -> EchoedCredentials.redact(value, token)).toList(),
-                        (a, b) -> Stream.concat(a.stream(), b.stream()).toList());
+                putRedacted(safe, name, values, token);
             }
         });
         return HttpHeaders.of(safe, (k, v) -> true);
+    }
+
+    /** Adds a header with {@code token} removed from its name and values; names that then collide merge. */
+    private static void putRedacted(Map<String, List<String>> headers, String name, List<String> values, String token) {
+        headers.merge(EchoedCredentials.redact(name, token),
+                values.stream().map(value -> EchoedCredentials.redact(value, token)).toList(),
+                (a, b) -> Stream.concat(a.stream(), b.stream()).toList());
     }
 
     private static String redactAuthorization(String value) {

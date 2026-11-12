@@ -459,6 +459,15 @@ occurrence of the credential sent on the failing attempt becomes `[REDACTED]`:
 Only the credential exactly as sent is matched. An echo the payer re-encodes,
 such as the Base64 `Authorization: Basic` value or a JSON-escaped `\/`, is not
 redacted.
+
+On a `HOOK` failure the EHR's `fhirAuthorization` token is also removed, the same
+way as for an exchange listener (see
+[Exchange logging and tracing](#exchange-logging-and-tracing)): from every decoded
+string in a JSON body, from the raw and JSON-escaped spellings in any other body
+(which is dropped if a loose decoding still shows the token), and from the kept
+header names and values. This happens before the body is cut at 4096 bytes. The
+exception's `cause`, on a transport failure, is the JDK's own exception and is
+not changed.
 Successful token bodies are never attached to exceptions. Hook and discovery
 bodies may contain sensitive clinical data; take care when logging them.
 
@@ -579,7 +588,12 @@ up, is not found. The rest of the body, including the other `fhirAuthorization`
 fields, is kept as sent. If the HOOK request body cannot be read as JSON (it is not
 JSON, or it is past Jackson's read limits, such as a string over 20 million
 characters), the token cannot be found, so the request and response bodies are
-delivered as `null` and the response headers as empty. Nothing else is redacted.
+delivered as `null` and the response headers as empty. A response body counts as
+JSON only if all of it is one JSON value with no repeated key; anything else takes
+the non-JSON path. A transport error whose message shows the token reaches the
+listener as an exception of the same kind (`IOException`, `HttpTimeoutException`,
+`HttpConnectTimeoutException` or `InterruptedException`) with the token removed and
+no cause; your call still throws the original. Nothing else is redacted.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The

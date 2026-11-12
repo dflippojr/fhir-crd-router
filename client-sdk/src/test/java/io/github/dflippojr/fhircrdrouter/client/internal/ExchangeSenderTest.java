@@ -278,6 +278,38 @@ class ExchangeSenderTest {
         assertTrue(safe.getMessage().startsWith(error.getClass().getName() + ": "), safe.getMessage());
     }
 
+    @Test
+    void safeHookFailureBranches() throws Exception {
+        server.createContext("/fail", e -> {
+            e.getResponseHeaders().add("X-Echo", "t/k");
+            TestResponses.respond(e, 503, "t/k");
+        });
+        java.net.http.HttpResponse<String> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create(base + "/fail")).GET().build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+
+        ExchangeSender.SafeFailure none = ExchangeSender.safeHookFailure(response, "t/k", "{\"hook\":\"x\"}");
+        assertSame(response, none.response());
+        assertEquals("t/k", none.body());
+
+        ExchangeSender.SafeFailure known = ExchangeSender.safeHookFailure(response, "t/k",
+                "{\"fhirAuthorization\":{\"access_token\":\"t/k\"}}");
+        assertEquals(List.of("[REDACTED]"), known.response().headers().allValues("X-Echo"));
+        assertEquals("[REDACTED]", known.body());
+
+        ExchangeSender.SafeFailure unreadable = ExchangeSender.safeHookFailure(response, "t/k", "{");
+        java.net.http.HttpResponse<String> kept = unreadable.response();
+        assertNull(unreadable.body());
+        assertTrue(kept.headers().map().isEmpty());
+        assertEquals(503, kept.statusCode());
+        assertSame(response.request(), kept.request());
+        assertEquals(response.uri(), kept.uri());
+        assertEquals(response.version(), kept.version());
+        assertEquals(response.sslSession(), kept.sslSession());
+        assertTrue(kept.previousResponse().isEmpty());
+        assertNull(kept.body());
+    }
+
     private static String chain(Throwable error) {
         StringBuilder out = new StringBuilder();
         for (Throwable t = error; t != null; t = t.getCause()) {
