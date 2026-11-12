@@ -90,17 +90,18 @@ public final class EhrRedaction {
      * {@link IllegalArgumentException}, {@link IllegalStateException}; any other class becomes a
      * {@link RouterException} whose message names it) with the token removed from its message, body and
      * headers, its cause replaced by a redacted copy with no chain of its own, no suppressed exceptions,
-     * and the original stack trace. Otherwise it returns {@code error} itself.
+     * and the original stack trace with the token removed from any frame that names it. Otherwise it
+     * returns {@code error} itself.
      */
     public RuntimeException exception(RuntimeException error) {
         if (token == null || !showsAnywhere(error)) {
             return error;
         }
         RuntimeException safe = copy(error);
-        safe.setStackTrace(error.getStackTrace());
+        safe.setStackTrace(ExchangeSender.safeFrames(error.getStackTrace(), token));
         if (showsAnywhere(safe)) {
             safe = new RouterException(error.getClass().getName() + ": " + EchoedCredentials.MARKER);
-            safe.setStackTrace(error.getStackTrace());
+            safe.setStackTrace(new StackTraceElement[0]);
         }
         return safe;
     }

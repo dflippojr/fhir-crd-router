@@ -280,7 +280,8 @@ response header name and value.
   decoding of the result still shows the token, it is dropped.
 - **Errors too.** On a HOOK call, a transport error whose chain shows the
   token is replaced by an exception of the same kind, with the token removed,
-  the original stack trace and no cause, for both the listener and the
+  the original stack trace (frames naming the token redacted) and no
+  cause, for both the listener and the
   caller's `PayerCallException`. A parser error quoting a HOOK response gets
   the same treatment as the cause of its `RouterException`. Keeping the kind
   keeps `timedOut()` and `PayerExchangeMetadata` outcomes working.

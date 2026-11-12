@@ -414,7 +414,8 @@ public final class ExchangeSender {
      * read, this returns a copy of the same kind ({@link HttpConnectTimeoutException},
      * {@link HttpTimeoutException}, {@link InterruptedException}, {@link RuntimeException}, otherwise
      * {@link IOException}) whose
-     * message names the original class, with the token removed, the original stack trace, and no cause or
+     * message names the original class, with the token removed, the original stack trace (any frame naming
+     * the token redacted), and no cause or
      * suppressed exceptions. Otherwise it returns {@code error} itself.
      */
     public static Exception safeError(Exception error, String token, boolean unreadable) {
@@ -438,8 +439,33 @@ public final class ExchangeSender {
         } else {
             safe = new IOException(message);
         }
-        safe.setStackTrace(error.getStackTrace());
+        safe.setStackTrace(safeFrames(error.getStackTrace(), token));
         return safe;
+    }
+
+    /** {@code frames} with {@code token} removed from every class, method, file and module name. */
+    static StackTraceElement[] safeFrames(StackTraceElement[] frames, String token) {
+        if (token == null) {
+            return frames;
+        }
+        StackTraceElement[] safe = frames.clone();
+        for (int i = 0; i < safe.length; i++) {
+            StackTraceElement f = safe[i];
+            if (shows(f.toString(), token)) {
+                safe[i] = new StackTraceElement(clean(f.getClassLoaderName(), token), clean(f.getModuleName(), token),
+                        clean(f.getModuleVersion(), token), clean(f.getClassName(), token),
+                        clean(f.getMethodName(), token), clean(f.getFileName(), token), f.getLineNumber());
+            }
+        }
+        return safe;
+    }
+
+    private static String clean(String text, String token) {
+        if (text == null) {
+            return null;
+        }
+        String safe = redactToken(text, token);
+        return shows(safe, token) ? EchoedCredentials.MARKER : safe;
     }
 
     static boolean mentions(Throwable error, String token) {
@@ -452,6 +478,11 @@ public final class ExchangeSender {
             }
             if (shows(String.valueOf(t.getMessage()), token) || shows(t.toString(), token)) {
                 return true;
+            }
+            for (StackTraceElement frame : t.getStackTrace()) {
+                if (shows(frame.toString(), token)) {
+                    return true;
+                }
             }
             if (t.getCause() != null) {
                 todo.push(t.getCause());

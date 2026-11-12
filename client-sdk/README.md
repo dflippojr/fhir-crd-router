@@ -461,21 +461,21 @@ such as the Base64 `Authorization: Basic` value or a JSON-escaped `\/`, is not
 redacted.
 
 On a `HOOK` failure the EHR's `fhirAuthorization` token is also removed, the same
-way as for an exchange listener (see
-[Exchange logging and tracing](#exchange-logging-and-tracing)): from every decoded
-string in a JSON body, from the raw and JSON-escaped spellings in any other body
-(which is dropped if a loose decoding still shows the token), and from the kept
-header names and values. This happens before the body is cut at 4096 bytes.
-Exception diagnostics on every HOOK failure path are redacted too: when the
-`cause` of a HOOK `PayerCallException` (a transport failure) or of a
-`RouterException` from reading or mapping a HOOK response (a parser error) would
-show the token, it is replaced by an exception of the same kind
-(`IOException`, `HttpTimeoutException`, `HttpConnectTimeoutException` or
-`InterruptedException`) whose message names the original class, with the token
-removed, the original stack trace, and no cause or suppressed exceptions. So
-`timedOut()` and the rest of the classification still work.
-Successful token bodies are never attached to exceptions. Hook and discovery
-bodies may contain sensitive clinical data; take care when logging them.
+way as for an exchange listener (see [Exchange logging and
+tracing](#exchange-logging-and-tracing)): from every decoded string in a JSON
+body, from the raw and JSON-escaped spellings in any other body (which is dropped
+if a loose decoding still shows the token), and from the kept header names and
+values. This happens before the body is cut at 4096 bytes. Exception diagnostics
+on every HOOK failure path are redacted too: when the `cause` of a HOOK
+`PayerCallException` (a transport failure) or of a `RouterException` from reading
+or mapping a HOOK response (a parser error) would show the token, it is replaced
+by an exception of the same kind (`IOException`, `HttpTimeoutException`,
+`HttpConnectTimeoutException` or `InterruptedException`) whose message names the
+original class, with the token removed, the original stack trace (with the token
+removed from any frame naming it), and no cause or suppressed exceptions. So
+`timedOut()` and the rest of the classification still work. Successful token
+bodies are never attached to exceptions. Hook and discovery bodies may contain
+sensitive clinical data; take care when logging them.
 
 ```java
 try {
@@ -617,10 +617,10 @@ in its message, cause or suppressed chain, printed stack trace, or a
 (`PayerCallException`, `RouterException`, `IllegalArgumentException`,
 `IllegalStateException`; any other class becomes a `RouterException` naming it)
 with the token removed, a redacted cause and no suppressed exceptions, and the
-original stack trace. When concurrent calls share one token fetch and it fails,
-the failure is redacted with the context of the call that sent it before the other
-calls receive it. An exchange that would still show the token after all of this is
-not delivered.
+original stack trace, with the token removed from any frame that names it. When
+concurrent calls share one token fetch and it fails, the failure is redacted with
+the context of the call that sent it before the other calls receive it. An
+exchange that would still show the token after all of this is not delivered.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
