@@ -134,6 +134,27 @@ class EhrRedactionTest {
         }, TOKEN, false)).contains(TOKEN));
     }
 
+    @Test
+    void uriThatNamesTheTokenIsRedacted() {
+        for (String raw : List.of("https://payer.example.org/cds-services/" + TOKEN,
+                "https://payer.example.org/cds-services/%63txToken164?q=1",
+                "https://" + TOKEN + ".example.org/cds-services/x")) {
+            PayerCallException failure = new PayerCallException("Hook failed: ", PayerCallPhase.HOOK, "payer",
+                    URI.create(raw), response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), "{}");
+            PayerCallException safe = (PayerCallException) redaction.exception(failure);
+            assertNotSame(failure, safe);
+            if (safe.uri() != null) {
+                assertFalse(safe.uri().toString().contains(TOKEN), safe.uri().toString());
+                assertFalse(String.valueOf(safe.uri().getPath()).contains(TOKEN), safe.uri().getPath());
+                assertFalse(String.valueOf(safe.uri().getAuthority()).contains(TOKEN), safe.uri().getAuthority());
+            }
+        }
+        PayerCallException transport = PayerCallException.transport("failed", PayerCallPhase.HOOK, "payer",
+                URI.create("https://payer.example.org/" + TOKEN), new IOException("x"));
+        PayerCallException safe = (PayerCallException) redaction.exception(transport);
+        assertEquals("https://payer.example.org/REDACTED", safe.uri().toString());
+    }
+
     private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {
         RuntimeException safe = redaction.exception(error);
         assertNotSame(error, safe);

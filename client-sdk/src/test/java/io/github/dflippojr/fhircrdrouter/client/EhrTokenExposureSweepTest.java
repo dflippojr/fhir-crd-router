@@ -47,7 +47,8 @@ class EhrTokenExposureSweepTest {
 
     enum Path {
         HOOK_ERROR_BODY, HOOK_RESPONSE_HEADERS, HOOK_UNPARSEABLE_2XX, HOOK_UNMAPPABLE_2XX,
-        FIRST_TOKEN_FAILURE, REFRESH_AFTER_401_FAILS, REFRESH_AFTER_401_ECHOES, REQUEST_SERIALIZATION
+        FIRST_TOKEN_FAILURE, REFRESH_AFTER_401_FAILS, REFRESH_AFTER_401_ECHOES, REQUEST_SERIALIZATION,
+        TOKEN_IN_SERVICE_ID
     }
 
     @AfterEach
@@ -97,6 +98,10 @@ class EhrTokenExposureSweepTest {
                 default -> respond(e, 200, OK, false);
             }
         });
+        server.createContext("/cds-services/" + TOKEN, e -> {
+            e.getRequestBody().readAllBytes();
+            respond(e, 400, "{\"error\":\"no\"}", false);
+        });
         server.start();
         Map<String, Object> context = path == Path.REQUEST_SERIALIZATION
                 ? Map.of("patientId", "pat-1", TOKEN, new Object()) : Map.of("patientId", "pat-1");
@@ -107,14 +112,17 @@ class EhrTokenExposureSweepTest {
 
         RuntimeException thrown = null;
         try {
-            client.callHook(record(oauth), "x", request);
+            client.callHook(record(oauth), path == Path.TOKEN_IN_SERVICE_ID ? TOKEN : "x", request);
         } catch (RuntimeException e) {
             thrown = e;
         }
 
         boolean succeeds = path == Path.HOOK_RESPONSE_HEADERS || path == Path.REFRESH_AFTER_401_ECHOES;
         assertEquals(succeeds, thrown == null, () -> path + " outcome");
-        assertEquals(path == Path.REQUEST_SERIALIZATION, exchanges.isEmpty(), "exchanges are reported unless nothing is sent");
+        // Nothing is sent for a request that cannot be serialised; an exchange whose own URI names the token
+        // is not delivered.
+        boolean silent = path == Path.REQUEST_SERIALIZATION || path == Path.TOKEN_IN_SERVICE_ID;
+        assertEquals(silent, exchanges.isEmpty(), "exchanges are reported unless nothing is sent");
         assertNoToken(exchanges, thrown);
         if (path == Path.REFRESH_AFTER_401_FAILS || path == Path.REFRESH_AFTER_401_ECHOES) {
             assertEquals(List.of(PayerCallPhase.TOKEN, PayerCallPhase.HOOK, PayerCallPhase.TOKEN),
@@ -131,6 +139,7 @@ class EhrTokenExposureSweepTest {
     static void assertNoToken(List<PayerExchange> exchanges, Throwable thrown) {
         for (PayerExchange exchange : exchanges) {
             assertAbsent(exchange.toString(), "exchange");
+            assertUriAbsent(exchange.uri());
             assertAbsent(String.valueOf(exchange.requestBody()), "requestBody");
             assertAbsent(String.valueOf(exchange.responseBody()), "responseBody");
             assertHeadersAbsent(exchange.requestHeaders());
@@ -144,6 +153,8 @@ class EhrTokenExposureSweepTest {
             assertChainAbsent(thrown);
             if (thrown instanceof PayerCallException e) {
                 assertAbsent(String.valueOf(e.responseBody()), "PayerCallException.responseBody");
+                assertUriAbsent(e.uri());
+                assertAbsent(String.valueOf(e.payerId()), "PayerCallException.payerId");
                 assertHeadersAbsent(e.responseHeaders());
             }
         }
@@ -166,6 +177,13 @@ class EhrTokenExposureSweepTest {
                 }
                 todo.addAll(List.of(t.getSuppressed()));
             }
+        }
+    }
+
+    private static void assertUriAbsent(java.net.URI uri) {
+        if (uri != null) {
+            assertAbsent(uri.toString(), "uri");
+            assertAbsent(String.valueOf(uri.getAuthority()) + uri.getPath() + uri.getQuery() + uri.getFragment(), "decoded uri");
         }
     }
 
