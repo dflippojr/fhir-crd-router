@@ -113,6 +113,54 @@ class EhrTokenReachabilityTest {
     }
 
     @Test
+    void credentialProviderTextStaysOutOfTheMessage() {
+        CredentialProvider failing = new CredentialProvider() {
+            public Optional<String> resolve(String ref) {
+                throw new IllegalStateException("Failed to decrypt synthetic-secret-material");
+            }
+            public void put(String ref, String value) { throw new UnsupportedOperationException(); }
+            public void remove(String ref) { throw new UnsupportedOperationException(); }
+        };
+        ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                .baseUrl("http://127.0.0.1:9").authType(AuthType.API_KEY).credentialRef("credential").build();
+        CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), failing, null, Duration.ofSeconds(5),
+                Duration.ofSeconds(1), exchanges::add);
+
+        RuntimeException e = assertThrows(RuntimeException.class,
+                () -> client.callHook(record, "x", request(Map.of("patientId", "pat-1"))));
+
+        assertLeavesNothing(e);
+        assertFalse(e.toString().contains("decrypt"), e.toString());
+        assertFalse(e.toString().contains("synthetic-secret-material"), e.toString());
+    }
+
+    @Test
+    void auditPersistenceFailureKeepsItsType(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws IOException {
+        io.github.dflippojr.fhircrdrouter.core.audit.JsonlAuditTrail trail =
+                new io.github.dflippojr.fhircrdrouter.core.audit.JsonlAuditTrail(dir.resolve("audit.jsonl"),
+                        java.time.Clock.systemUTC());
+        trail.close();
+        CredentialProvider audited = new io.github.dflippojr.fhircrdrouter.core.audit.AuditedCredentialProvider(
+                new CredentialProvider() {
+                    public Optional<String> resolve(String ref) { return Optional.of("synthetic-key"); }
+                    public void put(String ref, String value) { }
+                    public void remove(String ref) { }
+                }, trail);
+        ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                .baseUrl("http://127.0.0.1:9").authType(AuthType.API_KEY).credentialRef("credential").build();
+        CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), audited, null, Duration.ofSeconds(5),
+                Duration.ofSeconds(1), exchanges::add);
+
+        io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException e = assertThrows(
+                io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException.class,
+                () -> client.callHook(record, "x", request(Map.of("patientId", "pat-1"))));
+
+        assertLeavesNothing(e);
+        assertNotNull(e.operationState());
+        assertNotNull(e.eventId());
+    }
+
+    @Test
     void theWalkerFindsTheTokenThroughAJacksonPathReference() {
         CdsHookRequest request = request(Map.of("bad", new Object()));
         com.fasterxml.jackson.databind.JsonMappingException e = assertThrows(
