@@ -286,7 +286,12 @@ response header name and value.
   redacted message, the class names of the causes (never their messages:
   a credential provider's can describe secret material), the class and the
   redacted stack frames, with no cause or suppressed exceptions. The
-  listener's transport `error` is a fresh copy too. `PayerCallException`
+  listener's transport `error` is a fresh copy too. The copy keeps the
+  public type: `PayerCallException` and `EndpointUrlException` are rebuilt
+  field by field, and other public JDK or SDK exceptions through their
+  public `(String)` constructor. A caller's own exception class becomes a
+  `RouterException` naming it, so the SDK never runs a caller's
+  constructor. `PayerCallException`
   gained a cause-free `transport(..., boolean timedOut)` factory so
   `timedOut()` survives without the cause. A request with no
   `fhirAuthorization` has nothing to protect, so its exceptions are

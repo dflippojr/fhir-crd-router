@@ -1,9 +1,11 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
+import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
 
+import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -89,11 +91,12 @@ public final class EhrRedaction {
      * original's message with the token removed, the class names of its causes ({@code (cause: <class>)};
      * their messages are left out), its class, and its stack frames with the token
      * removed from any frame that names it. It has <b>no cause and no suppressed exceptions</b>. Its
-     * class is the original's for {@link PayerCallException} (keeping phase, payer, status,
+     * class is the original's: {@link PayerCallException} keeps phase, payer, status,
      * {@link PayerCallException#timedOut()}, the redacted body and kept headers, and the URI with the
-     * token replaced), {@link RouterException}, {@link IllegalArgumentException} and
-     * {@link IllegalStateException}; any other class becomes a {@link RouterException} whose message
-     * names it. A copy that would still show the token (a payer id naming it, say) becomes a
+     * token replaced; {@link EndpointUrlException} keeps field, payer and problem; any other public JDK
+     * or SDK class with a public {@code (String)} constructor is rebuilt with the message. Any other
+     * class (a caller's own, or one without such a constructor) becomes a {@link RouterException} whose
+     * message names it. A copy that would still show the token (a payer id naming it, say) becomes a
      * {@link RouterException} naming only the original class, with no stack frames. The one exception
      * returned as is: an {@link AuditPersistenceException} with no cause or suppressed exceptions, which
      * callers must receive by type and which holds only a fixed message, an operation state and ids.
@@ -118,20 +121,33 @@ public final class EhrRedaction {
     }
 
     private RuntimeException copy(RuntimeException error) {
-        String message = text(error.getMessage()) + causes(error);
         if (error instanceof PayerCallException failure) {
             return copy(failure);
         }
-        if (error.getClass() == RouterException.class) {
-            return new RouterException(message);
+        if (error instanceof EndpointUrlException url) {
+            return new EndpointUrlException(text(url.field()), url.payerId(), text(url.problem()) + causes(url));
         }
-        if (error.getClass() == IllegalArgumentException.class) {
-            return new IllegalArgumentException(message);
+        String message = text(error.getMessage()) + causes(error);
+        RuntimeException same = sameType(error.getClass(), message);
+        return same != null ? same : new RouterException(error.getClass().getName() + ": " + message);
+    }
+
+    /**
+     * A new exception of {@code type} with only {@code message}, for a public JDK or SDK class with a
+     * public {@code (String)} constructor; null for anything else (a caller's own exception class, whose
+     * constructor this does not run, or a class with no such constructor).
+     */
+    private static RuntimeException sameType(Class<? extends RuntimeException> type, String message) {
+        String name = type.getName();
+        boolean known = name.startsWith("java.") || name.startsWith("io.github.dflippojr.fhircrdrouter.");
+        if (!known || !Modifier.isPublic(type.getModifiers())) {
+            return null;
         }
-        if (error.getClass() == IllegalStateException.class) {
-            return new IllegalStateException(message);
+        try {
+            return type.getConstructor(String.class).newInstance(message);
+        } catch (ReflectiveOperationException e) {
+            return null;
         }
-        return new RouterException(error.getClass().getName() + ": " + message);
     }
 
     private PayerCallException copy(PayerCallException failure) {

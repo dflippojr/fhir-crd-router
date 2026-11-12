@@ -616,17 +616,20 @@ through objects it references (a parser's path back to the request it was writin
 say). The fresh exception is built only from the original's message with the token
 removed, the class names of its causes, its class, and its stack frames with the
 token removed from any frame naming it. It has no cause and no suppressed
-exceptions. Its class is the original's for `PayerCallException` (keeping phase,
-payer, status, `timedOut()`, the redacted body and kept headers, and the URI with
-the token replaced by `REDACTED`, or no URI if that is not enough),
-`RouterException`, `IllegalArgumentException` and `IllegalStateException`; any
-other class becomes a `RouterException` naming it. A call whose request has no
-`fhirAuthorization` throws its exceptions unchanged. So does an
-`AuditPersistenceException` from an audited credential provider: callers must
-receive it by type, and it holds only a fixed message, an operation state and ids.
-When concurrent calls share one token fetch and it fails, the failure is redacted
-with the context of the call that sent it before the other calls receive it. An
-exchange that would still show the token after all of this is not delivered.
+exceptions. Its class is the original's: `PayerCallException` keeps phase, payer,
+status, `timedOut()`, the redacted body and kept headers, and the URI with the
+token replaced by `REDACTED` (or no URI if that is not enough);
+`EndpointUrlException` keeps `field()`, `payerId()` and `problem()`; any other
+public JDK or SDK exception with a public `(String)` constructor
+(`IllegalArgumentException`, `RouterException`, ...) is rebuilt as the same class.
+Any other class, such as your own credential provider's exception type, becomes a
+`RouterException` naming it. A call whose request has no `fhirAuthorization`
+throws its exceptions unchanged. So does an `AuditPersistenceException` from an
+audited credential provider: callers must receive it by type, and it holds only a
+fixed message, an operation state and ids. When concurrent calls share one token
+fetch and it fails, the failure is redacted with the context of the call that sent
+it before the other calls receive it. An exchange that would still show the token
+after all of this is not delivered.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
