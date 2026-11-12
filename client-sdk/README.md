@@ -465,9 +465,15 @@ way as for an exchange listener (see
 [Exchange logging and tracing](#exchange-logging-and-tracing)): from every decoded
 string in a JSON body, from the raw and JSON-escaped spellings in any other body
 (which is dropped if a loose decoding still shows the token), and from the kept
-header names and values. This happens before the body is cut at 4096 bytes. The
-exception's `cause`, on a transport failure, is the JDK's own exception and is
-not changed.
+header names and values. This happens before the body is cut at 4096 bytes.
+Exception diagnostics on every HOOK failure path are redacted too: when the
+`cause` of a HOOK `PayerCallException` (a transport failure) or of a
+`RouterException` from reading or mapping a HOOK response (a parser error) would
+show the token, it is replaced by an exception of the same kind
+(`IOException`, `HttpTimeoutException`, `HttpConnectTimeoutException` or
+`InterruptedException`) whose message names the original class, with the token
+removed, the original stack trace, and no cause or suppressed exceptions. So
+`timedOut()` and the rest of the classification still work.
 Successful token bodies are never attached to exceptions. Hook and discovery
 bodies may contain sensitive clinical data; take care when logging them.
 
@@ -593,7 +599,8 @@ JSON only if all of it is one JSON value with no repeated key; anything else tak
 the non-JSON path. A transport error whose message shows the token reaches the
 listener as an exception of the same kind (`IOException`, `HttpTimeoutException`,
 `HttpConnectTimeoutException` or `InterruptedException`) with the token removed and
-no cause; your call still throws the original. Nothing else is redacted.
+no cause, and the `PayerCallException` your call throws carries that same copy as
+its cause. Nothing else is redacted.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The

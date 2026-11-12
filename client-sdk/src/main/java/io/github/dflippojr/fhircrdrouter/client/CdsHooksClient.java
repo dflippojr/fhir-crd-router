@@ -314,11 +314,25 @@ public final class CdsHooksClient {
     }
 
     private JsonNode readBody(HttpResponse<String> response, String context) {
+        return readBody(response, context, null);
+    }
+
+    /** Reads a JSON body; a parse error that quotes {@code ehrToken} is reported without it (#164). */
+    private JsonNode readBody(HttpResponse<String> response, String context, String ehrToken) {
         try {
             return mapper.readTree(response.body());
         } catch (IOException e) {
-            throw new RouterException(context + " returned an unparseable body", e);
+            throw new RouterException(context + " returned an unparseable body", withoutToken(e, ehrToken));
         }
+    }
+
+    /** {@code error}, or a copy of it without {@code ehrToken} in its diagnostics if any of them shows it. */
+    private static Exception withoutToken(Exception error, String ehrToken) {
+        return ehrToken == null ? error : ExchangeSender.safeError(error, ehrToken, false);
+    }
+
+    private static String ehrToken(CdsHookRequest request) {
+        return request.fhirAuthorization() == null ? null : request.fhirAuthorization().accessToken();
     }
 
     private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context, FreshToken freshToken) {
@@ -341,7 +355,7 @@ public final class CdsHooksClient {
                 .uri(URI.create(servicesUrl(record) + "/" + segment))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)));
-        return readBody(response, context);
+        return readBody(response, context, ehrToken(request));
     }
 
     /** Invokes a named hook and also deserializes the {@code cards} and {@code systemActions} arrays. */
@@ -354,12 +368,13 @@ public final class CdsHooksClient {
                     + " returned a response body that is not a JSON object");
         }
         return new CdsHookResponse(
-                parseArray(record, raw, "cards", Card.class),
-                parseArray(record, raw, "systemActions", SystemAction.class),
+                parseArray(record, raw, "cards", Card.class, ehrToken(request)),
+                parseArray(record, raw, "systemActions", SystemAction.class, ehrToken(request)),
                 raw);
     }
 
-    private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type) {
+    private <T> List<T> parseArray(ConnectionRecord record, JsonNode raw, String field, Class<T> type,
+                                   String ehrToken) {
         JsonNode array = raw.path(field);
         if (!array.isMissingNode() && !array.isNull() && !array.isArray()) {
             throw new RouterException("Expected " + field + " to be an array for payerId=" + record.payerId());
@@ -374,7 +389,8 @@ public final class CdsHooksClient {
                 }
                 items.add(item);
             } catch (IOException e) {
-                throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(), e);
+                throw new RouterException("Failed to parse an entry in " + field + " for payerId=" + record.payerId(),
+                        withoutToken(e, ehrToken));
             }
         }
         return items;

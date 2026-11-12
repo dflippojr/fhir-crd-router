@@ -25,7 +25,7 @@ import java.util.OptionalInt;
  *       read as JSON, both bodies are null, the response headers are empty and {@code error}, if any,
  *       keeps only its kind. A response body counts as JSON only if all of it is one JSON value with no
  *       repeated key. A transport {@code error} whose message shows the token is replaced by an exception
- *       of the same kind with the token removed and no cause; the call itself still throws the original.
+ *       of the same kind with the token removed and no cause, and the call's exception carries that copy too.
  *       The rest of a HOOK exchange is as sent or received.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty

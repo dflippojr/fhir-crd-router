@@ -75,17 +75,30 @@ public final class ExchangeSender {
         long start = System.nanoTime();
         HttpResponse<String> response = null;
         Exception error = null;
+        HookBody hook = null;
         try {
             response = await(client.sendAsync(request, boundedString(CdsHooksClient.MAX_RESPONSE_BYTES)),
                     request.timeout().orElse(null));
             return response;
         } catch (IOException | InterruptedException e) {
-            error = e;
-            throw e;
+            if (phase != PayerCallPhase.HOOK) {
+                error = e;
+                throw e;
+            }
+            // A transport error can quote what the payer sent; neither the caller nor a listener keeps the
+            // EHR token from it (#164).
+            hook = redactFhirAuthorization(body);
+            error = safeError(e, hook.accessToken(), !hook.readable());
+            if (error instanceof InterruptedException interrupted) {
+                throw interrupted;
+            }
+            throw (IOException) error;
         } finally {
             Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
             if (listener != PayerExchangeListener.NOOP) {
-                HookBody hook = phase == PayerCallPhase.HOOK ? redactFhirAuthorization(body) : null;
+                if (hook == null && phase == PayerCallPhase.HOOK) {
+                    hook = redactFhirAuthorization(body);
+                }
                 String token = hook == null ? null : hook.accessToken();
                 boolean unreadable = hook != null && !hook.readable();
                 report(listener, new PayerExchange(phase, record.payerId(), record.environment(),
@@ -99,8 +112,7 @@ public final class ExchangeSender {
                             case HOOK -> hook.body();
                             case DISCOVERY -> body;
                         },
-                        response == null ? null : safeBody(phase, response.body(), hook),
-                        safeError(error, token, unreadable)));
+                        response == null ? null : safeBody(phase, response.body(), hook), error));
             }
         }
     }
@@ -352,12 +364,15 @@ public final class ExchangeSender {
     }
 
     /**
-     * The transport error as a listener sees it. A message can quote what the payer sent (a malformed
-     * status line, say), so if any message in the chain shows the token, or the token is unknown because
-     * the request could not be read, the listener gets a copy of the same kind with the token removed and
-     * no cause. The caller still gets the original.
+     * {@code error} with the EHR token kept out of its diagnostics. A message can quote what the payer sent
+     * (a malformed status line, or a parser quoting the body, say), so if any message, cause or suppressed
+     * exception in the chain shows the token, or the token is unknown because the request could not be
+     * read, this returns a copy of the same kind ({@link HttpConnectTimeoutException},
+     * {@link HttpTimeoutException}, {@link InterruptedException}, otherwise {@link IOException}) whose
+     * message names the original class, with the token removed, the original stack trace, and no cause or
+     * suppressed exceptions. Otherwise it returns {@code error} itself.
      */
-    static Exception safeError(Exception error, String token, boolean unreadable) {
+    public static Exception safeError(Exception error, String token, boolean unreadable) {
         if (error == null || !unreadable && (token == null || !mentions(error, token))) {
             return error;
         }
