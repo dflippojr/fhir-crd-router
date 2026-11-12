@@ -3,7 +3,9 @@ package io.github.dflippojr.fhircrdrouter.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
+import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -11,12 +13,15 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,9 +42,12 @@ class PayerExchangeFhirAuthorizationTest {
     private final List<PayerExchange> exchanges = new ArrayList<>();
     private final LoopbackPayer payer = new LoopbackPayer();
 
+    private final List<HttpServer> servers = new ArrayList<>();
+
     @AfterEach
     void stop() {
         payer.close();
+        servers.forEach(server -> server.stop(0));
     }
 
     @Test
@@ -85,6 +93,95 @@ class PayerExchangeFhirAuthorizationTest {
         assertTrue(hook.responseBody().contains("bad token [REDACTED]"), hook.responseBody());
     }
 
+    @Test
+    void tokenInResponseHeadersIsRedactedOnSuccess() throws Exception {
+        HttpServer server = headerServer(List.of(200));
+
+        client().callHook(record(server), "x", REQUEST);
+
+        assertHeadersClean(single());
+    }
+
+    @Test
+    void tokenInResponseHeadersIsRedactedOnErrorAndRetry() throws Exception {
+        HttpServer server = headerServer(List.of(429, 400));
+
+        assertThrows(PayerCallException.class, () -> client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(2)))
+                .callHook(record(server), "x", REQUEST));
+
+        assertEquals(List.of(OptionalInt.of(429), OptionalInt.of(400)),
+                exchanges.stream().map(PayerExchange::statusCode).toList());
+        exchanges.forEach(PayerExchangeFhirAuthorizationTest::assertHeadersClean);
+    }
+
+    @Test
+    void tokenInAnyJsonStringSpellingIsRedacted() throws Exception {
+        String token = "tok/164/secret/x";
+        CdsHookRequest request = REQUEST.withFhirServer(EHR,
+                new FhirAuthorization(token, "Bearer", 300, "patient/Patient.read", "payer-client"));
+        // Each spelling decodes to the token; only one slash of the first is escaped.
+        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":[],\"extension\":{\"detail\":{\"nested\":["
+                + "\"a tok\\/164/secret/x b\",\"tok/164\\/secret\\/x\",\"\\u0074ok/164/secret/x\"]}}}"));
+
+        client().callHook(record(), "x", request);
+
+        PayerExchange hook = single();
+        assertFalse(hook.toString().contains(token), hook.toString());
+        assertFalse(hook.toString().contains("164\\/secret"), hook.toString());
+        assertFalse(hook.toString().contains("tok\\/164"), hook.toString());
+        List<String> strings = new ArrayList<>();
+        collectStrings(mapper.readTree(hook.responseBody()), strings);
+        assertFalse(strings.isEmpty());
+        for (String value : strings) {
+            assertFalse(value.contains(token), value);
+        }
+        assertFalse(collectStringsOf(mapper.readTree(hook.requestBody())).stream().anyMatch(v -> v.contains(token)));
+    }
+
+    private static void collectStrings(JsonNode node, List<String> out) {
+        if (node.isTextual()) {
+            out.add(node.asText());
+        }
+        node.fieldNames().forEachRemaining(out::add);
+        node.elements().forEachRemaining(child -> collectStrings(child, out));
+    }
+
+    private static List<String> collectStringsOf(JsonNode node) {
+        List<String> out = new ArrayList<>();
+        collectStrings(node, out);
+        return out;
+    }
+
+    /** Answers each call with the next status, echoing the token in response header values. */
+    private HttpServer headerServer(List<Integer> statuses) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger calls = new AtomicInteger();
+        server.createContext("/cds-services/x", e -> {
+            e.getRequestBody().readAllBytes();
+            int status = statuses.get(Math.min(calls.getAndIncrement(), statuses.size() - 1));
+            e.getResponseHeaders().add("X-Request-Id", TOKEN);
+            e.getResponseHeaders().add("X-Echo", "seen " + TOKEN + " here");
+            if (status == 429) {
+                e.getResponseHeaders().add("Retry-After", "0");
+            }
+            TestResponses.respond(e, status, "{\"cards\":[]}");
+        });
+        server.start();
+        servers.add(server);
+        return server;
+    }
+
+    private static void assertHeadersClean(PayerExchange exchange) {
+        assertNoToken(exchange);
+        assertEquals(List.of("[REDACTED]"), exchange.responseHeaders().allValues("X-Request-Id"));
+        assertEquals(List.of("seen [REDACTED] here"), exchange.responseHeaders().allValues("X-Echo"));
+    }
+
+    private ConnectionRecord record(HttpServer server) {
+        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).authType(AuthType.NONE).build();
+    }
+
     private PayerExchange single() {
         assertEquals(1, exchanges.size());
         PayerExchange hook = exchanges.get(0);
@@ -94,6 +191,10 @@ class PayerExchangeFhirAuthorizationTest {
 
     private static void assertNoToken(PayerExchange exchange) {
         assertFalse(exchange.toString().contains(TOKEN), exchange.toString());
+        exchange.responseHeaders().map().forEach((name, values) -> {
+            assertFalse(name.contains(TOKEN), name);
+            values.forEach(value -> assertFalse(value.contains(TOKEN), value));
+        });
         assertFalse(exchange.requestBody().contains(TOKEN), exchange.requestBody());
         assertFalse(exchange.responseBody().contains(TOKEN), exchange.responseBody());
         assertFalse(PayerExchangeMetadata.from(exchange).toString().contains(TOKEN));
