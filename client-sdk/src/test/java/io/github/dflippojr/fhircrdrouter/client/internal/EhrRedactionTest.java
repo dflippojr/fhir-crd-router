@@ -114,12 +114,32 @@ class EhrRedactionTest {
         assertFalse(printed(safe).contains(TOKEN), printed(safe));
     }
 
+    @Test
+    void stackFramesThatShowTheTokenAreRedacted() {
+        RouterException error = new RouterException("m");
+        StackTraceElement frame = new StackTraceElement("loader", "module", "1", "a.B", "run", TOKEN + ".java", 7);
+        error.setStackTrace(new StackTraceElement[] {frame, error.getStackTrace()[0]});
+        error.initCause(new IOException("cause"));
+        error.getCause().setStackTrace(new StackTraceElement[] {frame});
+
+        RuntimeException safe = redaction.exception(error);
+
+        assertFalse(printed(safe).contains(TOKEN), printed(safe));
+        assertEquals("a.B", safe.getStackTrace()[0].getClassName());
+        assertEquals(7, safe.getStackTrace()[0].getLineNumber());
+        assertEquals(error.getStackTrace()[1], safe.getStackTrace()[1]);
+        assertFalse(printed(ExchangeSender.safeError(new IOException("x") {
+            @Override public StackTraceElement[] getStackTrace() { return new StackTraceElement[] {frame}; }
+            @Override public String getMessage() { return TOKEN; }
+        }, TOKEN, false)).contains(TOKEN));
+    }
+
     private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {
         RuntimeException safe = redaction.exception(error);
         assertNotSame(error, safe);
         assertEquals(kind, safe.getClass());
         assertFalse(printed(safe).contains(TOKEN), printed(safe));
-        assertArrayEquals(error.getStackTrace(), safe.getStackTrace());
+        assertEquals(error.getStackTrace().length, safe.getStackTrace().length);
         if (safe instanceof PayerCallException failure) {
             assertFalse(String.valueOf(failure.responseBody()).contains(TOKEN));
             assertFalse(failure.responseHeaders().map().toString().contains(TOKEN));
