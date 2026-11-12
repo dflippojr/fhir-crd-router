@@ -57,7 +57,7 @@ class EhrRedactionTest {
         RuntimeException fresh = redaction.exception(clean);
         assertNotSame(clean, fresh);
         assertNull(fresh.getCause());
-        assertEquals("fine (cause: java.io.IOException: also fine)", fresh.getMessage());
+        assertEquals("fine (cause: java.io.IOException)", fresh.getMessage());
         assertArrayEquals(clean.getStackTrace(), fresh.getStackTrace());
     }
 
@@ -72,7 +72,7 @@ class EhrRedactionTest {
         suppressed.addSuppressed(new IOException(TOKEN));
         assertEquals(0, assertCopy(suppressed, RouterException.class).getSuppressed().length);
         RuntimeException withError = assertCopy(new RouterException("m", new AssertionError(TOKEN)), RouterException.class);
-        assertEquals("m (cause: java.lang.AssertionError: [REDACTED])", withError.getMessage());
+        assertEquals("m (cause: java.lang.AssertionError)", withError.getMessage());
     }
 
     @Test
@@ -211,8 +211,8 @@ class EhrRedactionTest {
 
         RuntimeException safe = redaction.exception(outer);
 
-        assertEquals("outer (cause: java.io.IOException: inner) (cause: " + RouterException.class.getName()
-                + ": outer)", safe.getMessage());
+        assertEquals("outer (cause: java.io.IOException) (cause: " + RouterException.class.getName() + ")",
+                safe.getMessage());
     }
 
     @Test

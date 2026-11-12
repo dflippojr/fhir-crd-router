@@ -2,6 +2,7 @@ package io.github.dflippojr.fhircrdrouter.client.internal;
 
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -85,19 +86,27 @@ public final class EhrRedaction {
      * {@code error} itself. Otherwise it is always a fresh exception, whether or not the original's text
      * shows the token, because an exception can reference the token through more than its text (a
      * parser's path back to the request it was writing, say). The copy is built only from the
-     * original's message with the token removed, a summary of its causes ({@code (cause: <class>:
-     * <message>)}, each message with the token removed), its class, and its stack frames with the token
+     * original's message with the token removed, the class names of its causes ({@code (cause: <class>)};
+     * their messages are left out), its class, and its stack frames with the token
      * removed from any frame that names it. It has <b>no cause and no suppressed exceptions</b>. Its
      * class is the original's for {@link PayerCallException} (keeping phase, payer, status,
      * {@link PayerCallException#timedOut()}, the redacted body and kept headers, and the URI with the
      * token replaced), {@link RouterException}, {@link IllegalArgumentException} and
      * {@link IllegalStateException}; any other class becomes a {@link RouterException} whose message
      * names it. A copy that would still show the token (a payer id naming it, say) becomes a
-     * {@link RouterException} naming only the original class, with no stack frames.
+     * {@link RouterException} naming only the original class, with no stack frames. The one exception
+     * returned as is: an {@link AuditPersistenceException} with no cause or suppressed exceptions, which
+     * callers must receive by type and which holds only a fixed message, an operation state and ids.
      */
     public RuntimeException exception(RuntimeException error) {
         if (token == null) {
             return error;
+        }
+        if (error instanceof AuditPersistenceException audit && audit.getCause() == null
+                && audit.getSuppressed().length == 0 && !ExchangeSender.mentions(audit, token)) {
+            // Callers must see this type to stop and report audit failures, and core builds it from an
+            // audit event only: a fixed message, an operation state and two ids, never a cause.
+            return audit;
         }
         RuntimeException safe = copy(error);
         safe.setStackTrace(ExchangeSender.safeFrames(error.getStackTrace(), token));
@@ -141,13 +150,15 @@ public final class EhrRedaction {
                 safeBody == null ? EchoedCredentials.MARKER : safeBody);
     }
 
-    /** The cause chain as text only: {@code " (cause: <class>: <message>)"} for each, token removed. */
+    /**
+     * The cause chain as class names only: {@code " (cause: <class>)"} for each. Cause messages are left
+     * out: a credential provider's can describe secret material, and a parser's can quote the payer.
+     */
     private String causes(Throwable error) {
         StringBuilder out = new StringBuilder();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Throwable t = error.getCause(); t != null && seen.add(t); t = t.getCause()) {
-            out.append(" (cause: ").append(text(t.getClass().getName())).append(": ")
-                    .append(text(String.valueOf(t.getMessage()))).append(')');
+            out.append(" (cause: ").append(text(t.getClass().getName())).append(')');
         }
         return out.toString();
     }

@@ -283,13 +283,16 @@ response header name and value.
   text says: a parser exception can reference the request it was writing
   (and so the token) through its path, with clean text. At the call
   boundary, `EhrRedaction.exception` builds a fresh exception from the
-  redacted message, a text summary of the causes, the class and the
+  redacted message, the class names of the causes (never their messages:
+  a credential provider's can describe secret material), the class and the
   redacted stack frames, with no cause or suppressed exceptions. The
   listener's transport `error` is a fresh copy too. `PayerCallException`
   gained a cause-free `transport(..., boolean timedOut)` factory so
   `timedOut()` survives without the cause. A request with no
   `fhirAuthorization` has nothing to protect, so its exceptions are
-  unchanged.
+  unchanged. An `AuditPersistenceException` passes through as is: callers
+  must receive it by type, core builds it from an audit event with no
+  cause, and its package-private constructor rules out a copy.
 - **One context per call, every boundary.** Fixing exposure paths one at
   a time kept missing the next one, so the token is now handled as a class.
   `callHook` and `callHookRaw` open an `EhrRedaction` context from the

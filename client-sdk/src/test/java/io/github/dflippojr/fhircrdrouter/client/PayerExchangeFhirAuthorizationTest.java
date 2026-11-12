@@ -200,7 +200,7 @@ class PayerExchangeFhirAuthorizationTest {
 
         assertNoTokenInChain(e, PLAIN);
         assertNull(e.getCause(), "no cause leaves a token-bearing call");
-        assertTrue(e.getMessage().contains("com.fasterxml.jackson.core.JsonParseException: "), e.getMessage());
+        assertTrue(e.getMessage().endsWith("(cause: java.io.IOException)"), e.getMessage());
     }
 
     @Test
@@ -237,7 +237,7 @@ class PayerExchangeFhirAuthorizationTest {
 
             assertNoTokenInChain(e, PLAIN);
             assertNull(e.getCause());
-            assertTrue(e.getMessage().contains("java.net.ProtocolException: "), e.getMessage());
+            assertTrue(e.getMessage().endsWith("(cause: java.io.IOException)"), e.getMessage());
             assertFalse(e.timedOut());
         }
         exchanges.forEach(exchange -> assertFalse(exchange.toString().contains(PLAIN), exchange.toString()));

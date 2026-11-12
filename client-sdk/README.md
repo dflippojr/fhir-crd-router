@@ -470,10 +470,11 @@ if a loose decoding still shows the token), and from the kept header names and
 values. This happens before the body is cut at 4096 bytes. When the hook request
 carries a `fhirAuthorization`, every exception the call throws is a fresh one with
 no cause (see below): a transport failure's `PayerCallException` keeps
-`timedOut()` without one, and the original class and message of each cause, with
-the token removed, are summarised in the message as `(cause: <class>: <message>)`.
-Successful token bodies are never attached to exceptions. Hook and discovery
-bodies may contain sensitive clinical data; take care when logging them.
+`timedOut()` without one, and the class name of each cause is listed in the
+message as `(cause: <class>)` (cause messages are left out: a credential
+provider's can describe secret material). Successful token bodies are never
+attached to exceptions. Hook and discovery bodies may contain sensitive clinical
+data; take care when logging them.
 
 ```java
 try {
@@ -613,17 +614,19 @@ Every exception that leaves either method is replaced by a fresh one, whether or
 not its text shows the token, because an exception can also reach the token
 through objects it references (a parser's path back to the request it was writing,
 say). The fresh exception is built only from the original's message with the token
-removed, a text summary of its causes, its class, and its stack frames with the
+removed, the class names of its causes, its class, and its stack frames with the
 token removed from any frame naming it. It has no cause and no suppressed
 exceptions. Its class is the original's for `PayerCallException` (keeping phase,
 payer, status, `timedOut()`, the redacted body and kept headers, and the URI with
 the token replaced by `REDACTED`, or no URI if that is not enough),
 `RouterException`, `IllegalArgumentException` and `IllegalStateException`; any
 other class becomes a `RouterException` naming it. A call whose request has no
-`fhirAuthorization` throws its exceptions unchanged. When concurrent calls share
-one token fetch and it fails, the failure is redacted with the context of the call
-that sent it before the other calls receive it. An exchange that would still show
-the token after all of this is not delivered.
+`fhirAuthorization` throws its exceptions unchanged. So does an
+`AuditPersistenceException` from an audited credential provider: callers must
+receive it by type, and it holds only a fixed message, an operation state and ids.
+When concurrent calls share one token fetch and it fails, the failure is redacted
+with the context of the call that sent it before the other calls receive it. An
+exchange that would still show the token after all of this is not delivered.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
