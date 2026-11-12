@@ -13,15 +13,22 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -196,6 +203,59 @@ class ExchangeSenderTest {
     }
 
     @Test
+    void tokenAfterACompleteJsonValueIsRedacted() throws Exception {
+        hookWithResponse("t/k", 200, "{\"cards\":[]} trailing t/k");
+
+        assertEquals("{\"cards\":[]} trailing [REDACTED]", exchanges.get(0).responseBody());
+    }
+
+    @Test
+    void tokenInAnOverwrittenDuplicateKeyIsRedacted() throws Exception {
+        hookWithResponse("t/k", 400, "{\"error\":\"t\\/k\",\"error\":\"ok\"}");
+
+        assertFalse(ExchangeSender.looselyDecoded(String.valueOf(exchanges.get(0).responseBody())).contains("t/k"),
+                exchanges.get(0).responseBody());
+    }
+
+    @Test
+    void transportErrorEchoingTheTokenIsRedactedForTheListenerOnly() throws Exception {
+        String token = "tok-164-status-line";
+        try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            Thread payer = new Thread(() -> {
+                try (Socket client = socket.accept()) {
+                    client.getInputStream().read(new byte[8192]);
+                    client.getOutputStream().write(("HTTP/1.1 2x0 " + token + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    client.getOutputStream().flush();
+                } catch (IOException ignored) {
+                    // The client may close first.
+                }
+            });
+            payer.start();
+            String sent = "{\"fhirAuthorization\":{\"access_token\":\"" + token + "\"}}";
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + socket.getLocalPort() + "/cds-services/x"))
+                    .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
+
+            IOException thrown = assertThrows(IOException.class, () -> ExchangeSender.send(HttpClient.newHttpClient(),
+                    request, sent, record(), PayerCallPhase.HOOK, 1, exchanges::add));
+            payer.join(5000);
+
+            assertTrue(chain(thrown).contains(token), "the caller keeps the original: " + chain(thrown));
+            PayerExchange exchange = exchanges.get(0);
+            assertInstanceOf(IOException.class, exchange.error());
+            assertFalse(exchange.toString().contains(token), exchange.toString());
+            assertFalse(chain(exchange.error()).contains(token), chain(exchange.error()));
+        }
+    }
+
+    private static String chain(Throwable error) {
+        StringBuilder out = new StringBuilder();
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            out.append(t).append(" | ");
+        }
+        return out.toString();
+    }
+
+    @Test
     void looseDecodingHandlesEveryEscape() {
         assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
         assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));
@@ -223,10 +283,14 @@ class ExchangeSenderTest {
     }
 
     private void send(HttpRequest request, String body, PayerCallPhase phase) throws Exception {
-        ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential")
-                .clientId("client").tokenEndpoint(base + "/token").build();
+        ConnectionRecord record = record();
         ExchangeSender.send(HttpClient.newHttpClient(), request, body, record, phase, 1, exchanges::add);
         assertEquals(1, exchanges.size());
+    }
+
+    private ConnectionRecord record() {
+        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential")
+                .clientId("client").tokenEndpoint(base + "/token").build();
     }
 }
