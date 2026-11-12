@@ -19,14 +19,15 @@ import java.util.OptionalInt;
  *       {@code [REDACTED]} (#164). The token is also replaced wherever else it appears: in every string
  *       value and key of a JSON request or response body, compared after JSON decoding, so no escape
  *       spelling hides it, and in every response header name and value. A JSON body is re-serialised only
- *       when something in it changed. A non-JSON response body has the raw and JSON-escaped spellings
- *       replaced, and is null if a loose JSON decoding of the rest still shows the token. A copy that is
- *       transformed (base64-encoded or split up, say) is not found. If the HOOK request body cannot be
- *       read as JSON, both bodies are null, the response headers are empty and {@code error}, if any,
- *       keeps only its kind. A response body counts as JSON only if all of it is one JSON value with no
- *       repeated key. A transport {@code error} whose message shows the token is replaced by an exception
- *       of the same kind with the token removed and no cause, and the call's exception carries that copy too.
- *       The rest of a HOOK exchange is as sent or received.</li>
+ *       when something in it changed, and is null if its re-serialised text would still contain the token. A
+ *       non-JSON response body has the raw and JSON-escaped spellings replaced, and is null if a loose JSON
+ *       decoding of the rest still shows the token. A copy that is transformed (base64-encoded or split up,
+ *       say) is not found. If the HOOK request body cannot be read as JSON, both bodies are null, the
+ *       response headers are empty and {@code error}, if any, keeps only its kind. A response body counts as
+ *       JSON only if all of it is one JSON value with no repeated key. A transport {@code error} whose
+ *       message shows the token is replaced by an exception of the same kind with the token removed and no
+ *       cause, and the call's exception carries that copy too. The rest of a HOOK exchange is as sent or
+ *       received.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty
  * headers/status. Nothing else is redacted: hook bodies may contain PHI, and the listener owns their

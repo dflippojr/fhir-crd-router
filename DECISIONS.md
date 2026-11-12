@@ -265,7 +265,8 @@ response header name and value.
   token, the body is omitted.
 - **Exact re-serialisation.** A request body is re-serialised only when it
   has a `fhirAuthorization.access_token`, and a response body only when a
-  string in it changed. It is read with exact decimals so numbers keep their
+  string in it changed. Re-serialised text that would still contain the
+  token, as is or decoded, is not delivered (`null`). It is read with exact decimals so numbers keep their
   original text. A HOOK body that cannot be read as JSON (not JSON, or past
   Jackson's read limits) is delivered as `null`, and so is its response, with
   empty response headers: with the token unknown, none can be checked, so all

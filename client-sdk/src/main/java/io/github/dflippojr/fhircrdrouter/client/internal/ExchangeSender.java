@@ -301,10 +301,14 @@ public final class ExchangeSender {
         JsonNode token = auth.get("access_token");
         auth.put("access_token", EchoedCredentials.MARKER);
         String secret = token.isTextual() && !token.asText().isEmpty() ? token.asText() : null;
-        if (secret != null) {
-            scrub(json, secret);
+        if (secret == null) {
+            return new HookBody(json.toString(), null);
         }
-        return new HookBody(json.toString(), secret);
+        scrub(json, secret);
+        String safe = json.toString();
+        // Re-serialising can put characters next to each other that were apart in the decoded strings; a
+        // body that still shows the token, as is or decoded, is not delivered.
+        return new HookBody(shows(safe, secret) ? null : safe, secret);
     }
 
     /**

@@ -588,19 +588,20 @@ JSON decoding so no escape spelling (`\/`, `\uXXXX` and so on) hides it, and in
 every response header name and value. A JSON body is re-serialised only if
 something in it changed; otherwise it is delivered byte for byte. A response body
 that is not JSON (an HTML error page, say) has the raw and JSON-escaped spellings
-replaced, and is delivered as `null` if a loose JSON decoding of what is left still
-shows the token. A copy that has been transformed, such as base64-encoded or split
-up, is not found. The rest of the body, including the other `fhirAuthorization`
-fields, is kept as sent. If the HOOK request body cannot be read as JSON (it is not
-JSON, or it is past Jackson's read limits, such as a string over 20 million
-characters), the token cannot be found, so the request and response bodies are
-delivered as `null` and the response headers as empty. A response body counts as
-JSON only if all of it is one JSON value with no repeated key; anything else takes
-the non-JSON path. A transport error whose message shows the token reaches the
-listener as an exception of the same kind (`IOException`, `HttpTimeoutException`,
-`HttpConnectTimeoutException` or `InterruptedException`) with the token removed and
-no cause, and the `PayerCallException` your call throws carries that same copy as
-its cause. Nothing else is redacted.
+replaced, and is delivered as `null` if a loose JSON decoding of what is left
+still shows the token. A copy that has been transformed, such as base64-encoded or
+split up, is not found. A JSON body whose re-serialised text would still contain
+the token anywhere is delivered as `null`. The rest of the body, including the
+other `fhirAuthorization` fields, is kept as sent. If the HOOK request body cannot
+be read as JSON (it is not JSON, or it is past Jackson's read limits, such as a
+string over 20 million characters), the token cannot be found, so the request and
+response bodies are delivered as `null` and the response headers as empty. A
+response body counts as JSON only if all of it is one JSON value with no repeated
+key; anything else takes the non-JSON path. A transport error whose message shows
+the token reaches the listener as an exception of the same kind (`IOException`,
+`HttpTimeoutException`, `HttpConnectTimeoutException` or `InterruptedException`)
+with the token removed and no cause, and the `PayerCallException` your call throws
+carries that same copy as its cause. Nothing else is redacted.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The
