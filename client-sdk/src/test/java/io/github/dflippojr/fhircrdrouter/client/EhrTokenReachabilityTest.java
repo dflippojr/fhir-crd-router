@@ -161,6 +161,31 @@ class EhrTokenReachabilityTest {
     }
 
     @Test
+    void refusedEndpointKeepsItsType() {
+        ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                .baseUrl("http://payer.example.org").authType(AuthType.NONE).build();
+
+        EndpointUrlException e = assertThrows(EndpointUrlException.class,
+                () -> client().callHook(record, "x", request(Map.of("patientId", "pat-1"))));
+
+        assertLeavesNothing(e);
+        assertEquals("baseUrl", e.field());
+        assertEquals("payer", e.payerId());
+        assertNotNull(e.problem());
+        assertEquals(EndpointUrlException.class, assertThrows(RuntimeException.class,
+                () -> client().callHookRaw(record, "x", request(Map.of("patientId", "pat-1")))).getClass());
+    }
+
+    @Test
+    void anInvalidServiceIdKeepsItsType() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> client().callHook(record("http://127.0.0.1:9", AuthType.NONE, null), "..",
+                        request(Map.of("patientId", "pat-1"))));
+
+        assertLeavesNothing(e);
+    }
+
+    @Test
     void theWalkerFindsTheTokenThroughAJacksonPathReference() {
         CdsHookRequest request = request(Map.of("bad", new Object()));
         com.fasterxml.jackson.databind.JsonMappingException e = assertThrows(

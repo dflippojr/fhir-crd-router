@@ -66,8 +66,18 @@ class EhrRedactionTest {
         assertCopy(new RouterException("m " + TOKEN, new IOException(TOKEN)), RouterException.class);
         assertCopy(new IllegalArgumentException("m " + TOKEN), IllegalArgumentException.class);
         assertCopy(new IllegalStateException("m", new IllegalStateException(TOKEN)), IllegalStateException.class);
-        RuntimeException other = assertCopy(new UnsupportedOperationException(TOKEN), RouterException.class);
-        assertTrue(other.getMessage().startsWith(UnsupportedOperationException.class.getName()), other.getMessage());
+        assertCopy(new UnsupportedOperationException(TOKEN), UnsupportedOperationException.class);
+        assertCopy(new NullPointerException("m"), NullPointerException.class);
+        RuntimeException custom = assertCopy(new RuntimeException(TOKEN) { }, RouterException.class);
+        assertTrue(custom.getMessage().startsWith(EhrRedactionTest.class.getName()), custom.getMessage());
+        RuntimeException noStringConstructor = assertCopy(
+                new java.io.UncheckedIOException("m", new IOException(TOKEN)), RouterException.class);
+        assertTrue(noStringConstructor.getMessage().startsWith("java.io.UncheckedIOException: m"),
+                noStringConstructor.getMessage());
+        io.github.dflippojr.fhircrdrouter.client.EndpointUrlException url = (io.github.dflippojr.fhircrdrouter.client.EndpointUrlException)
+                assertCopy(new io.github.dflippojr.fhircrdrouter.client.EndpointUrlException("baseUrl", "payer", "is not https " + TOKEN),
+                        io.github.dflippojr.fhircrdrouter.client.EndpointUrlException.class);
+        assertEquals("is not https [REDACTED]", url.problem());
         RouterException suppressed = new RouterException("m");
         suppressed.addSuppressed(new IOException(TOKEN));
         assertEquals(0, assertCopy(suppressed, RouterException.class).getSuppressed().length);
