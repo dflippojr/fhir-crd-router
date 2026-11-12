@@ -135,7 +135,8 @@ public final class ExchangeSender {
         if (token == null) {
             return exchange;
         }
-        boolean shows = shows(exchange.toString(), token) || exchange.error() != null && mentions(exchange.error(), token);
+        boolean shows = shows(exchange.toString(), token) || uriShows(exchange.uri(), token)
+                || exchange.error() != null && mentions(exchange.error(), token);
         return shows ? null : exchange;
     }
 
@@ -441,6 +442,12 @@ public final class ExchangeSender {
         }
         safe.setStackTrace(safeFrames(error.getStackTrace(), token));
         return safe;
+    }
+
+    /** Whether {@code uri} shows {@code token}, as written or percent-decoded. */
+    static boolean uriShows(URI uri, String token) {
+        return uri != null && (shows(uri.toString(), token) || shows(String.valueOf(uri.getAuthority())
+                + uri.getPath() + uri.getQuery() + uri.getFragment(), token));
     }
 
     /** {@code frames} with {@code token} removed from every class, method, file and module name. */

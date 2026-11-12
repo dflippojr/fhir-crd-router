@@ -613,10 +613,11 @@ exchanges, including a token refresh after a 401 (the TOKEN allowlist above stil
 applies first, and then the token is removed from its `scope`, headers and error).
 Every exception that leaves either method is checked as well: if the token shows
 in its message, cause or suppressed chain, printed stack trace, or a
-`PayerCallException`'s body or headers, you get a copy of the same class
+`PayerCallException`'s body, headers or URI, you get a copy of the same class
 (`PayerCallException`, `RouterException`, `IllegalArgumentException`,
 `IllegalStateException`; any other class becomes a `RouterException` naming it)
-with the token removed, a redacted cause and no suppressed exceptions, and the
+with the token removed (a URI naming it keeps only `REDACTED` in its place, or
+only its scheme and host), a redacted cause and no suppressed exceptions, and the
 original stack trace, with the token removed from any frame that names it. When
 concurrent calls share one token fetch and it fails, the failure is redacted with
 the context of the call that sent it before the other calls receive it. An

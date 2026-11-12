@@ -88,8 +88,8 @@ public final class EhrRedaction {
      * suppressed chain, printed stack trace, or a {@link PayerCallException}'s body or headers), this
      * returns a copy of the same class ({@link PayerCallException}, {@link RouterException},
      * {@link IllegalArgumentException}, {@link IllegalStateException}; any other class becomes a
-     * {@link RouterException} whose message names it) with the token removed from its message, body and
-     * headers, its cause replaced by a redacted copy with no chain of its own, no suppressed exceptions,
+     * {@link RouterException} whose message names it) with the token removed from its message, body,
+     * headers and URI, its cause replaced by a redacted copy with no chain of its own, no suppressed exceptions,
      * and the original stack trace with the token removed from any frame that names it. Otherwise it
      * returns {@code error} itself.
      */
@@ -127,15 +127,36 @@ public final class EhrRedaction {
     private PayerCallException copy(PayerCallException failure, Throwable cause) {
         if (failure.statusCode().isEmpty()) {
             return PayerCallException.transport(text(failure.getMessage()), failure.phase(), failure.payerId(),
-                    failure.uri(), cause);
+                    uri(failure.uri()), cause);
         }
         String message = String.valueOf(failure.getMessage());
         String body = failure.responseBody() == null ? "" : failure.responseBody();
         String prefix = message.endsWith(body) ? message.substring(0, message.length() - body.length()) : message;
         String safeBody = ExchangeSender.redactResponse(body, token);
-        return new PayerCallException(text(prefix), failure.phase(), failure.payerId(), failure.uri(),
-                status(failure.statusCode().getAsInt(), headers(failure.responseHeaders()), failure.uri()),
+        URI uri = uri(failure.uri());
+        return new PayerCallException(text(prefix), failure.phase(), failure.payerId(), uri,
+                status(failure.statusCode().getAsInt(), headers(failure.responseHeaders()), uri),
                 safeBody == null ? EchoedCredentials.MARKER : safeBody);
+    }
+
+    /**
+     * {@code uri} with the token replaced by {@code REDACTED}; if it still shows (percent-encoded, say),
+     * only its scheme and host are kept, and if even the host shows it, null.
+     */
+    private URI uri(URI uri) {
+        if (!ExchangeSender.uriShows(uri, token)) {
+            return uri;
+        }
+        try {
+            URI replaced = URI.create(uri.toString().replace(token, "REDACTED"));
+            if (!ExchangeSender.uriShows(replaced, token)) {
+                return replaced;
+            }
+            URI origin = new URI(uri.getScheme(), uri.getHost(), null, null);
+            return ExchangeSender.uriShows(origin, token) ? null : origin;
+        } catch (java.net.URISyntaxException | IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private Throwable cause(Throwable cause) {
@@ -160,7 +181,9 @@ public final class EhrRedaction {
         }
         if (error instanceof PayerCallException failure) {
             return failure.responseBody() != null && ExchangeSender.shows(failure.responseBody(), token)
-                    || ExchangeSender.shows(failure.responseHeaders().map().toString(), token);
+                    || ExchangeSender.shows(failure.responseHeaders().map().toString(), token)
+                    || ExchangeSender.uriShows(failure.uri(), token)
+                    || ExchangeSender.shows(String.valueOf(failure.payerId()), token);
         }
         return false;
     }
