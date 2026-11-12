@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
@@ -410,8 +411,8 @@ public final class ExchangeSender {
 
     /**
      * {@code error} with the EHR token kept out of its diagnostics. A message can quote what the payer sent
-     * (a malformed status line, or a parser quoting the body, say), so if any message, cause or suppressed
-     * exception in the chain shows the token, or the token is unknown because the request could not be
+     * (a malformed status line, or a parser quoting the body, say), so if any message, stack frame or
+     * {@link PayerCallException} field of any cause or suppressed exception in the chain shows the token, or the token is unknown because the request could not be
      * read, this returns a copy of the same kind ({@link HttpConnectTimeoutException},
      * {@link HttpTimeoutException}, {@link InterruptedException}, {@link RuntimeException}, otherwise
      * {@link IOException}) whose
@@ -442,6 +443,14 @@ public final class ExchangeSender {
         }
         safe.setStackTrace(safeFrames(error.getStackTrace(), token));
         return safe;
+    }
+
+    /** Whether a {@link PayerCallException}'s own fields (body, kept headers, URI, payer) show {@code token}. */
+    static boolean fieldsShow(PayerCallException failure, String token) {
+        return failure.responseBody() != null && shows(failure.responseBody(), token)
+                || shows(failure.responseHeaders().map().toString(), token)
+                || uriShows(failure.uri(), token)
+                || shows(String.valueOf(failure.payerId()), token);
     }
 
     /** Whether {@code uri} shows {@code token}, as written or percent-decoded. */
@@ -490,6 +499,9 @@ public final class ExchangeSender {
                 if (shows(frame.toString(), token)) {
                     return true;
                 }
+            }
+            if (t instanceof PayerCallException failure && fieldsShow(failure, token)) {
+                return true;
             }
             if (t.getCause() != null) {
                 todo.push(t.getCause());

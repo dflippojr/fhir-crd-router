@@ -612,9 +612,9 @@ is redacted with it, whatever its phase: the HOOK attempts, and the TOKEN
 exchanges, including a token refresh after a 401 (the TOKEN allowlist above still
 applies first, and then the token is removed from its `scope`, headers and error).
 Every exception that leaves either method is checked as well: if the token shows
-in its message, cause or suppressed chain, printed stack trace, or a
-`PayerCallException`'s body, headers or URI, you get a copy of the same class
-(`PayerCallException`, `RouterException`, `IllegalArgumentException`,
+in its message, cause or suppressed chain, printed stack trace, or a body, headers
+or URI of a `PayerCallException` anywhere in that chain, you get a copy of the
+same class (`PayerCallException`, `RouterException`, `IllegalArgumentException`,
 `IllegalStateException`; any other class becomes a `RouterException` naming it)
 with the token removed (a URI naming it keeps only `REDACTED` in its place, or
 only its scheme and host), a redacted cause and no suppressed exceptions, and the

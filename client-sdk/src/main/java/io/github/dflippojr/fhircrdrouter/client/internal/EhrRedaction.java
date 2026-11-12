@@ -85,7 +85,8 @@ public final class EhrRedaction {
 
     /**
      * {@code error} as it may leave the SDK. If the token shows anywhere in it (message, cause or
-     * suppressed chain, printed stack trace, or a {@link PayerCallException}'s body or headers), this
+     * suppressed chain, printed stack trace, or the body, headers, URI or payer of a
+     * {@link PayerCallException} anywhere in that chain), this
      * returns a copy of the same class ({@link PayerCallException}, {@link RouterException},
      * {@link IllegalArgumentException}, {@link IllegalStateException}; any other class becomes a
      * {@link RouterException} whose message names it) with the token removed from its message, body,
@@ -176,16 +177,8 @@ public final class EhrRedaction {
     }
 
     private boolean showsAnywhere(Throwable error) {
-        if (ExchangeSender.shows(printed(error), token)) {
-            return true;
-        }
-        if (error instanceof PayerCallException failure) {
-            return failure.responseBody() != null && ExchangeSender.shows(failure.responseBody(), token)
-                    || ExchangeSender.shows(failure.responseHeaders().map().toString(), token)
-                    || ExchangeSender.uriShows(failure.uri(), token)
-                    || ExchangeSender.shows(String.valueOf(failure.payerId()), token);
-        }
-        return false;
+        // The printed trace, plus every PayerCallException field anywhere in the cause and suppressed chain.
+        return ExchangeSender.shows(printed(error), token) || ExchangeSender.mentions(error, token);
     }
 
     private static String printed(Throwable error) {
