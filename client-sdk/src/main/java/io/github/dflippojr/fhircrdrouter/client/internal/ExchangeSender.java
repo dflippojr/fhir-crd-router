@@ -185,15 +185,25 @@ public final class ExchangeSender {
         return space > 0 ? value.substring(0, space) + " [REDACTED]" : "[REDACTED]";
     }
 
-    /** A HOOK request body as a listener sees it, and the EHR access token it hid ({@code null} if none). */
-    record HookBody(String body, String accessToken) { }
+    /**
+     * A HOOK request body as a listener sees it, and the EHR access token it hid ({@code null} if none).
+     * {@code readable} is false when the body could not be read, so its token, if any, is unknown.
+     */
+    record HookBody(String body, String accessToken, boolean readable) {
+        static final HookBody UNREADABLE = new HookBody(null, null, false);
+
+        HookBody(String body, String accessToken) {
+            this(body, accessToken, true);
+        }
+    }
 
     /**
      * Replaces {@code /fhirAuthorization/access_token}, the EHR's live FHIR token
      * (<a href="https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service">CDS Hooks 2.0,
      * Passing the Access Token to the CDS Service</a>), with {@link EchoedCredentials#MARKER}, along with any
-     * other copy of the token in the body (#164). Everything else is kept. A body that is not JSON is
-     * omitted ({@code null}), since it cannot be checked; the SDK always sends JSON.
+     * literal or standard JSON-escaped copy of the token in the body (#164). Everything else is kept. A
+     * body that cannot be read as JSON (not JSON, or past Jackson's read limits) is {@link HookBody#UNREADABLE}:
+     * it cannot be checked, so it and the response are omitted.
      */
     static HookBody redactFhirAuthorization(String body) {
         if (body == null) {
@@ -203,7 +213,7 @@ public final class ExchangeSender {
         try {
             json = EXACT.readTree(body);
         } catch (IOException e) {
-            return new HookBody(null, null);
+            return HookBody.UNREADABLE;
         }
         if (!(json.get("fhirAuthorization") instanceof ObjectNode auth) || !auth.has("access_token")) {
             return new HookBody(body, null);
@@ -225,8 +235,9 @@ public final class ExchangeSender {
 
     private static String safeBody(PayerCallPhase phase, String body, HookBody hook) {
         if (phase == PayerCallPhase.HOOK) {
-            // A payer that echoes the EHR token back must not leak it into the listener either.
-            return redactToken(body, hook.accessToken());
+            // A payer that echoes the EHR token back must not leak it into the listener either. If the
+            // request could not be read, the token is unknown, so the response cannot be checked: omit it.
+            return hook.readable() ? redactToken(body, hook.accessToken()) : null;
         }
         if (phase != PayerCallPhase.TOKEN) {
             return body;

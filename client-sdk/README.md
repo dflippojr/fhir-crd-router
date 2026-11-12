@@ -567,10 +567,14 @@ and TOKEN response bodies become JSON containing only scalar `token_type`,
 These rules also apply to unsuccessful token requests. In a HOOK request body,
 `fhirAuthorization.access_token` (the EHR's FHIR token) becomes `"[REDACTED]"`,
 and every other copy of that token in the HOOK request or response body becomes
-`[REDACTED]` too, so a payer that echoes it back cannot leak it into your logs.
-The rest of the body, including the other `fhirAuthorization` fields, is kept as
-sent. A HOOK request body that is not JSON is delivered as `null`; the SDK always
-sends JSON. Nothing else in a body is redacted.
+`[REDACTED]` too, so a payer that echoes it back verbatim cannot leak it into your
+logs. A copy is found only when it is spelled exactly as sent or with standard
+JSON escapes; one written with `\uXXXX` escapes, base64-encoded or split up is
+not. The rest of the body, including the other `fhirAuthorization` fields, is
+kept as sent. If the HOOK request body cannot be read as JSON (it is not JSON,
+or it is past Jackson's read limits, such as a string over 20 million
+characters), the token cannot be found, so both the request and response bodies
+are delivered as `null`. Nothing else in a body is redacted.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The

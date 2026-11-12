@@ -16,8 +16,10 @@ import java.util.OptionalInt;
  *   <li>TOKEN requests have a null body, and TOKEN responses keep only scalar {@code token_type},
  *       {@code expires_in} and {@code scope};</li>
  *   <li>in a HOOK request body, {@code fhirAuthorization.access_token}, the EHR's FHIR token, becomes
- *       {@code [REDACTED]}, as does any other copy of that token in the request or response body (#164).
- *       The rest of a HOOK body is as sent or received.</li>
+ *       {@code [REDACTED]}, as does any other copy of that token in the request or response body spelled
+ *       exactly as sent or with standard JSON escapes (#164). A copy spelled any other way, such as with
+ *       <code>&#92;uXXXX</code> escapes or base64-encoded, is not found. If the HOOK request body cannot be read as
+ *       JSON, both bodies are null. The rest of a HOOK body is as sent or received.</li>
  * </ul>
  * Discovery bodies are as sent or received. Missing responses have null responseBody and empty
  * headers/status. Nothing else is redacted: hook bodies may contain PHI, and the listener owns their

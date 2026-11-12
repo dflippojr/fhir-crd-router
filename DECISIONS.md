@@ -258,8 +258,9 @@ request and response body.
   it from the HOOK response body costs one string replace.
 - **Exact re-serialisation.** Only a body with a `fhirAuthorization.access_token`
   is re-serialised. It is read with exact decimals so numbers keep their
-  original text. A HOOK body that is not JSON is delivered as `null`, since
-  it cannot be checked; the SDK always sends JSON.
+  original text. A HOOK body that cannot be read as JSON (not JSON, or past
+  Jackson's read limits) is delivered as `null`, and so is its response: with
+  the token unknown, neither can be checked, so both fail closed.
 - **Not covered.** A token pasted by the caller into another field under a
   different spelling (base64 of it, say) is not found. `PayerCallException`
   bodies are a separate path and are not changed here.

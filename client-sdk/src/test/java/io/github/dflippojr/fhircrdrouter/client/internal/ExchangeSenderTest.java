@@ -1,5 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
@@ -22,6 +23,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /** What {@link ExchangeSender} hands a listener: the redaction arms the client-level tests never reach (#201). */
 class ExchangeSenderTest {
@@ -83,9 +85,31 @@ class ExchangeSenderTest {
 
     @Test
     void unparseableHookBodyIsOmitted() {
-        assertEquals(new ExchangeSender.HookBody(null, null),
+        assertEquals(ExchangeSender.HookBody.UNREADABLE,
                 ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"tok-164\""));
         assertEquals(new ExchangeSender.HookBody("", null), ExchangeSender.redactFhirAuthorization(""));
+    }
+
+    @Test
+    void unreadableHookRequestOmitsTheResponseToo() throws Exception {
+        // A string past Jackson's read limit is valid JSON the SDK can send but cannot inspect (#229 review).
+        String token = "tok-164-unreadable";
+        String sent = "{\"fhirAuthorization\":{\"access_token\":\"" + token + "\"},\"prefetch\":{\"big\":\""
+                + "x".repeat(StreamReadConstraints.DEFAULT_MAX_STRING_LEN + 1) + "\"}}";
+        server.createContext("/cds-services/x", e -> {
+            e.getRequestBody().transferTo(java.io.OutputStream.nullOutputStream());
+            TestResponses.respond(e, 400, "{\"error\":\"" + token + "\"}");
+        });
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
+                .timeout(Duration.ofSeconds(30)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
+
+        send(request, sent, PayerCallPhase.HOOK);
+
+        PayerExchange exchange = exchanges.get(0);
+        assertEquals(400, exchange.statusCode().orElseThrow());
+        assertNull(exchange.requestBody());
+        assertNull(exchange.responseBody());
+        assertFalse(exchange.toString().contains(token), "token leaked");
     }
 
     @Test
