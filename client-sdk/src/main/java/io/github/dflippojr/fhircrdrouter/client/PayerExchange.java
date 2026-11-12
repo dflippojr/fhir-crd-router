@@ -22,8 +22,10 @@ import java.util.OptionalInt;
  *       when something in it changed, and is null if its re-serialised text would still contain the token. A
  *       non-JSON response body has the raw and JSON-escaped spellings replaced, and is null if a loose JSON
  *       decoding of the rest still shows the token. A copy that is transformed (base64-encoded or split up,
- *       say) is not found. If the HOOK request body cannot be read as JSON, both bodies are null, the
- *       response headers are empty and {@code error}, if any, keeps only its kind. A response body counts as
+ *       say) is not found. If the HOOK request body cannot be read as JSON, the request body is null;
+ *       during a hook call the token is still known, so the rest is redacted as usual, and only when the
+ *       token is unknown too are both bodies null, the response headers empty and {@code error}, if any,
+ *       reduced to its kind. A response body counts as
  *       JSON only if all of it is one JSON value with no repeated key. A transport {@code error} whose
  *       message shows the token is replaced by an exception of the same kind with the token removed and no
  *       cause, and the call's exception carries that copy too. The rest of a HOOK exchange is as sent or

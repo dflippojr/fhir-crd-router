@@ -594,8 +594,11 @@ split up, is not found. A JSON body whose re-serialised text would still contain
 the token anywhere is delivered as `null`. The rest of the body, including the
 other `fhirAuthorization` fields, is kept as sent. If the HOOK request body cannot
 be read as JSON (it is not JSON, or it is past Jackson's read limits, such as a
-string over 20 million characters), the token cannot be found, so the request and
-response bodies are delivered as `null` and the response headers as empty. A
+string over 20 million characters), its request body is delivered as `null`.
+Within `callHook` and `callHookRaw` the token is still known from the request, so
+the response body and headers are redacted as usual. Only when the token is
+unknown as well (an exchange outside such a call whose body cannot be read) are
+the response body delivered as `null` and the response headers as empty. A
 response body counts as JSON only if all of it is one JSON value with no repeated
 key; anything else takes the non-JSON path. A transport error whose message shows
 the token reaches the listener as an exception of the same kind (`IOException`,

@@ -268,9 +268,10 @@ response header name and value.
   string in it changed. Re-serialised text that would still contain the
   token, as is or decoded, is not delivered (`null`). It is read with exact decimals so numbers keep their
   original text. A HOOK body that cannot be read as JSON (not JSON, or past
-  Jackson's read limits) is delivered as `null`, and so is its response, with
-  empty response headers: with the token unknown, none can be checked, so all
-  fail closed.
+  Jackson's read limits) is delivered as `null`. During a hook call the token
+  is known from the request, so the response is still redacted. Only with the
+  token unknown as well are the response body and headers dropped too: none
+  can be checked, so all fail closed.
 - **Not covered.** A token pasted by the caller into another field under a
   transformed spelling (base64 of it, say) is not found.
 - **Partly readable JSON is not JSON.** The reader rejects trailing content
