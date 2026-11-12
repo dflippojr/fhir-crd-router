@@ -22,6 +22,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
@@ -445,9 +446,12 @@ public final class CdsHooksClient {
                 }
                 PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
                         + status + ": ", phase, record.payerId(), uri, kept, failed);
+                // Retry timing comes from the payer's own response: the exception's headers may be sanitised.
                 Duration wait = policy.enabled() && RetryPolicy.retryable(status)
                         && throttleRetries + 1 < policy.maxAttempts()
-                        ? failure.retryAfter().orElse(null) : null;
+                        ? response.headers().firstValue("Retry-After")
+                                .flatMap(v -> PayerCallException.parseRetryAfter(v, Clock.systemUTC())).orElse(null)
+                        : null;
                 if (wait == null || wait.compareTo(policy.maxTotalWait().minus(waited)) > 0) {
                     throw failure;
                 }

@@ -348,7 +348,7 @@ public final class ExchangeSender {
             safe = redactToken(body, token);
         }
         // Whatever path ran, a body that still decodes to the token is not delivered.
-        return looselyDecoded(safe).contains(token) ? null : safe;
+        return shows(safe, token) ? null : safe;
     }
 
     /**
@@ -362,7 +362,7 @@ public final class ExchangeSender {
             return error;
         }
         String message = unreadable ? "[message omitted]" : redactToken(String.valueOf(error.getMessage()), token);
-        if (!unreadable && looselyDecoded(message).contains(token)) {
+        if (!unreadable && shows(message, token)) {
             message = EchoedCredentials.MARKER;
         }
         message = error.getClass().getName() + ": " + message;
@@ -388,8 +388,7 @@ public final class ExchangeSender {
             if (!seen.add(t)) {
                 continue;
             }
-            if (looselyDecoded(String.valueOf(t.getMessage())).contains(token)
-                    || looselyDecoded(t.toString()).contains(token)) {
+            if (shows(String.valueOf(t.getMessage()), token) || shows(t.toString(), token)) {
                 return true;
             }
             if (t.getCause() != null) {
@@ -398,6 +397,11 @@ public final class ExchangeSender {
             todo.addAll(List.of(t.getSuppressed()));
         }
         return false;
+    }
+
+    /** Whether {@code text} shows {@code token} as is or once its JSON escapes are decoded. */
+    private static boolean shows(String text, String token) {
+        return text.contains(token) || looselyDecoded(text).contains(token);
     }
 
     /** {@code text} with JSON string escapes decoded wherever they appear; unknown escapes are kept. */
