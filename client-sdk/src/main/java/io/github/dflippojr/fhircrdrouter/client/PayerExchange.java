@@ -26,9 +26,9 @@ import java.util.OptionalInt;
  *       during a hook call the token is still known, so the rest is redacted as usual, and only when the
  *       token is unknown too are both bodies null, the response headers empty and {@code error}, if any,
  *       reduced to its kind. A response body counts as
- *       JSON only if all of it is one JSON value with no repeated key. A transport {@code error} whose
- *       message shows the token is replaced by an exception of the same kind with the token removed and no
- *       cause, and the call's exception carries that copy too. The rest of a HOOK exchange is as sent or
+ *       JSON only if all of it is one JSON value with no repeated key. When the token is known, a transport
+ *       {@code error} is always a fresh exception of the same kind, its message naming the original class
+ *       with the token removed, and no cause. The rest of a HOOK exchange is as sent or
  *       received.</li>
  *   <li>during a hook call, every exchange of every phase (HOOK, and TOKEN including a refresh after a
  *       401) has that token removed from its headers, bodies and error, after the TOKEN rules above; an

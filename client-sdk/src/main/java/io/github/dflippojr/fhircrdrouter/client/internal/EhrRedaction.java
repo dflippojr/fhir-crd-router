@@ -3,16 +3,17 @@ package io.github.dflippojr.fhircrdrouter.client.internal;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import javax.net.ssl.SSLSession;
 
@@ -76,26 +77,26 @@ public final class EhrRedaction {
 
     /** {@code text} with the token removed; the whole text becomes the marker if a spelling survives. */
     public String text(String text) {
-        if (token == null || text == null) {
-            return text;
-        }
-        String safe = ExchangeSender.redactToken(text, token);
-        return ExchangeSender.shows(safe, token) ? EchoedCredentials.MARKER : safe;
+        return token == null ? text : ExchangeSender.clean(text, token);
     }
 
     /**
-     * {@code error} as it may leave the SDK. If the token shows anywhere in it (message, cause or
-     * suppressed chain, printed stack trace, or the body, headers, URI or payer of a
-     * {@link PayerCallException} anywhere in that chain), this
-     * returns a copy of the same class ({@link PayerCallException}, {@link RouterException},
-     * {@link IllegalArgumentException}, {@link IllegalStateException}; any other class becomes a
-     * {@link RouterException} whose message names it) with the token removed from its message, body,
-     * headers and URI, its cause replaced by a redacted copy with no chain of its own, no suppressed exceptions,
-     * and the original stack trace with the token removed from any frame that names it. Otherwise it
-     * returns {@code error} itself.
+     * {@code error} as it may leave a call that carries an EHR token. With no token this is
+     * {@code error} itself. Otherwise it is always a fresh exception, whether or not the original's text
+     * shows the token, because an exception can reference the token through more than its text (a
+     * parser's path back to the request it was writing, say). The copy is built only from the
+     * original's message with the token removed, a summary of its causes ({@code (cause: <class>:
+     * <message>)}, each message with the token removed), its class, and its stack frames with the token
+     * removed from any frame that names it. It has <b>no cause and no suppressed exceptions</b>. Its
+     * class is the original's for {@link PayerCallException} (keeping phase, payer, status,
+     * {@link PayerCallException#timedOut()}, the redacted body and kept headers, and the URI with the
+     * token replaced), {@link RouterException}, {@link IllegalArgumentException} and
+     * {@link IllegalStateException}; any other class becomes a {@link RouterException} whose message
+     * names it. A copy that would still show the token (a payer id naming it, say) becomes a
+     * {@link RouterException} naming only the original class, with no stack frames.
      */
     public RuntimeException exception(RuntimeException error) {
-        if (token == null || !showsAnywhere(error)) {
+        if (token == null) {
             return error;
         }
         RuntimeException safe = copy(error);
@@ -108,31 +109,31 @@ public final class EhrRedaction {
     }
 
     private RuntimeException copy(RuntimeException error) {
-        String message = text(error.getMessage());
-        Throwable cause = cause(error.getCause());
+        String message = text(error.getMessage()) + causes(error);
         if (error instanceof PayerCallException failure) {
-            return copy(failure, cause);
+            return copy(failure);
         }
         if (error.getClass() == RouterException.class) {
-            return new RouterException(message, cause);
+            return new RouterException(message);
         }
         if (error.getClass() == IllegalArgumentException.class) {
-            return new IllegalArgumentException(message, cause);
+            return new IllegalArgumentException(message);
         }
         if (error.getClass() == IllegalStateException.class) {
-            return new IllegalStateException(message, cause);
+            return new IllegalStateException(message);
         }
-        return new RouterException(error.getClass().getName() + ": " + message, cause);
+        return new RouterException(error.getClass().getName() + ": " + message);
     }
 
-    private PayerCallException copy(PayerCallException failure, Throwable cause) {
+    private PayerCallException copy(PayerCallException failure) {
         if (failure.statusCode().isEmpty()) {
-            return PayerCallException.transport(text(failure.getMessage()), failure.phase(), failure.payerId(),
-                    uri(failure.uri()), cause);
+            return PayerCallException.transport(text(failure.getMessage()) + causes(failure), failure.phase(),
+                    failure.payerId(), uri(failure.uri()), failure.timedOut());
         }
         String message = String.valueOf(failure.getMessage());
-        String body = failure.responseBody() == null ? "" : failure.responseBody();
-        String prefix = message.endsWith(body) ? message.substring(0, message.length() - body.length()) : message;
+        // PayerCallException is final and its message is always the prefix followed by its body.
+        String body = failure.responseBody();
+        String prefix = message.substring(0, message.length() - body.length());
         String safeBody = ExchangeSender.redactResponse(body, token);
         URI uri = uri(failure.uri());
         return new PayerCallException(text(prefix), failure.phase(), failure.payerId(), uri,
@@ -140,34 +141,32 @@ public final class EhrRedaction {
                 safeBody == null ? EchoedCredentials.MARKER : safeBody);
     }
 
+    /** The cause chain as text only: {@code " (cause: <class>: <message>)"} for each, token removed. */
+    private String causes(Throwable error) {
+        StringBuilder out = new StringBuilder();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable t = error.getCause(); t != null && seen.add(t); t = t.getCause()) {
+            out.append(" (cause: ").append(text(t.getClass().getName())).append(": ")
+                    .append(text(String.valueOf(t.getMessage()))).append(')');
+        }
+        return out.toString();
+    }
+
     /**
-     * {@code uri} with the token replaced by {@code REDACTED}; if it still shows (percent-encoded, say),
-     * only its scheme and host are kept, and if even the host shows it, null.
+     * {@code uri} with the token replaced by {@code REDACTED}; null if it still shows (percent-encoded,
+     * say) or the replacement is not a valid URI.
      */
     private URI uri(URI uri) {
         if (!ExchangeSender.uriShows(uri, token)) {
             return uri;
         }
+        URI replaced;
         try {
-            URI replaced = URI.create(uri.toString().replace(token, "REDACTED"));
-            if (!ExchangeSender.uriShows(replaced, token)) {
-                return replaced;
-            }
-            URI origin = new URI(uri.getScheme(), uri.getHost(), null, null);
-            return ExchangeSender.uriShows(origin, token) ? null : origin;
-        } catch (java.net.URISyntaxException | IllegalArgumentException e) {
+            replaced = URI.create(uri.toString().replace(token, "REDACTED"));
+        } catch (IllegalArgumentException e) {
             return null;
         }
-    }
-
-    private Throwable cause(Throwable cause) {
-        if (cause == null) {
-            return null;
-        }
-        if (cause instanceof Exception exception) {
-            return ExchangeSender.safeError(exception, token, false);
-        }
-        return ExchangeSender.shows(printed(cause), token) ? null : cause;
+        return ExchangeSender.uriShows(replaced, token) ? null : replaced;
     }
 
     private HttpHeaders headers(HttpHeaders headers) {
@@ -177,18 +176,12 @@ public final class EhrRedaction {
     }
 
     private boolean showsAnywhere(Throwable error) {
-        // The printed trace, plus every PayerCallException field anywhere in the cause and suppressed chain.
-        return ExchangeSender.shows(printed(error), token) || ExchangeSender.mentions(error, token);
-    }
-
-    private static String printed(Throwable error) {
-        StringWriter out = new StringWriter();
-        error.printStackTrace(new PrintWriter(out));
-        return out.toString();
+        // Every message, string form, stack frame and PayerCallException field in the cause and suppressed chain.
+        return ExchangeSender.mentions(error, token);
     }
 
     /** A response carrying only a status and headers, which is all a {@link PayerCallException} keeps. */
-    private static HttpResponse<String> status(int status, HttpHeaders headers, URI uri) {
+    static HttpResponse<String> status(int status, HttpHeaders headers, URI uri) {
         return new HttpResponse<>() {
             @Override public int statusCode() { return status; }
             @Override public HttpRequest request() { return null; }

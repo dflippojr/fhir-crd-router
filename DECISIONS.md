@@ -278,13 +278,18 @@ response header name and value.
   and repeated keys, so a body Jackson would read only in part takes the
   non-JSON path. Whatever path a response body takes, if a loose JSON
   decoding of the result still shows the token, it is dropped.
-- **Errors too.** On a HOOK call, a transport error whose chain shows the
-  token is replaced by an exception of the same kind, with the token removed,
-  the original stack trace (frames naming the token redacted) and no
-  cause, for both the listener and the
-  caller's `PayerCallException`. A parser error quoting a HOOK response gets
-  the same treatment as the cause of its `RouterException`. Keeping the kind
-  keeps `timedOut()` and `PayerExchangeMetadata` outcomes working.
+- **Errors are always fresh.** Under an EHR token, an exception never
+  leaves a hook call as itself or with its cause attached, whatever its
+  text says: a parser exception can reference the request it was writing
+  (and so the token) through its path, with clean text. At the call
+  boundary, `EhrRedaction.exception` builds a fresh exception from the
+  redacted message, a text summary of the causes, the class and the
+  redacted stack frames, with no cause or suppressed exceptions. The
+  listener's transport `error` is a fresh copy too. `PayerCallException`
+  gained a cause-free `transport(..., boolean timedOut)` factory so
+  `timedOut()` survives without the cause. A request with no
+  `fhirAuthorization` has nothing to protect, so its exceptions are
+  unchanged.
 - **One context per call, every boundary.** Fixing exposure paths one at
   a time kept missing the next one, so the token is now handled as a class.
   `callHook` and `callHookRaw` open an `EhrRedaction` context from the

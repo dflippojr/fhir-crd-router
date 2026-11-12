@@ -386,6 +386,62 @@ class ExchangeSenderTest {
     }
 
     @Test
+    void aPercentEncodedTokenInTheUriStopsDelivery() throws Exception {
+        server.createContext("/cds-services/", e -> TestResponses.respond(e, 200, "{}"));
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/%63txToken164"))
+                .timeout(Duration.ofSeconds(5)).GET().build();
+
+        try (EhrRedaction.Scope ignored = EhrRedaction.of("ctxToken164").open()) {
+            ExchangeSender.send(HttpClient.newHttpClient(), request, null, record(), PayerCallPhase.DISCOVERY, 1,
+                    exchanges::add);
+        }
+
+        assertTrue(exchanges.isEmpty(), exchanges.toString());
+    }
+
+    @Test
+    void anUnreadableHookBodyOmitsTheTransportErrorMessage() throws Exception {
+        try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            Thread payer = new Thread(() -> {
+                try (Socket client = socket.accept()) {
+                    client.getInputStream().read(new byte[8192]);
+                    client.getOutputStream().write("HTTP/1.1 2x0 broken\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                } catch (IOException ignored) {
+                    // The client may close first.
+                }
+            });
+            payer.start();
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + socket.getLocalPort() + "/x"))
+                    .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString("{")).build();
+
+            IOException thrown = assertThrows(IOException.class, () -> ExchangeSender.send(HttpClient.newHttpClient(),
+                    request, "{", record(), PayerCallPhase.HOOK, 1, exchanges::add));
+            payer.join(5000);
+
+            assertEquals("java.net.ProtocolException: [message omitted]", thrown.getMessage());
+            assertNull(thrown.getCause());
+            assertSame(thrown, exchanges.get(0).error());
+        }
+    }
+
+    @Test
+    void headerNamesThatRedactToTheSameNameMerge() {
+        java.util.Map<String, List<String>> headers = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        ExchangeSender.putRedacted(headers, "X-[REDACTED]", List.of("a"), "tok164");
+        ExchangeSender.putRedacted(headers, "X-tok164", List.of("b"), "tok164");
+
+        assertEquals(java.util.Map.of("X-[REDACTED]", List.of("a", "b")), java.util.Map.copyOf(headers));
+    }
+
+    @Test
+    void theBodysOwnTokenIsRedactedAlongsideTheCallsToken() {
+        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", "t/k"),
+                ExchangeSender.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"}}", "t/k"));
+        assertEquals(new ExchangeSender.HookBody(null, "zz"), ExchangeSender.redactRequest(
+                "{\"fhirAuthorization\":{\"access_token\":\"tab164\"},\"x\":\"\\tab164\"}", "zz"));
+    }
+
+    @Test
     void looseDecodingHandlesEveryEscape() {
         assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
         assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));

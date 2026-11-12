@@ -436,7 +436,9 @@ of `RouterException`, so existing catch blocks still work. `phase()` returns
 `PayerCallPhase.DISCOVERY`, `TOKEN` or `HOOK`; `payerId()` and `uri()` identify
 the call. `statusCode()` is an `OptionalInt`, empty for transport failures,
 interruptions and timeouts. `timedOut()` distinguishes HTTP request/connect
-timeouts from other transport errors; the cause preserves the transport error.
+timeouts from other transport errors; the cause preserves the transport error,
+except in a hook call whose request carries a `fhirAuthorization`, where no cause
+is attached (see [Exchange logging and tracing](#exchange-logging-and-tracing)).
 
 `responseHeaders()` returns immutable, case-insensitive Java `HttpHeaders`
 containing only `WWW-Authenticate`, `Retry-After`, `Content-Type`, `X-Request-Id`
@@ -465,17 +467,13 @@ way as for an exchange listener (see [Exchange logging and
 tracing](#exchange-logging-and-tracing)): from every decoded string in a JSON
 body, from the raw and JSON-escaped spellings in any other body (which is dropped
 if a loose decoding still shows the token), and from the kept header names and
-values. This happens before the body is cut at 4096 bytes. Exception diagnostics
-on every HOOK failure path are redacted too: when the `cause` of a HOOK
-`PayerCallException` (a transport failure) or of a `RouterException` from reading
-or mapping a HOOK response (a parser error) would show the token, it is replaced
-by an exception of the same kind (`IOException`, `HttpTimeoutException`,
-`HttpConnectTimeoutException` or `InterruptedException`) whose message names the
-original class, with the token removed, the original stack trace (with the token
-removed from any frame naming it), and no cause or suppressed exceptions. So
-`timedOut()` and the rest of the classification still work. Successful token
-bodies are never attached to exceptions. Hook and discovery bodies may contain
-sensitive clinical data; take care when logging them.
+values. This happens before the body is cut at 4096 bytes. When the hook request
+carries a `fhirAuthorization`, every exception the call throws is a fresh one with
+no cause (see below): a transport failure's `PayerCallException` keeps
+`timedOut()` without one, and the original class and message of each cause, with
+the token removed, are summarised in the message as `(cause: <class>: <message>)`.
+Successful token bodies are never attached to exceptions. Hook and discovery
+bodies may contain sensitive clinical data; take care when logging them.
 
 ```java
 try {
@@ -600,28 +598,32 @@ the response body and headers are redacted as usual. Only when the token is
 unknown as well (an exchange outside such a call whose body cannot be read) are
 the response body delivered as `null` and the response headers as empty. A
 response body counts as JSON only if all of it is one JSON value with no repeated
-key; anything else takes the non-JSON path. A transport error whose message shows
-the token reaches the listener as an exception of the same kind (`IOException`,
-`HttpTimeoutException`, `HttpConnectTimeoutException` or `InterruptedException`)
-with the token removed and no cause, and the `PayerCallException` your call throws
-carries that same copy as its cause. Nothing else is redacted.
+key; anything else takes the non-JSON path. When the token is known, a transport
+error always reaches the listener as a fresh exception of the same kind
+(`IOException`, `HttpTimeoutException`, `HttpConnectTimeoutException` or
+`InterruptedException`) whose message names the original class, with the token
+removed and no cause. Nothing else is redacted.
 
 During `callHook` and `callHookRaw`, one redaction context for the request's EHR
 token covers the whole call. Every exchange the listener receives during the call
 is redacted with it, whatever its phase: the HOOK attempts, and the TOKEN
 exchanges, including a token refresh after a 401 (the TOKEN allowlist above still
 applies first, and then the token is removed from its `scope`, headers and error).
-Every exception that leaves either method is checked as well: if the token shows
-in its message, cause or suppressed chain, printed stack trace, or a body, headers
-or URI of a `PayerCallException` anywhere in that chain, you get a copy of the
-same class (`PayerCallException`, `RouterException`, `IllegalArgumentException`,
-`IllegalStateException`; any other class becomes a `RouterException` naming it)
-with the token removed (a URI naming it keeps only `REDACTED` in its place, or
-only its scheme and host), a redacted cause and no suppressed exceptions, and the
-original stack trace, with the token removed from any frame that names it. When
-concurrent calls share one token fetch and it fails, the failure is redacted with
-the context of the call that sent it before the other calls receive it. An
-exchange that would still show the token after all of this is not delivered.
+Every exception that leaves either method is replaced by a fresh one, whether or
+not its text shows the token, because an exception can also reach the token
+through objects it references (a parser's path back to the request it was writing,
+say). The fresh exception is built only from the original's message with the token
+removed, a text summary of its causes, its class, and its stack frames with the
+token removed from any frame naming it. It has no cause and no suppressed
+exceptions. Its class is the original's for `PayerCallException` (keeping phase,
+payer, status, `timedOut()`, the redacted body and kept headers, and the URI with
+the token replaced by `REDACTED`, or no URI if that is not enough),
+`RouterException`, `IllegalArgumentException` and `IllegalStateException`; any
+other class becomes a `RouterException` naming it. A call whose request has no
+`fhirAuthorization` throws its exceptions unchanged. When concurrent calls share
+one token fetch and it fails, the failure is redacted with the context of the call
+that sent it before the other calls receive it. An exchange that would still show
+the token after all of this is not delivered.
 
 **PHI:** apart from that token, HOOK request and response bodies pass through exactly
 as sent and received. They may contain protected health information (PHI). The

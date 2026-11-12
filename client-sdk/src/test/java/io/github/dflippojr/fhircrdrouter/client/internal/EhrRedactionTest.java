@@ -50,11 +50,15 @@ class EhrRedactionTest {
     }
 
     @Test
-    void exceptionsWithoutTheTokenPassThrough() {
-        RouterException clean = new RouterException("fine", new IOException("also fine"));
-        assertSame(clean, redaction.exception(clean));
+    void withoutATokenExceptionsPassThroughAndWithOneTheyAreAlwaysFresh() {
         RouterException leaky = new RouterException(TOKEN);
         assertSame(leaky, EhrRedaction.NONE.exception(leaky));
+        RouterException clean = new RouterException("fine", new IOException("also fine"));
+        RuntimeException fresh = redaction.exception(clean);
+        assertNotSame(clean, fresh);
+        assertNull(fresh.getCause());
+        assertEquals("fine (cause: java.io.IOException: also fine)", fresh.getMessage());
+        assertArrayEquals(clean.getStackTrace(), fresh.getStackTrace());
     }
 
     @Test
@@ -68,9 +72,7 @@ class EhrRedactionTest {
         suppressed.addSuppressed(new IOException(TOKEN));
         assertEquals(0, assertCopy(suppressed, RouterException.class).getSuppressed().length);
         RuntimeException withError = assertCopy(new RouterException("m", new AssertionError(TOKEN)), RouterException.class);
-        assertNull(withError.getCause());
-        RuntimeException cleanError = new RouterException("m " + TOKEN, new AssertionError("fine"));
-        assertInstanceOf(AssertionError.class, redaction.exception(cleanError).getCause());
+        assertEquals("m (cause: java.lang.AssertionError: [REDACTED])", withError.getMessage());
     }
 
     @Test
@@ -80,7 +82,12 @@ class EhrRedactionTest {
         PayerCallException safeTransport = (PayerCallException) assertCopy(transport, PayerCallException.class);
         assertTrue(safeTransport.statusCode().isEmpty());
         assertEquals(PayerCallPhase.TOKEN, safeTransport.phase());
-        assertInstanceOf(IOException.class, safeTransport.getCause());
+        assertFalse(safeTransport.timedOut());
+        PayerCallException timeout = PayerCallException.transport("timed out", PayerCallPhase.HOOK, "payer", URI_,
+                new java.net.http.HttpTimeoutException("slow"));
+        PayerCallException safeTimeout = (PayerCallException) redaction.exception(timeout);
+        assertTrue(safeTimeout.timedOut());
+        assertNull(safeTimeout.getCause());
 
         HttpHeaders headers = HttpHeaders.of(Map.of("X-Request-Id", List.of(TOKEN), "Retry-After", List.of("5")),
                 (k, v) -> true);
@@ -183,10 +190,86 @@ class EhrRedactionTest {
         }
     }
 
+    @Test
+    void aPayerIdThatNamesTheTokenFallsBackToTheClassName() {
+        PayerCallException failure = new PayerCallException("failed: ", PayerCallPhase.HOOK, "payer-" + TOKEN, URI_,
+                response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), "{}");
+
+        RuntimeException safe = redaction.exception(failure);
+
+        assertEquals(RouterException.class, safe.getClass());
+        assertEquals(PayerCallException.class.getName() + ": [REDACTED]", safe.getMessage());
+        assertEquals(0, safe.getStackTrace().length);
+        assertNull(safe.getCause());
+    }
+
+    @Test
+    void aCyclicCauseChainIsSummarisedOnce() {
+        IOException inner = new IOException("inner");
+        RouterException outer = new RouterException("outer", inner);
+        inner.initCause(outer);
+
+        RuntimeException safe = redaction.exception(outer);
+
+        assertEquals("outer (cause: java.io.IOException: inner) (cause: " + RouterException.class.getName()
+                + ": outer)", safe.getMessage());
+    }
+
+    @Test
+    void aUriTheReplacementWouldBreakIsDropped() {
+        PayerCallException failure = PayerCallException.transport("failed", PayerCallPhase.HOOK, "payer",
+                URI.create("https://payer.example.org/a%4Ab"), new IOException("x"));
+
+        // "%4Ab" with "4A" replaced is "%REDACTEDb", not a valid escape.
+        assertNull(((PayerCallException) EhrRedaction.of("4A").exception(failure)).uri());
+    }
+
+    @Test
+    void theStatusOnlyResponseCarriesNothingElse() {
+        HttpHeaders headers = HttpHeaders.of(Map.of("A", List.of("b")), (k, v) -> true);
+        HttpResponse<String> response = EhrRedaction.status(418, headers, URI_);
+
+        assertEquals(418, response.statusCode());
+        assertSame(headers, response.headers());
+        assertEquals(URI_, response.uri());
+        assertNull(response.request());
+        assertNull(response.body());
+        assertTrue(response.previousResponse().isEmpty());
+        assertTrue(response.sslSession().isEmpty());
+        assertEquals(HttpClient.Version.HTTP_1_1, response.version());
+    }
+
+    @Test
+    void framesWithMissingNamesAndCleanMessagesAreStillChecked() {
+        IOException error = new IOException("clean");
+        error.setStackTrace(new StackTraceElement[] {new StackTraceElement("a." + TOKEN, "run", null, 3)});
+
+        Exception safe = ExchangeSender.safeError(error, TOKEN, false);
+
+        assertNotSame(error, safe);
+        assertEquals("a.[REDACTED]", safe.getStackTrace()[0].getClassName());
+        assertNull(safe.getStackTrace()[0].getFileName());
+    }
+
+    @Test
+    void bodyAndPayerFieldsDeepInTheChainAreChecked() {
+        PayerCallException inBody = new PayerCallException("inner: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), "x");
+        PayerCallException inPayer = PayerCallException.transport("inner", PayerCallPhase.HOOK, TOKEN, URI_,
+                new IOException("x"));
+        assertFalse(ExchangeSender.mentions(new RouterException("w", inBody), TOKEN));
+        assertTrue(ExchangeSender.mentions(new RouterException("w", inPayer), TOKEN));
+        PayerCallException bodyShows = new PayerCallException("inner: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), TOKEN);
+        assertTrue(ExchangeSender.fieldsShow(bodyShows, TOKEN));
+    }
+
     private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {
         RuntimeException safe = redaction.exception(error);
         assertNotSame(error, safe);
         assertEquals(kind, safe.getClass());
+        assertNull(safe.getCause());
+        assertEquals(0, safe.getSuppressed().length);
         assertFalse(printed(safe).contains(TOKEN), printed(safe));
         assertEquals(error.getStackTrace().length, safe.getStackTrace().length);
         if (safe instanceof PayerCallException failure) {

@@ -85,7 +85,9 @@ public final class ExchangeSender {
             // A transport error can quote what the payer sent; neither the caller nor a listener keeps the
             // EHR token from it, in any phase (#164).
             redaction = Redaction.of(phase, body);
-            error = safeError(e, redaction.token(), redaction.unreadable());
+            // Under an EHR token the error is always a fresh copy with no cause, whatever its text says (#164).
+            error = redaction.token() != null || redaction.unreadable()
+                    ? freshError(e, redaction.token(), redaction.unreadable()) : e;
             if (error instanceof InterruptedException interrupted) {
                 throw interrupted;
             }
@@ -136,9 +138,9 @@ public final class ExchangeSender {
         if (token == null) {
             return exchange;
         }
-        boolean shows = shows(exchange.toString(), token) || uriShows(exchange.uri(), token)
-                || exchange.error() != null && mentions(exchange.error(), token);
-        return shows ? null : exchange;
+        // Bodies, headers and the error are redacted above (the error is always a fresh copy under a token);
+        // the string form and the URI are checked as a whole.
+        return shows(exchange.toString(), token) || uriShows(exchange.uri(), token) ? null : exchange;
     }
 
     private static HttpResponse<String> await(CompletableFuture<HttpResponse<String>> future, Duration deadline)
@@ -414,8 +416,7 @@ public final class ExchangeSender {
      * (a malformed status line, or a parser quoting the body, say), so if any message, stack frame or
      * {@link PayerCallException} field of any cause or suppressed exception in the chain shows the token, or the token is unknown because the request could not be
      * read, this returns a copy of the same kind ({@link HttpConnectTimeoutException},
-     * {@link HttpTimeoutException}, {@link InterruptedException}, {@link RuntimeException}, otherwise
-     * {@link IOException}) whose
+     * {@link HttpTimeoutException}, {@link InterruptedException}, otherwise {@link IOException}) whose
      * message names the original class, with the token removed, the original stack trace (any frame naming
      * the token redacted), and no cause or
      * suppressed exceptions. Otherwise it returns {@code error} itself.
@@ -424,11 +425,17 @@ public final class ExchangeSender {
         if (error == null || !unreadable && (token == null || !mentions(error, token))) {
             return error;
         }
-        String message = unreadable ? "[message omitted]" : redactToken(String.valueOf(error.getMessage()), token);
-        if (!unreadable && shows(message, token)) {
-            message = EchoedCredentials.MARKER;
-        }
-        message = error.getClass().getName() + ": " + message;
+        return freshError(error, token, unreadable);
+    }
+
+    /**
+     * Always a fresh copy of {@code error}, as {@link #safeError} describes, whether or not its text
+     * shows the token: same kind, message naming the original class with the token removed (omitted if
+     * {@code unreadable}), stack frames with the token removed, and no cause or suppressed exceptions.
+     */
+    static Exception freshError(Exception error, String token, boolean unreadable) {
+        String message = error.getClass().getName() + ": "
+                + (unreadable || token == null ? "[message omitted]" : clean(String.valueOf(error.getMessage()), token));
         Exception safe;
         if (error instanceof HttpConnectTimeoutException) {
             safe = new HttpConnectTimeoutException(message);
@@ -436,8 +443,6 @@ public final class ExchangeSender {
             safe = new HttpTimeoutException(message);
         } else if (error instanceof InterruptedException) {
             safe = new InterruptedException(message);
-        } else if (error instanceof RuntimeException) {
-            safe = new RuntimeException(message);
         } else {
             safe = new IOException(message);
         }
@@ -447,7 +452,7 @@ public final class ExchangeSender {
 
     /** Whether a {@link PayerCallException}'s own fields (body, kept headers, URI, payer) show {@code token}. */
     static boolean fieldsShow(PayerCallException failure, String token) {
-        return failure.responseBody() != null && shows(failure.responseBody(), token)
+        return shows(failure.responseBody(), token)
                 || shows(failure.responseHeaders().map().toString(), token)
                 || uriShows(failure.uri(), token)
                 || shows(String.valueOf(failure.payerId()), token);
@@ -476,7 +481,8 @@ public final class ExchangeSender {
         return safe;
     }
 
-    private static String clean(String text, String token) {
+    /** {@code text} with {@code token} removed; the whole text becomes the marker if a spelling survives. */
+    static String clean(String text, String token) {
         if (text == null) {
             return null;
         }

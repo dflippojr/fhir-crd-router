@@ -199,8 +199,8 @@ class PayerExchangeFhirAuthorizationTest {
         RouterException e = assertThrows(RouterException.class, () -> client().callHookRaw(record(), "x", PLAIN_REQUEST));
 
         assertNoTokenInChain(e, PLAIN);
-        assertNotNull(e.getCause(), "the parse failure is still reported");
-        assertTrue(e.getCause().getMessage().contains("JsonParseException"), e.getCause().getMessage());
+        assertNull(e.getCause(), "no cause leaves a token-bearing call");
+        assertTrue(e.getMessage().contains("com.fasterxml.jackson.core.JsonParseException: "), e.getMessage());
     }
 
     @Test
@@ -210,7 +210,8 @@ class PayerExchangeFhirAuthorizationTest {
         RouterException e = assertThrows(RouterException.class, () -> client().callHook(record(), "x", PLAIN_REQUEST));
 
         assertNoTokenInChain(e, PLAIN);
-        assertNotNull(e.getCause());
+        assertNull(e.getCause());
+        assertTrue(e.getMessage().contains("(cause: "), e.getMessage());
     }
 
     @Test
@@ -235,7 +236,8 @@ class PayerExchangeFhirAuthorizationTest {
             server.join(5000);
 
             assertNoTokenInChain(e, PLAIN);
-            assertInstanceOf(java.io.IOException.class, e.getCause());
+            assertNull(e.getCause());
+            assertTrue(e.getMessage().contains("java.net.ProtocolException: "), e.getMessage());
             assertFalse(e.timedOut());
         }
         exchanges.forEach(exchange -> assertFalse(exchange.toString().contains(PLAIN), exchange.toString()));
