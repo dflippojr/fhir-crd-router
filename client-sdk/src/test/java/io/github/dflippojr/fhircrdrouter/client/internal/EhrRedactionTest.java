@@ -155,6 +155,34 @@ class EhrRedactionTest {
         assertEquals("https://payer.example.org/REDACTED", safe.uri().toString());
     }
 
+    @Test
+    void fieldsAnywhereInTheChainAreChecked() {
+        PayerCallException inHeader = new PayerCallException("inner: ", PayerCallPhase.HOOK, "payer", URI_,
+                response(400, HttpHeaders.of(Map.of("X-Request-Id", List.of(TOKEN)), (k, v) -> true)), "{}");
+        PayerCallException inUri = PayerCallException.transport("inner", PayerCallPhase.HOOK, "payer",
+                URI.create("https://payer.example.org/" + TOKEN), new IOException("x"));
+        RouterException wrapper = new RouterException("could not resolve credential", inHeader);
+        wrapper.addSuppressed(inUri);
+
+        RuntimeException safe = redaction.exception(wrapper);
+
+        assertNotSame(wrapper, safe);
+        java.util.Deque<Throwable> todo = new java.util.ArrayDeque<>(List.of(safe));
+        while (!todo.isEmpty()) {
+            Throwable t = todo.pop();
+            assertFalse(printed(t).contains(TOKEN), printed(t));
+            if (t instanceof PayerCallException p) {
+                assertFalse(p.responseHeaders().map().toString().contains(TOKEN));
+                assertFalse(String.valueOf(p.uri()).contains(TOKEN));
+                assertFalse(String.valueOf(p.responseBody()).contains(TOKEN));
+            }
+            if (t.getCause() != null) {
+                todo.push(t.getCause());
+            }
+            todo.addAll(List.of(t.getSuppressed()));
+        }
+    }
+
     private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {
         RuntimeException safe = redaction.exception(error);
         assertNotSame(error, safe);
