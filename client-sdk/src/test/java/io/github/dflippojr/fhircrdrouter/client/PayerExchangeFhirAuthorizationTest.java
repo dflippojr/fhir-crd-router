@@ -138,6 +138,29 @@ class PayerExchangeFhirAuthorizationTest {
         assertFalse(collectStringsOf(mapper.readTree(hook.requestBody())).stream().anyMatch(v -> v.contains(token)));
     }
 
+    @Test
+    void payerCallExceptionCarriesNoTokenInMessageBodyOrHeaders() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/cds-services/x", e -> {
+            e.getRequestBody().readAllBytes();
+            e.getResponseHeaders().add("X-Request-Id", "id " + TOKEN);
+            e.getResponseHeaders().add("Retry-After", "7");
+            TestResponses.respond(e, 503, "{\"error\":\"bad " + TOKEN.replace("-", "\\u002d") + "\"}");
+        });
+        server.start();
+        servers.add(server);
+
+        PayerCallException e = assertThrows(PayerCallException.class,
+                () -> client().callHook(record(server), "x", REQUEST));
+
+        assertFalse(e.getMessage().contains(TOKEN), e.getMessage());
+        assertFalse(collectStringsOf(mapper.readTree(e.responseBody())).stream().anyMatch(v -> v.contains(TOKEN)),
+                e.responseBody());
+        assertEquals(List.of("id [REDACTED]"), e.responseHeaders().allValues("X-Request-Id"));
+        assertEquals(Optional.of(Duration.ofSeconds(7)), e.retryAfter());
+        assertEquals(503, e.statusCode().orElseThrow());
+    }
+
     private static void collectStrings(JsonNode node, List<String> out) {
         if (node.isTextual()) {
             out.add(node.asText());
