@@ -219,7 +219,7 @@ class ExchangeSenderTest {
     }
 
     @Test
-    void transportErrorEchoingTheTokenIsRedactedForTheListenerOnly() throws Exception {
+    void transportErrorEchoingTheTokenIsRedactedForListenerAndCaller() throws Exception {
         String token = "tok-164-status-line";
         try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             Thread payer = new Thread(() -> {
@@ -240,7 +240,8 @@ class ExchangeSenderTest {
                     request, sent, record(), PayerCallPhase.HOOK, 1, exchanges::add));
             payer.join(5000);
 
-            assertTrue(chain(thrown).contains(token), "the caller keeps the original: " + chain(thrown));
+            assertFalse(chain(thrown).contains(token), chain(thrown));
+            assertFalse(printed(thrown).contains(token), printed(thrown));
             PayerExchange exchange = exchanges.get(0);
             assertInstanceOf(IOException.class, exchange.error());
             assertFalse(exchange.toString().contains(token), exchange.toString());
@@ -316,6 +317,12 @@ class ExchangeSenderTest {
         assertEquals(response.sslSession(), kept.sslSession());
         assertTrue(kept.previousResponse().isEmpty());
         assertNull(kept.body());
+    }
+
+    private static String printed(Throwable error) {
+        java.io.StringWriter out = new java.io.StringWriter();
+        error.printStackTrace(new java.io.PrintWriter(out));
+        return out.toString();
     }
 
     private static String chain(Throwable error) {

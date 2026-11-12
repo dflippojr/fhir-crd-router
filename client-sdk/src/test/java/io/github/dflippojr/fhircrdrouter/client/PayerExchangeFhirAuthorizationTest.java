@@ -10,6 +10,7 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -183,6 +184,73 @@ class PayerExchangeFhirAuthorizationTest {
         client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(2))).callHook(record(server), "x", large);
 
         assertEquals(2, calls.get());
+    }
+
+    /** A token Jackson quotes whole in a parse error: letters and digits only. */
+    private static final String PLAIN = "SentinelEhrToken164plain";
+    private static final CdsHookRequest PLAIN_REQUEST = new CdsHookRequest("order-sign", "instance",
+            Map.of("patientId", "pat-1"), Map.of()).withFhirServer(EHR,
+            new FhirAuthorization(PLAIN, "Bearer", 300, "patient/Patient.read", "payer-client"));
+
+    @Test
+    void unparseableHookResponseExceptionCarriesNoToken() {
+        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":" + PLAIN + "}"));
+
+        RouterException e = assertThrows(RouterException.class, () -> client().callHookRaw(record(), "x", PLAIN_REQUEST));
+
+        assertNoTokenInChain(e, PLAIN);
+        assertNotNull(e.getCause(), "the parse failure is still reported");
+        assertTrue(e.getCause().getMessage().contains("JsonParseException"), e.getCause().getMessage());
+    }
+
+    @Test
+    void unmappableHookResponseExceptionCarriesNoToken() {
+        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":[{\"suggestions\":[\"" + PLAIN + "\"]}]}"));
+
+        RouterException e = assertThrows(RouterException.class, () -> client().callHook(record(), "x", PLAIN_REQUEST));
+
+        assertNoTokenInChain(e, PLAIN);
+        assertNotNull(e.getCause());
+    }
+
+    @Test
+    void hookTransportFailureExceptionCarriesNoToken() throws Exception {
+        try (java.net.ServerSocket socket = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            Thread server = new Thread(() -> {
+                try (java.net.Socket client = socket.accept()) {
+                    client.getInputStream().read(new byte[8192]);
+                    client.getOutputStream().write(("HTTP/1.1 2x0 " + PLAIN + "\r\n\r\n")
+                            .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    client.getOutputStream().flush();
+                } catch (java.io.IOException ignored) {
+                    // The client may close first.
+                }
+            });
+            server.start();
+            ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
+                    .baseUrl("http://127.0.0.1:" + socket.getLocalPort()).authType(AuthType.NONE).build();
+
+            PayerCallException e = assertThrows(PayerCallException.class,
+                    () -> client().callHook(record, "x", PLAIN_REQUEST));
+            server.join(5000);
+
+            assertNoTokenInChain(e, PLAIN);
+            assertInstanceOf(java.io.IOException.class, e.getCause());
+            assertFalse(e.timedOut());
+        }
+        exchanges.forEach(exchange -> assertFalse(exchange.toString().contains(PLAIN), exchange.toString()));
+    }
+
+    private static void assertNoTokenInChain(Throwable error, String token) {
+        java.io.StringWriter printed = new java.io.StringWriter();
+        error.printStackTrace(new java.io.PrintWriter(printed));
+        assertFalse(printed.toString().contains(token), printed.toString());
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            assertFalse(String.valueOf(t).contains(token), String.valueOf(t));
+            for (Throwable s : t.getSuppressed()) {
+                assertFalse(String.valueOf(s).contains(token), String.valueOf(s));
+            }
+        }
     }
 
     private static void collectStrings(JsonNode node, List<String> out) {
