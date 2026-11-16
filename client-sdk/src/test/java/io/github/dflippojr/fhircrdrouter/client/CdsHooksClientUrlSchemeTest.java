@@ -167,6 +167,46 @@ class CdsHooksClientUrlSchemeTest {
         assertTrue(resolved.isEmpty(), "credentials resolved: " + resolved);
     }
 
+    /**
+     * The SDK appends {@code /cds-services} to {@code baseUrl} (CDS Hooks 2.0, Discovery:
+     * https://cds-hooks.hl7.org/2.0/#discovery). After a query or fragment that suffix lands in the query or
+     * is dropped, so the request would go to the base path itself instead of the discovery or service URL.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"https://payer.example/r4?tenant=SECRET-TENANT", "https://payer.example/r4?",
+            "https://payer.example/r4#SECRET-TENANT", "https://payer.example/r4/?tenant=SECRET-TENANT",
+            "http://127.0.0.1/r4?tenant=SECRET-TENANT"})
+    void refusesBaseUrlWithQueryOrFragment(String baseUrl) {
+        ConnectionRecord record = record(AuthType.API_KEY, baseUrl, null, false);
+        CdsHooksClient client = new CdsHooksClient(new FailingHttpClient(), recordingCredentials());
+
+        for (Executable call : calls(client, record)) {
+            EndpointUrlException e = assertThrows(EndpointUrlException.class, call);
+            assertEquals("baseUrl", e.field());
+            assertTrue(e.getMessage().contains("query or fragment"), e.getMessage());
+            assertFalse(e.getMessage().contains("SECRET-TENANT"), e.getMessage());
+        }
+        assertTrue(resolved.isEmpty(), "credentials resolved: " + resolved);
+    }
+
+    @Test
+    void tokenEndpointMayCarryAQuery() {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.reset(r -> r.rawPath().equals("/token")
+                    ? new Reply(200, "{\"access_token\":\"t\",\"expires_in\":60}")
+                    : new Reply(200, "{\"services\":[]}"));
+            ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-156")
+                    .environment(Environment.PRODUCTION).baseUrl(payer.origin())
+                    .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).clientId("c").credentialRef("secret")
+                    .tokenEndpoint(payer.origin() + "/token?tenant=t1").build();
+
+            new CdsHooksClient(HttpClient.newHttpClient(), recordingCredentials()).discoverServices(record);
+
+            assertEquals(List.of("/token", "/cds-services"),
+                    payer.received().stream().map(LoopbackPayer.Received::rawPath).toList());
+        }
+    }
+
     @Test
     void messageDoesNotEchoTheUrl() {
         ConnectionRecord record = record(AuthType.NONE, "http://user:pw-SECRET@payer.example/r4?key=SECRET", null,
