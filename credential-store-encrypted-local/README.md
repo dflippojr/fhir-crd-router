@@ -17,7 +17,10 @@ write goes to a temporary file in the same directory and is moved over the old o
 readers see the old or the new complete file and a crash keeps the previous content.
 `key.bin` is created only by a `put` on a store with no entries and never replaces an
 existing file, so two instances starting on a fresh directory end up sharing one key.
-`resolve` never creates a key. If `key.bin` is lost while entries remain, both `resolve`
+`resolve` never creates a key. Do not reset the store directory (delete `key.bin` or
+`secrets.properties`) while a process holds a provider instance: an instance loads `key.bin`
+once and never checks it again, so its next `put` can encrypt under the old key into a file
+that holds entries under another. If `key.bin` is lost while entries remain, both `resolve`
 and `put` fail with "Local credential key is missing" until the original `key.bin` is
 restored; a `key.bin` that is not exactly 32 bytes and a malformed entry also fail with an
 `IllegalStateException` that names the problem.

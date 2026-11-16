@@ -1,6 +1,7 @@
 package io.github.dflippojr.fhircrdrouter.core.audit;
 
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -15,8 +16,6 @@ import java.nio.file.attribute.AclEntry;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
-import java.nio.file.attribute.PosixFileAttributeView;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Clock;
 import java.util.EnumSet;
 import java.util.List;
@@ -115,15 +114,13 @@ public final class JsonlAuditTrail implements AuditSink, AutoCloseable {
 
     private static void prepareFile(Path path) throws IOException {
         if (Files.isSymbolicLink(path)) throw new IOException("Audit path must not be a symbolic link");
-        boolean posix = Files.getFileAttributeView(path.getParent() == null ? Path.of(".") : path.getParent(),
-                PosixFileAttributeView.class) != null;
+        boolean posix = AtomicFiles.posix(path);
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            if (posix) Files.createFile(path, PosixFilePermissions.asFileAttribute(
-                    PosixFilePermissions.fromString("rw-------")));
+            if (posix) Files.createFile(path, AtomicFiles.ownerOnly());
             else Files.createFile(path);
         }
         if (posix) {
-            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+            AtomicFiles.restrictToOwner(path);
         } else {
             AclFileAttributeView acl = Files.getFileAttributeView(path, AclFileAttributeView.class,
                     LinkOption.NOFOLLOW_LINKS);

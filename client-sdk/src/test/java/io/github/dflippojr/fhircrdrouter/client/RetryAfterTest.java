@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
+import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -128,6 +129,44 @@ class RetryAfterTest {
         assertEquals(3, calls.get());
     }
 
+    /**
+     * Characterization for #194: the single OAuth2 401 re-authentication is outside the
+     * {@code maxAttempts} budget. Under {@code RetryPolicy(2, ...)} a 429, then a 401, then a 429 costs
+     * the payer three attempts, and the second 429 is the failure.
+     */
+    @Test
+    void oauthReauthenticationIsOutsideTheThrottleBudget() {
+        AtomicInteger tokens = new AtomicInteger();
+        List<Integer> statuses = new CopyOnWriteArrayList<>();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
+        server.createContext("/token", exchange -> {
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            TestResponses.respond(exchange, 200,
+                    "{\"access_token\":\"token-" + tokens.incrementAndGet() + "\",\"expires_in\":300}");
+        });
+        server.createContext(HOOK_PATH, exchange -> {
+            int status = calls.incrementAndGet() == 2 ? 401 : 429;
+            statuses.add(status);
+            if (status == 429) {
+                exchange.getResponseHeaders().add("Retry-After", "0");
+            }
+            TestResponses.respond(exchange, status, "throttled");
+        });
+        ConnectionRecord oauth = ConnectionRecord.builder().payerId("PAYER-OAUTH").environment(Environment.SANDBOX)
+                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
+                .clientId("client").credentialRef("payer-oauth").build();
+        CdsHooksClient client = new CdsHooksClient(secretProvider("secret"))
+                .retryPolicy(new RetryPolicy(2, Duration.ofSeconds(5)));
+
+        PayerCallException error = assertTimeoutPreemptively(GUARD, () -> assertThrows(PayerCallException.class,
+                () -> client.callHookRaw(oauth, "hook", REQUEST)));
+
+        assertTrue(error.isRateLimited());
+        assertEquals(List.of(429, 401, 429), statuses);
+        assertEquals(3, calls.get());
+        assertEquals(2, tokens.get());
+    }
+
     @Test
     void doesNotRetryOtherStatusesOrMissingRetryAfter() {
         respond(500, Map.of("Retry-After", "0"));
@@ -158,6 +197,14 @@ class RetryAfterTest {
 
     private void callWithoutRetry() {
         clientWith(RetryPolicy.NONE).callHookRaw(record, "hook", REQUEST);
+    }
+
+    private static CredentialProvider secretProvider(String secret) {
+        return new CredentialProvider() {
+            @Override public Optional<String> resolve(String credentialRef) { return Optional.of(secret); }
+            @Override public void put(String credentialRef, String secretValue) { }
+            @Override public void remove(String credentialRef) { }
+        };
     }
 
     private void respond(int status, Map<String, String> headers) {

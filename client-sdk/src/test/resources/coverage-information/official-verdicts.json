@@ -416,6 +416,21 @@
         }
       ]
     },
+    "q7-reason-code-not-in-set": {
+      "valid": false,
+      "errors": [
+        {
+          "location": "ServiceRequest.extension[0]",
+          "messageId": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information#crd-ci-q7",
+          "message": "Constraint failed: crd-ci-q7: 'If reason.coding is present and is not from the extensible value set, then reason.text must be present' (defined in http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information)"
+        },
+        {
+          "location": "ServiceRequest.extension[0].extension[2].value.ofType(CodeableConcept).coding[0].code",
+          "messageId": "Unknown_Code_in_Version",
+          "message": "Unknown code 'zzz' in the CodeSystem 'http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp' version '2.2.1'"
+        }
+      ]
+    },
     "q7-reason-coding-without-text": {
       "valid": false,
       "errors": [
@@ -612,6 +627,10 @@
       "valid": true,
       "errors": []
     },
+    "valid-coverage-identifier": {
+      "valid": true,
+      "errors": []
+    },
     "valid-detail-quantity": {
       "valid": true,
       "errors": []
@@ -633,6 +652,10 @@
       "errors": []
     },
     "valid-not-covered": {
+      "valid": true,
+      "errors": []
+    },
+    "valid-reason-text": {
       "valid": true,
       "errors": []
     },

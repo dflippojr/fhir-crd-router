@@ -55,6 +55,8 @@ class CrashDurabilityIT {
     private static final int ITERATIONS_PER_LANE = 25;
     private static final int MAX_KILL_DELAY_MS = 250;
     private static final boolean POSIX = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    /** The reference the parent's probe write puts and removes; children name theirs {@code i<n>-<m>}. */
+    private static final String PROBE = "probe-120";
 
     @Test
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -223,17 +225,25 @@ class CrashDurabilityIT {
                 }
                 assertArrayEquals(firstKey, current, where + ": key.bin is not the first key ever created");
             }
+            // Checked and counted before any probe write sweeps the temporary files that kills left.
+            checkPermissions(where);
+            leftovers += temporaryFiles().size();
             for (String name : operations.started("create")) {
                 if (name.startsWith("i" + iteration + "-")) {
                     checkFirstUse(dir.resolve("first-use").resolve(name), name,
                             operations.isAcknowledged("create", name), where);
                 }
             }
+            // One completed write to main/, which removes the temporary files that killed writers left
+            // (#120); the first-use stores already had theirs in checkFirstUse. A put and a remove of a
+            // reserved reference no child ever puts, so the store's references are as they were.
+            Set<String> beforeProbe = entries(main.resolve("secrets.properties"));
+            fresh.put(PROBE, secret(PROBE));
+            fresh.remove(PROBE);
+            assertEquals(beforeProbe, entries(main.resolve("secrets.properties")),
+                    where + ": the probe write changed the references in main");
             checkPermissions(where);
-            // #120: nothing removes the temporary file of a write that a kill interrupted, so "no .tmp
-            // files are left behind" does not hold yet. Until it does, a kill may leave at most one.
-            leftovers = temporaryFiles().size();
-            assertTrue(leftovers <= iteration + 1, where + ": more temporary files than kills: " + temporaryFiles());
+            assertEquals(List.of(), temporaryFiles(), where + ": a write left another writer's temporary file behind");
         }
 
         private List<Path> temporaryFiles() throws IOException {

@@ -46,8 +46,8 @@
          own floor at its measured coverage minus 0.01. Raise a floor when
          coverage rises; never lower one. These defaults are the lowest module
          floors, so a new module starts with the repo's floor. -->
-    <jacoco.minimum.line>0.87</jacoco.minimum.line>
-    <jacoco.minimum.branch>0.82</jacoco.minimum.branch>
+    <jacoco.minimum.line>0.8984</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.8900</jacoco.minimum.branch>
   </properties>
 
   <dependencyManagement>
@@ -100,7 +100,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
-          <version>3.6.0</version>
+          <version>3.6.1</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
@@ -133,7 +133,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.15</version>
+        <version>0.8.16</version>
         <executions>
           <execution>
             <id>prepare-agent</id>

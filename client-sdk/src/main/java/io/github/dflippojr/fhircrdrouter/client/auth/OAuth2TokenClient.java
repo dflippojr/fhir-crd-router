@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
+import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -48,9 +49,11 @@ import java.util.function.Supplier;
  * {@code client_assertion} (RFC 7523, as profiled by SMART Backend Services).
  *
  * <p>Tokens are cached in memory per (token endpoint, client ID, scopes,
- * mTLS credential ref), so records that reach the token endpoint under different
- * client certificates, or one with and one without mTLS, never share a
- * (possibly certificate-bound, RFC 8705) token. Entries last
+ * mTLS credential ref, {@code credentialRef}, auth type), so records that reach the token
+ * endpoint under different client certificates, or one with and one without mTLS, never
+ * share a (possibly certificate-bound, RFC 8705) token, and a record is never served a
+ * token that another record's credential earned (#192). The secret passed to
+ * {@code fetchAccessToken} is not in the key, only the record's reference to it. Entries last
  * until {@code expires_in} minus {@link #EXPIRY_SKEW}, with {@code expires_in}
  * capped at {@link #MAX_CACHE_LIFETIME}. {@code expires_in} may be a positive whole
  * number or, for servers that send it as a string, a numeric string such as
@@ -179,12 +182,32 @@ public final class OAuth2TokenClient {
             }
             mine.complete(result);
             return result.accessToken();
-        } catch (RuntimeException | Error e) {
+        } catch (RuntimeException e) {
+            // Other calls may be waiting on this flight: redact the failure under this call's EHR context
+            // before any of them can see it (#164).
+            RuntimeException safe = EhrRedaction.current().exception(e);
+            mine.completeExceptionally(safe);
+            throw safe;
+        } catch (Error e) {
             mine.completeExceptionally(e);
             throw e;
         } finally {
             inFlight.remove(key, mine);
         }
+    }
+
+    /**
+     * Always sends one token request and returns the token it earns, for a caller that must prove the
+     * credential works now ({@code CdsHooksClient.verify}, #218). Neither reads nor changes the cache, and
+     * neither joins nor detaches an in-flight fetch: a failure leaves a cached token in place.
+     *
+     * @param secret supplies the client secret, or the PEM private key for {@code OAUTH2_PRIVATE_KEY_JWT}
+     */
+    public String exchangeFreshToken(HttpClient client, ConnectionRecord record, Supplier<String> secret, int attempt) {
+        Objects.requireNonNull(secret, "secret");
+        EndpointUrls.requireNoRedirects(client);
+        URI endpoint = EndpointUrls.requireTokenUrls(record);
+        return requestToken(client, record, endpoint, secret.get(), attempt).accessToken();
     }
 
     private static CachedToken await(CompletableFuture<CachedToken> flight) {
@@ -317,7 +340,10 @@ public final class OAuth2TokenClient {
             JsonNode json = mapper.readTree(body);
             for (String field : List.of("error", "error_description")) {
                 if (json != null && json.path(field).isTextual()) {
-                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential));
+                    // During a hook call, the EHR's fhirAuthorization token is removed too (#164), before
+                    // PayerCallException truncates the body.
+                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential,
+                            EhrRedaction.current().token()));
                 }
             }
         } catch (IOException e) {
@@ -328,15 +354,20 @@ public final class OAuth2TokenClient {
 
     // tokenEndpoint and clientId presence are already enforced by ConnectionRecord for this authType.
     private static CacheKey cacheKey(ConnectionRecord record) {
-        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef());
+        return new CacheKey(record.tokenEndpoint(), record.clientId(), record.scopes(), record.mtlsCredentialRef(),
+                record.credentialRef(), record.authType());
     }
 
     private static String formEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    /** {@code mtlsCredentialRef} is null for records without mTLS. */
-    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef) { }
+    /**
+     * {@code mtlsCredentialRef} is null for records without mTLS, and {@code credentialRef} for records without
+     * one. OAuth2TokenCacheKeyTest fails when a new {@code ConnectionRecord} component is not classified.
+     */
+    private record CacheKey(String tokenEndpoint, String clientId, List<String> scopes, String mtlsCredentialRef,
+                            String credentialRef, AuthType authType) { }
 
     private record CachedToken(String accessToken, Instant refreshAt) { }
 }

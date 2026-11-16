@@ -77,6 +77,55 @@ class AtomicFilesTest {
     }
 
     @Test
+    void temporaryFileNextToATargetIsCreatedInItsDirectoryCreatingTheMissingParents(@TempDir Path dir)
+            throws IOException {
+        Path target = dir.resolve("a/b/store.yaml");
+        List<Path> parents = new ArrayList<>();
+        List<String> requested = new ArrayList<>();
+        AtomicFiles.TempFileCreator recording = (parent, prefix, suffix, attrs) -> {
+            parents.add(parent);
+            requested.add(requested(attrs));
+            return Files.createTempFile(parent, prefix, suffix, attrs);
+        };
+
+        Path tmp = AtomicFiles.createOwnerOnlyTempNextTo(recording, target);
+
+        assertEquals(List.of(dir.resolve("a/b")), parents);
+        assertEquals(List.of(POSIX ? "rw-------" : "none"), requested);
+        assertEquals(dir.resolve("a/b"), tmp.getParent());
+        String name = tmp.getFileName().toString();
+        assertTrue(name.startsWith("store.yaml.") && name.endsWith(".tmp"), name);
+        if (POSIX) {
+            assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(tmp)));
+        }
+    }
+
+    @Test
+    void temporaryFileNextToARelativeTargetIsCreatedInItsAbsoluteDirectory() throws IOException {
+        Path target = Path.of("store.yaml");
+        List<Path> parents = new ArrayList<>();
+        AtomicFiles.TempFileCreator recording = (parent, prefix, suffix, attrs) -> {
+            parents.add(parent);
+            return parent.resolve(prefix + "x" + suffix);
+        };
+
+        AtomicFiles.createOwnerOnlyTempNextTo(recording, target);
+
+        assertEquals(List.of(target.toAbsolutePath().getParent()), parents);
+    }
+
+    @Test
+    void restrictToOwnerNarrowsAWideFileToReadWriteForTheOwnerAlone(@TempDir Path dir) throws IOException {
+        assumeTrue(POSIX);
+        Path file = Files.createFile(dir.resolve("f"));
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rwxrwxrwx"));
+
+        AtomicFiles.restrictToOwner(file);
+
+        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+    }
+
+    @Test
     void posixFollowsTheFileSystemOfThePathAsked(@TempDir Path dir) throws IOException {
         assertEquals(POSIX, AtomicFiles.posix(dir));
         try (FileSystem zip = zipFileSystem(dir)) {
@@ -281,6 +330,68 @@ class AtomicFilesTest {
         AtomicFiles.deleteQuietly(notEmpty);
 
         assertTrue(Files.exists(notEmpty));
+    }
+
+    @Test
+    void sweepDeletesOnlyRegularFilesNamedLikeTheTargetsTemporaryFiles(@TempDir Path dir, @TempDir Path outside)
+            throws IOException {
+        Path target = dir.resolve("store.yaml");
+        List<String> orphans = List.of("store.yaml.1.tmp", "store.yaml.x.tmp", "store.yaml...tmp", "store.yaml.a.b.tmp");
+        List<String> survivors = List.of("store.yaml", "store.yaml.tmp", "store.yaml..tmp", "store.yaml.1.bak", "store.yaml.1.tmp.bak",
+                "other.yaml.1.tmp", "astore.yaml.1.tmp", "store.yml.1.tmp", "STORE.YAML.9.tmp");
+        for (String name : orphans) {
+            Files.writeString(dir.resolve(name), name);
+        }
+        for (String name : survivors) {
+            Files.writeString(dir.resolve(name), name);
+        }
+        Path directory = Files.createDirectory(dir.resolve("store.yaml.2.tmp"));
+        Files.writeString(directory.resolve("store.yaml.3.tmp"), "nested");
+        Path link = null;
+        Path linkTarget = Files.writeString(outside.resolve("store.yaml.4.tmp"), "outside");
+        if (POSIX) {
+            link = Files.createSymbolicLink(dir.resolve("store.yaml.5.tmp"), linkTarget);
+        }
+
+        AtomicFiles.sweepOrphanedTemps(dir, target);
+
+        for (String name : orphans) {
+            assertFalse(Files.exists(dir.resolve(name)), name);
+        }
+        for (String name : survivors) {
+            assertEquals(name, Files.readString(dir.resolve(name)), name);
+        }
+        assertTrue(Files.exists(directory.resolve("store.yaml.3.tmp")), "the sweep recursed");
+        assertEquals("outside", Files.readString(linkTarget));
+        if (link != null) {
+            assertTrue(Files.isSymbolicLink(link), "the sweep deleted a symbolic link");
+        }
+    }
+
+    @Test
+    void sweepOfADirectoryThatCannotBeListedDoesNotThrow(@TempDir Path dir) {
+        Path missing = dir.resolve("missing");
+
+        AtomicFiles.sweepOrphanedTemps(missing, missing.resolve("store.yaml"));
+
+        assertFalse(Files.exists(missing));
+    }
+
+    @Test
+    void sweepIgnoresAFailedDeleteAndGoesOnToTheNextFile(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("store.yaml.1.tmp"), "one");
+        Files.writeString(dir.resolve("store.yaml.2.tmp"), "two");
+        List<String> attempted = new ArrayList<>();
+
+        AtomicFiles.sweepOrphanedTemps(dir, dir.resolve("store.yaml"), file -> {
+            attempted.add(file.getFileName().toString());
+            throw new AccessDeniedException(file.toString());
+        });
+
+        assertEquals(Set.of("store.yaml.1.tmp", "store.yaml.2.tmp"), Set.copyOf(attempted));
+        assertEquals(2, attempted.size());
+        assertTrue(Files.exists(dir.resolve("store.yaml.1.tmp")));
+        assertTrue(Files.exists(dir.resolve("store.yaml.2.tmp")));
     }
 
     /** A move that is refused {@code refusals} times, as Windows refuses it while a reader has the file open. */

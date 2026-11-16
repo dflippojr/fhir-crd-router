@@ -164,10 +164,10 @@ applicable to a library, with the reasons.
 
 ### CI
 
-GitHub Actions runs four workflows:
+GitHub Actions runs six workflows:
 
 - **CI** (`.github/workflows/ci.yml`) runs on every pull request and every
-  push to `master`, with six jobs:
+  push to `master`, with seven jobs:
   - `build`: `./mvnw verify` on Linux with JDK 17 and 21, plus
     `.\mvnw.cmd verify` on Windows with JDK 21. `verify` includes the JaCoCo
     coverage floor (line and branch, per module; see the parent `pom.xml`).
@@ -186,12 +186,21 @@ GitHub Actions runs four workflows:
   - `fhir-validator`: runs `fhir-validator/run.sh` (the official HL7 FHIR
     validator) and fails if a recorded verdict changed; see DECISIONS.md,
     "Differential testing against the official validator".
+  - `corpus-edit`: pull requests only. It fails a pull request that modifies,
+    renames or deletes a file under
+    `client-sdk/src/test/resources/coverage-information/cases/` or
+    `client-sdk/src/test/resources/crd-ri/`, unless the same pull request also
+    changes `known-differences.json` or `DECISIONS.md` (see DECISIONS.md,
+    "Corpus edit check"). Adding a case is always allowed. The check and its
+    test run from the base commit, so a pull request can't weaken the check
+    that judges it.
   - `gate-guard`: the shared gate guard from `dflippojr/.github`, pinned by
     full SHA. It fails a pull request that deletes tests, adds `@Disabled`,
     adds retries, or edits workflows, Sonar or JaCoCo config, unless the
     owner applied the `gate-change-approved` label.
   - `gate`: always runs, and passes only when `build`, `sonar`, `crd-ri`,
-    `fhir-validator` and `gate-guard` all succeeded.
+    `fhir-validator`, `corpus-edit` and `gate-guard` all succeeded, except
+    that `sonar` may be skipped on a fork PR and `corpus-edit` on a push.
 
   A new push to a PR cancels that PR's older run; runs on `master` are never
   cancelled.
@@ -212,6 +221,12 @@ GitHub Actions runs four workflows:
 - **Inferno CRD client suite** (`.github/workflows/inferno-crd-client.yml`):
   runs `InfernoCrdClientSuiteTest` against the Inferno Da Vinci CRD test kit
   (see below). Manual dispatch only.
+- **Automated code review** (`.github/workflows/review.yml`) is a thin caller
+  of the shared review workflow in `dflippojr/agent-harness`, pinned to
+  `review-v4`. It runs once when a pull request is opened, and on manual
+  dispatch (`pr_number`, `backend`, `mode`) for a re-review after later
+  commits. It runs under `pull_request_target` from the base branch's copy of
+  the file, skips fork and Dependabot pull requests, and passes no secrets.
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub
 Actions weekly and opens at most 3 pull requests per ecosystem, labeled

@@ -103,6 +103,20 @@ class PrefetchTemplatesTest {
         assertEquals("template is null", reasons.get("nullTemplate"));
     }
 
+    /** A first segment that is no field name is not a nested path either, so it never expands (#155, #160, #201). */
+    @ParameterizedTest
+    @ValueSource(strings = {"context..patientId", "context.1x.y"})
+    void contextTokenWithInvalidFirstSegmentIsUnsupported(String token) {
+        Map<String, String> templates = new LinkedHashMap<>();
+        templates.put("bad", "Coverage?patient={{" + token + "}}&status=active");
+        templates.put("coverage", COVERAGE);
+
+        Expansion expansion = PrefetchTemplates.expand(templates, orderSign("Practitioner/prac-1", "pat-1", null));
+
+        assertEquals(Map.of("coverage", "Coverage?patient=pat-1&status=active"), expansion.queries());
+        assertEquals(Map.of("bad", "unsupported token {{" + token + "}}"), expansion.unresolved());
+    }
+
     @Test
     void nonPrimitiveContextFieldIsUnresolved() {
         Expansion expansion = PrefetchTemplates.expand(Map.of("orders", "X?q={{context.draftOrders}}"),

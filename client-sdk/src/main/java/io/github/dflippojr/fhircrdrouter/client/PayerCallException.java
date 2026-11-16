@@ -28,6 +28,7 @@ public final class PayerCallException extends RouterException {
     private final String payerId;
     private final URI uri;
     private final OptionalInt statusCode;
+    private final boolean timedOut;
     private final HttpHeaders responseHeaders;
     private final String responseBody;
 
@@ -42,11 +43,17 @@ public final class PayerCallException extends RouterException {
 
     private PayerCallException(String messagePrefix, PayerCallPhase phase, String payerId, URI uri,
                                HttpResponse<String> response, String body, Throwable cause) {
+        this(messagePrefix, phase, payerId, uri, response, body, cause, cause instanceof HttpTimeoutException);
+    }
+
+    private PayerCallException(String messagePrefix, PayerCallPhase phase, String payerId, URI uri,
+                               HttpResponse<String> response, String body, Throwable cause, boolean timedOut) {
         super(messagePrefix + truncate(body), cause);
         this.phase = phase;
         this.payerId = payerId;
         this.uri = uri;
         this.statusCode = response == null ? OptionalInt.empty() : OptionalInt.of(response.statusCode());
+        this.timedOut = timedOut;
         this.responseHeaders = HttpHeaders.of(response == null ? Map.of() : response.headers().map(),
                 (name, value) -> ALLOWED_HEADERS.contains(name.toLowerCase(Locale.ROOT)));
         this.responseBody = truncate(body);
@@ -57,13 +64,22 @@ public final class PayerCallException extends RouterException {
         return new PayerCallException(message, phase, payerId, uri, null, "", cause);
     }
 
+    /**
+     * A transport failure with no cause attached, for a copy that must not reference the original
+     * exception (#164): {@link #timedOut()} reports {@code timedOut} instead of reading the cause.
+     */
+    public static PayerCallException transport(String message, PayerCallPhase phase, String payerId,
+                                               URI uri, boolean timedOut) {
+        return new PayerCallException(message, phase, payerId, uri, null, "", null, timedOut);
+    }
+
     public PayerCallPhase phase() { return phase; }
     public String payerId() { return payerId; }
     public URI uri() { return uri; }
     public OptionalInt statusCode() { return statusCode; }
     public HttpHeaders responseHeaders() { return responseHeaders; }
     public String responseBody() { return responseBody; }
-    public boolean timedOut() { return getCause() instanceof HttpTimeoutException; }
+    public boolean timedOut() { return timedOut; }
 
     /** True when the payer answered HTTP 429. */
     public boolean isRateLimited() { return statusCode.isPresent() && statusCode.getAsInt() == 429; }

@@ -19,9 +19,9 @@
   </description>
 
   <properties>
-    <!-- JaCoCo floor (see the parent pom): measured 2026-10-16 on Linux at 0.8828 line, 0.8333 branch (Windows skips POSIX permission branches). -->
-    <jacoco.minimum.line>0.87</jacoco.minimum.line>
-    <jacoco.minimum.branch>0.82</jacoco.minimum.branch>
+    <!-- JaCoCo floor (see the parent pom): measured 2026-10-31 on Windows, the lowest CI leg, at 0.9084 line, 0.9000 branch (Windows skips POSIX permission branches; Linux measured 2026-10-30 at 0.9477 line, 0.9286 branch). -->
+    <jacoco.minimum.line>0.8984</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.8900</jacoco.minimum.branch>
   </properties>
 
   <dependencies>

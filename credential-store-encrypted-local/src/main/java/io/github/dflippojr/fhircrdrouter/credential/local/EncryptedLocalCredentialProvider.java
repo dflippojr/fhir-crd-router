@@ -87,7 +87,12 @@ import java.util.function.UnaryOperator;
  * disk leaves the previous content intact. {@code key.bin} is only created by {@code put} on a
  * store with no entries: the new key is written to a temporary file and then linked into place
  * without ever replacing an existing file, so when instances race on first use exactly one key is
- * published and every instance uses it. {@code resolve} never creates a key.
+ * published and every instance uses it. {@code resolve} never creates a key. A writer killed
+ * before its temporary file is moved or linked into place, or before it is deleted, leaves it
+ * behind; the next {@code put} or {@code remove} removes every {@code secrets.properties.*.tmp}
+ * and {@code key.bin.*.tmp} under the store lock before it changes anything (#120). Those files
+ * are only created under that lock, so any the lock holder sees is an orphan. {@code resolve}
+ * removes nothing.
  *
  * <p>Where POSIX permissions apply, loading an existing {@code key.bin} that its group or others
  * can access (copied in, restored from a backup, or written by an older version) takes those
@@ -101,6 +106,11 @@ import java.util.function.UnaryOperator;
  * Instances in one JVM also share a mutex per directory, because the JVM refuses to hand out two
  * overlapping file locks. A writer waits for the lock without a timeout. {@code resolve} takes no
  * file lock; the atomic replace already gives it a complete file.
+ *
+ * <p>Do not reset the store directory while a process holds a provider instance. An instance loads
+ * {@code key.bin} once and never checks it again, so after the file is deleted or replaced its next
+ * {@code put} can encrypt under the old key into a file that holds entries under another key. The
+ * store is designed for a single owner.
  *
  * <p>Damaged material fails with an {@link IllegalStateException} that names the problem and
  * never contains ciphertext or plaintext: a missing {@code key.bin} next to stored entries (a
@@ -149,6 +159,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     private final LongSupplier nanoClock;
     private final UnaryOperator<OutputStream> outputWrapper;
     private final AtomicFiles.TempFileCreator tempFiles;
+    private final AtomicFiles.Deleter sweepDeleter;
     private volatile SecretKey key;
     private volatile Snapshot snapshot;
     private final AtomicInteger parseCount = new AtomicInteger();
@@ -221,6 +232,13 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
     EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
                                      LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper,
                                      AtomicFiles.TempFileCreator tempFiles) {
+        this(baseDir, auditSink, fullCompareInterval, nanoClock, outputWrapper, tempFiles, Files::deleteIfExists);
+    }
+
+    // Visible for tests, which make the sweep of orphaned temporary files fail.
+    EncryptedLocalCredentialProvider(Path baseDir, AuditSink auditSink, Duration fullCompareInterval,
+                                     LongSupplier nanoClock, UnaryOperator<OutputStream> outputWrapper,
+                                     AtomicFiles.TempFileCreator tempFiles, AtomicFiles.Deleter sweepDeleter) {
         if (fullCompareInterval.isNegative()) {
             throw new IllegalArgumentException("fullCompareInterval must not be negative");
         }
@@ -228,6 +246,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         this.outputWrapper = Objects.requireNonNull(outputWrapper, "outputWrapper");
         this.tempFiles = Objects.requireNonNull(tempFiles, "tempFiles");
+        this.sweepDeleter = Objects.requireNonNull(sweepDeleter, "sweepDeleter");
         this.keyFile = baseDir.resolve("key.bin");
         this.secretsFile = baseDir.resolve("secrets.properties");
         this.lockFile = baseDir.resolve("secrets.lock");
@@ -320,6 +339,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
                 Files.createDirectories(dir);
                 channel = openLockChannel(dir);
                 acquire(channel);
+                sweepOrphanedTemps(dir);
                 body.run();
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to lock the credential store at " + lockFile, e);
@@ -329,6 +349,17 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
         } finally {
             mutex.unlock();
         }
+    }
+
+    /**
+     * Removes the temporary files of writes that a killed writer left (#120). Every
+     * {@code secrets.properties.*.tmp} and {@code key.bin.*.tmp} is created while holding the store
+     * lock ({@code saveSecrets}, and {@code createKey} through {@code put}), so a caller holding it
+     * knows any it sees is an orphan, whichever process left it. Best effort: never fails the write.
+     */
+    private void sweepOrphanedTemps(Path dir) {
+        AtomicFiles.sweepOrphanedTemps(dir, secretsFile, sweepDeleter);
+        AtomicFiles.sweepOrphanedTemps(dir, keyFile, sweepDeleter);
     }
 
     private void acquire(FileChannel channel) throws IOException {
@@ -574,9 +605,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             KeyGenerator keyGen = KeyGenerator.getInstance(AES);
             keyGen.init(KEY_BITS);
             SecretKey generated = keyGen.generateKey();
-            Path dir = keyFile.toAbsolutePath().getParent();
-            Files.createDirectories(dir);
-            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, keyFile);
+            tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, keyFile);
             AtomicFiles.writeDurably(tmp, generated.getEncoded(), outputWrapper);
             if (publishWithoutReplacing(tmp)) {
                 audit(context, AuditEvent.Outcome.SUCCEEDED);
@@ -720,9 +749,7 @@ public final class EncryptedLocalCredentialProvider implements ContextualCredent
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             props.store(buffer, "fhir-crd-router encrypted credential references — values are AES-GCM ciphertext, not raw secrets");
             byte[] bytes = buffer.toByteArray();
-            Path dir = secretsFile.toAbsolutePath().getParent();
-            Files.createDirectories(dir);
-            tmp = AtomicFiles.createOwnerOnlyTemp(tempFiles, dir, secretsFile);
+            tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, secretsFile);
             AtomicFiles.writeDurably(tmp, bytes, outputWrapper);
             AtomicFiles.replace(tmp, secretsFile);
             tmp = null;

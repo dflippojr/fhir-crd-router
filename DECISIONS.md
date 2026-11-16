@@ -202,6 +202,120 @@ host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
   refusal. `EndpointUrls.requireTokenUrls` is the shared check, also used by
   `CdsHooksClient`'s preflight.
 
+## Writes sweep killed writers' temporary files (2026-11-03, #120)
+
+Both file stores write a `<target>.<random>.tmp` file and then move it into
+place. A writer killed in between leaves the temporary file behind, one per
+interrupted write. `CrashDurabilityIT` (#99) found them. Now the next write
+deletes them first with `AtomicFiles.sweepOrphanedTemps`. It deletes only
+regular files named `<target>.` + one or more characters + `.tmp`, does not
+follow links or recurse, and ignores any failure, so a sweep never fails the
+write that runs it. Reads never sweep: they take no lock that would make
+them the only writer.
+
+- **Credential store: under the store lock.** Every
+  `secrets.properties.*.tmp` and `key.bin.*.tmp` is created while holding
+  the per-directory mutex and the OS lock on `secrets.lock`. So a `put` or
+  `remove` that holds both knows any such file is an orphan, whichever
+  process left it, and sweeps before it changes anything.
+- **Connection store: under the instance's write lock, by assumption.**
+  `FileBasedConnectionStore` has no cross-process lock. Its class Javadoc
+  already says one process, and ideally one instance, owns the file. The
+  sweep runs inside `save`/`delete`'s write lock and relies on that
+  assumption. If the assumption is broken, another instance's in-flight
+  temporary file can be deleted under it, and that instance's write fails
+  with an `UncheckedIOException` and leaves the file as it was. That is no
+  worse than the lost updates the assumption already allows. A cross-process
+  lock is out of scope.
+- **No age threshold.** Sweeping only files older than some age would
+  protect a writer in another process that breaks the assumption. But it
+  would leave a fresh orphan in place, so "a completed write leaves no
+  temporary files" could not be asserted without a clock seam. The liaison
+  accepted this on #120.
+- **Name collisions.** The pattern is a prefix match, so a connection file
+  named `a.yaml.x` in the same directory as `a.yaml` has temporary files
+  (`a.yaml.x.<n>.tmp`) that `a.yaml`'s sweep also matches. Keep connection
+  files in a directory where no file name extends another's.
+
+## Listeners never see the EHR's FHIR token (2026-11-12, #164)
+
+A HOOK request may carry `fhirAuthorization`, an OAuth2 token for the EHR's
+FHIR server ([CDS Hooks 2.0](https://cds-hooks.hl7.org/2.0/#passing-the-access-token-to-the-cds-service)).
+`PayerExchange.requestBody` used to hold it verbatim, so a listener that
+logged the exchange logged a live bearer token. `ExchangeSender` now replaces
+`/fhirAuthorization/access_token` with `[REDACTED]` before delivery, and
+replaces the token wherever else it appears in that HOOK exchange: every
+string value and key of a JSON body, compared after decoding, and every
+response header name and value.
+
+- **Redact the field, not the bodies.** The alternative was a `toString()`
+  that omits or summarises the bodies. Listeners exist to debug payer calls,
+  and the body is the part they need. A `toString()` change would also leave
+  `requestBody()` itself carrying the token, so a listener that serialised
+  the record or logged the body field would still leak it. Redacting the
+  one field closes both and keeps the rest of the body as sent.
+- **Response echoes too.** A payer can echo the token back, for example in
+  an error message or a header. The token is known at the time of delivery,
+  so it is removed from the HOOK response body and headers as well.
+- **Decode, don't enumerate.** JSON offers many spellings of one string, so
+  a JSON body is parsed and each decoded string value and key is checked,
+  rather than matching a list of escaped spellings in the text. A body that
+  is not JSON has no decoding to apply: the raw and JSON-escaped spellings
+  are replaced, and if a loose JSON decoding of the rest still shows the
+  token, the body is omitted.
+- **Exact re-serialisation.** A request body is re-serialised only when it
+  has a `fhirAuthorization.access_token`, and a response body only when a
+  string in it changed. Re-serialised text that would still contain the
+  token, as is or decoded, is not delivered (`null`). It is read with exact decimals so numbers keep their
+  original text. A HOOK body that cannot be read as JSON (not JSON, or past
+  Jackson's read limits) is delivered as `null`. During a hook call the token
+  is known from the request, so the response is still redacted. Only with the
+  token unknown as well are the response body and headers dropped too: none
+  can be checked, so all fail closed.
+- **Not covered.** A token pasted by the caller into another field under a
+  transformed spelling (base64 of it, say) is not found.
+- **Partly readable JSON is not JSON.** The reader rejects trailing content
+  and repeated keys, so a body Jackson would read only in part takes the
+  non-JSON path. Whatever path a response body takes, if a loose JSON
+  decoding of the result still shows the token, it is dropped.
+- **Errors are always fresh.** Under an EHR token, an exception never
+  leaves a hook call as itself or with its cause attached, whatever its
+  text says: a parser exception can reference the request it was writing
+  (and so the token) through its path, with clean text. At the call
+  boundary, `EhrRedaction.exception` builds a fresh exception from the
+  redacted message, the class names of the causes (never their messages:
+  a credential provider's can describe secret material), the class and the
+  redacted stack frames, with no cause or suppressed exceptions. The
+  listener's transport `error` is a fresh copy too. The copy keeps the
+  public type: `PayerCallException` and `EndpointUrlException` are rebuilt
+  field by field, and other public JDK or SDK exceptions through their
+  public `(String)` constructor. A caller's own exception class becomes a
+  `RouterException` naming it, so the SDK never runs a caller's
+  constructor. `PayerCallException`
+  gained a cause-free `transport(..., boolean timedOut)` factory so
+  `timedOut()` survives without the cause. A request with no
+  `fhirAuthorization` has nothing to protect, so its exceptions are
+  unchanged. An `AuditPersistenceException` passes through as is: callers
+  must receive it by type, core builds it from an audit event with no
+  cause, and its package-private constructor rules out a copy.
+- **One context per call, every boundary.** Fixing exposure paths one at
+  a time kept missing the next one, so the token is now handled as a class.
+  `callHook` and `callHookRaw` open an `EhrRedaction` context from the
+  request when they start. It is thread-local, because all of a call's
+  sends and listener callbacks run on the calling thread, and that reaches
+  the token client without changing its API. Each boundary reads it:
+  `ExchangeSender` for every listener exchange of every phase (HOOK, TOKEN,
+  a refresh after a 401), the token client's error body before truncation,
+  and `EhrRedaction.exception` for every exception leaving either method.
+  A token fetch shared by concurrent calls is redacted under the context
+  of the call that sent it before any waiting call can see its failure.
+  As a last check, an exchange that still shows the token is not
+  delivered, and an exception copy that still shows it is replaced by a
+  `RouterException` naming only the original class.
+- **Payer call errors.** A HOOK `PayerCallException` gets the same treatment
+  for its body (and so its message) and its kept headers, through
+  `ExchangeSender.safeHookFailure`.
+
 ## Not yet done
 
 - No publishing config (Maven Central / GitHub
@@ -334,3 +448,22 @@ request, and it is one of `gate`'s needs.
   may contain a newline; split into lines, an added file named
   `a<LF>M<LF>DECISIONS.md` would pose as a changed `DECISIONS.md` and unlock
   the escape hatch.
+
+## One definition for the auth-type predicates (2026-11-02, #185)
+
+`AuthType` has two public predicates: `usesOAuth2Token()`, true for the two
+OAuth2 client-credentials types, and `signsJwt()`, true for
+`OAUTH2_PRIVATE_KEY_JWT` and `CDS_HOOKS_JWT`. `ConnectionRecord`,
+`EndpointUrls` and `CdsHooksClient` ask them, not compare constants, so a new
+auth type is decided in one place. The predicates are a small addition to the
+`directory-core` API, chosen over a `core.internal` helper so the downstream
+workbench can use them too.
+
+Both are exhaustive switches with no `default`. Adding a constant is a compile
+error until its author says which predicate it satisfies. The `||` chains they
+replace would have let a new constant fall through silently. The `switch` in
+`CdsHooksClient.applyAuth` and `OAuth2TokenClient`'s single-constant check stay
+as they are.
+
+Behaviour is unchanged. `ConnectionRecordTest` and `EndpointUrlsTest` pin, for
+all five types, which fields each requires and which URLs each checks.
