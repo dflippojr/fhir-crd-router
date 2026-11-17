@@ -142,7 +142,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     public List<ConnectionRecord> findByPayerId(String payerId) {
         Snapshot snapshot = readAll();
         for (InvalidEntry invalid : snapshot.invalid) {
-            if (payerId.equals(invalid.payerId())) {
+            if (invalid.hasPayerId(payerId)) {
                 throw invalidRecord(invalid);
             }
         }
@@ -157,7 +157,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     public Optional<ConnectionRecord> findByPayerIdAndEnvironment(String payerId, Environment environment) {
         Snapshot snapshot = readAll();
         for (InvalidEntry invalid : snapshot.invalid) {
-            if (payerId.equals(invalid.payerId()) && invalid.environment() == environment) {
+            if (invalid.hasPayerId(payerId) && invalid.environment() == environment) {
                 throw invalidRecord(invalid);
             }
         }
@@ -405,7 +405,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      * @param problem the simple class name of the exception that stopped the entry binding, or
      *     {@code NullEntry} for an empty list item
      */
-    public record InvalidEntry(int index, String payerId, Environment environment, String problem) { }
+    public record InvalidEntry(int index, String payerId, Environment environment, String problem) {
+        boolean hasPayerId(String other) {
+            return payerId != null && payerId.equals(other);
+        }
+    }
 
     /**
      * One item of the stored list: its node as read, never modified, and its key, which is null where
@@ -413,7 +417,9 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      */
     private record Entry(JsonNode node, String payerId, Environment environment) {
         boolean hasKey(String otherPayerId, Environment otherEnvironment) {
-            return otherPayerId.equals(payerId) && otherEnvironment == environment;
+            // The entry's payerId first: a lookup with a null payerId matched nothing before #231 and must not
+            // throw, nor match an entry with no readable payerId.
+            return payerId != null && payerId.equals(otherPayerId) && otherEnvironment == environment;
         }
     }
 

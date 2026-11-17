@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -339,6 +340,25 @@ class InvalidEntryIsolationTest {
                 store.invalidEntries());
         assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK").baseUrl());
         assertThrows(InvalidConnectionRecordException.class, () -> store.findByPayerId("42"));
+    }
+
+    /** A null payerId matched nothing before #231; with an unkeyed invalid entry present it still does. */
+    @Test
+    void aNullPayerIdMatchesNothing(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - environment: "PRODUCTION"
+                  authType: "NONE"
+                """ + OK_ENTRY);
+        byte[] before = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(List.of(), store.findByPayerId(null));
+        assertTrue(store.findByPayerIdAndEnvironment(null, Environment.PRODUCTION).isEmpty());
+        store.delete(null, Environment.PRODUCTION);
+
+        assertArrayEquals(before, Files.readAllBytes(file));
+        assertEquals(2, store.invalidEntries().size() + store.findAll().size());
     }
 
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
