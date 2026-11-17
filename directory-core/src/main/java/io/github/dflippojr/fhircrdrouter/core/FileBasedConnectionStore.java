@@ -236,11 +236,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /** The stored node with the record's fields laid over it; fields this version does not know stay. */
+    /**
+     * The stored node with the record's fields laid over it; fields this version does not know stay.
+     * A node with a key is always an object, since a scalar or null list item has no payerId.
+     */
     private static JsonNode overlay(JsonNode stored, ObjectNode known) {
-        if (!stored.isObject()) {
-            return known;
-        }
         ObjectNode merged = ((ObjectNode) stored).deepCopy();
         merged.setAll(known);
         return merged;
@@ -326,34 +326,25 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     private static Throwable rootCause(Throwable e) {
         Throwable root = e;
-        while (root.getCause() != null && root.getCause() != root) {
+        while (root.getCause() != null) {
             root = root.getCause();
         }
         return root;
     }
 
+    /** The node's payerId as Jackson would coerce a scalar to text, or null; null for a non-object node. */
     private static String payerIdOf(JsonNode node) {
-        if (node == null || !node.isObject()) {
-            return null;
-        }
-        JsonNode value = node.get("payerId");
-        return value != null && value.isValueNode() && !value.isNull() ? value.asText() : null;
+        JsonNode value = node.path("payerId");
+        return value.isValueNode() && !value.isNull() ? value.asText() : null;
     }
 
+    /** The node's environment if it names a constant this version knows, else null. */
     private static Environment environmentOf(JsonNode node) {
-        if (node == null || !node.isObject()) {
+        try {
+            return Environment.valueOf(node.path("environment").asText());
+        } catch (IllegalArgumentException e) {
             return null;
         }
-        JsonNode value = node.get("environment");
-        if (value == null || !value.isTextual()) {
-            return null;
-        }
-        for (Environment environment : Environment.values()) {
-            if (environment.name().equals(value.asText())) {
-                return environment;
-            }
-        }
-        return null;
     }
 
     /**

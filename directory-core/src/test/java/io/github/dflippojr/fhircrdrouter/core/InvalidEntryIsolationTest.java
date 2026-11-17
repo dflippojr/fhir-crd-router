@@ -312,6 +312,48 @@ class InvalidEntryIsolationTest {
         assertEquals(List.of(), store.invalidEntries());
     }
 
+    /** Only a scalar payerId and a known environment name give an invalid entry a key. */
+    @Test
+    void anInvalidEntryWithoutAReadableKeyMatchesNoLookup(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - environment: "PRODUCTION"
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "NONE"
+                - payerId: null
+                  environment: "PRODUCTION"
+                  authType: "NONE"
+                - payerId: 42
+                  environment: 2
+                  authType: "FUTURE_AUTH_SENTINEL"
+                - payerId: ["PAYER-OK"]
+                  environment: "PRODUCTION"
+                """ + OK_ENTRY);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(List.of(
+                        new FileBasedConnectionStore.InvalidEntry(0, null, Environment.PRODUCTION, "NullPointerException"),
+                        new FileBasedConnectionStore.InvalidEntry(1, null, Environment.PRODUCTION, "NullPointerException"),
+                        new FileBasedConnectionStore.InvalidEntry(2, "42", null, "InvalidFormatException"),
+                        new FileBasedConnectionStore.InvalidEntry(3, null, Environment.PRODUCTION, "MismatchedInputException")),
+                store.invalidEntries());
+        assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK").baseUrl());
+        assertThrows(InvalidConnectionRecordException.class, () -> store.findByPayerId("42"));
+    }
+
+    /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
+    @Test
+    void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, OK_ENTRY + OK_ENTRY.replace("ok.example", "second.example"));
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-OK").baseUrl("https://saved.example/r4").build());
+
+        assertEquals(List.of("PAYER-OK:PRODUCTION https://saved.example/r4"), baseUrls(store.findAll()));
+        assertEquals(1, nodes(file).size());
+    }
+
     /** The exception for a key carries the key and problem, for a caller that wants to tell this case apart. */
     @Test
     void theKeyExceptionExposesTheKeyAndProblem(@TempDir Path dir) throws Exception {
