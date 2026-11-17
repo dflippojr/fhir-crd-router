@@ -319,12 +319,12 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     /**
      * The stored node with the record's fields laid over it; fields this version does not know stay.
-     * A node with a key is an object, since a scalar or null list item has no payerId, unless the whole
-     * entry carries a type id, in which case it is left as it stands and the write refuses it.
+     * A node with a key is an object, since a scalar or null list item has no payerId, unless the
+     * entry is anchored or tagged as a whole, in which case it is left as it stands and the write refuses it.
      */
     private static JsonNode overlay(JsonNode stored, ObjectNode known) {
         if (!(stored instanceof ObjectNode object)) {
-            return stored; // an entry tagged as a whole: the write refuses it as it stands
+            return stored; // an entry anchored or tagged as a whole: the write refuses it as it stands
         }
         ObjectNode merged = object.deepCopy();
         merged.setAll(known);
