@@ -5,6 +5,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
@@ -148,52 +150,69 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         return readAll().records;
     }
 
+    /**
+     * Writes the record over its key's stored entry, in place, or appends it when the key has none.
+     * The record's fields are laid over the stored entry's node, so a property this version does not
+     * know survives the update (#231). Every other entry, readable or not, is written back as read.
+     * A later entry with the same key is dropped, as before.
+     */
     @Override
     public void save(ConnectionRecord record) {
         lock.writeLock().lock();
         try {
-            Snapshot snapshot = readAll();
-            refuseWhileInvalid(snapshot);
-            List<ConnectionRecord> all = new ArrayList<>(snapshot.records);
-            all.removeIf(r -> r.key().equals(record.key()));
-            all.add(record);
-            writeAll(all);
-        } finally {
-            lock.writeLock().unlock();
-        }
-    }
-
-    @Override
-    public void delete(String payerId, Environment environment) {
-        lock.writeLock().lock();
-        try {
-            Snapshot snapshot = readAll();
-            refuseWhileInvalid(snapshot);
-            List<ConnectionRecord> all = new ArrayList<>(snapshot.records);
-            // No match: leave the file alone, so a no-op delete neither creates it nor
-            // risks a refused replace on Windows.
-            if (all.removeIf(r -> r.payerId().equals(payerId) && r.environment() == environment)) {
-                writeAll(all);
+            List<Entry> entries = readAll().entries;
+            ObjectNode known = mapper.valueToTree(record);
+            List<JsonNode> nodes = new ArrayList<>();
+            boolean placed = false;
+            for (Entry entry : entries) {
+                if (!entry.hasKey(record.payerId(), record.environment())) {
+                    nodes.add(entry.node);
+                } else if (!placed) {
+                    nodes.add(overlay(entry.node, known));
+                    placed = true;
+                }
             }
+            if (!placed) {
+                nodes.add(known);
+            }
+            writeAll(nodes);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
     /**
-     * A rewrite from the bound records would drop every entry this version cannot read, so writes are
-     * refused, before anything is written, while one exists (#231).
+     * Removes every stored entry with this key, including one this version cannot read, which makes
+     * delete the way to clear a broken entry through the API (#231). Other entries are written back as
+     * read.
      */
-    private void refuseWhileInvalid(Snapshot snapshot) {
-        if (snapshot.invalid.isEmpty()) {
-            return;
+    @Override
+    public void delete(String payerId, Environment environment) {
+        lock.writeLock().lock();
+        try {
+            List<Entry> entries = readAll().entries;
+            List<JsonNode> kept = entries.stream()
+                    .filter(entry -> !entry.hasKey(payerId, environment))
+                    .map(entry -> entry.node)
+                    .toList();
+            // No match: leave the file alone, so a no-op delete neither creates it nor
+            // risks a refused replace on Windows.
+            if (kept.size() != entries.size()) {
+                writeAll(kept);
+            }
+        } finally {
+            lock.writeLock().unlock();
         }
-        StringBuilder message = new StringBuilder("Refusing to write connection store at ").append(path)
-                .append(": it holds entries this version cannot read, and a rewrite would drop them:");
-        for (InvalidEntry invalid : snapshot.invalid) {
-            message.append(' ').append(describe(invalid)).append(';');
+    }
+
+    /** The stored node with the record's fields laid over it; fields this version does not know stay. */
+    private static JsonNode overlay(JsonNode stored, ObjectNode known) {
+        if (!stored.isObject()) {
+            return known;
         }
-        throw new RouterException(message.substring(0, message.length() - 1));
+        ObjectNode merged = ((ObjectNode) stored).deepCopy();
+        merged.setAll(known);
+        return merged;
     }
 
     private InvalidConnectionRecordException invalidRecord(InvalidEntry invalid) {
@@ -238,29 +257,40 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     private Snapshot parse(byte[] bytes) throws IOException {
         JsonNode root = hasContent(bytes) ? mapper.readValue(bytes, JsonNode.class) : null;
         if (root == null || root.isNull()) {
-            return new Snapshot(bytes, List.of(), List.of());
+            return bind(bytes, List.of());
         }
         if (!root.isArray()) {
             throw new IOException("expected a YAML list of connection records, found " + root.getNodeType());
         }
+        List<JsonNode> nodes = new ArrayList<>();
+        root.forEach(nodes::add);
+        return bind(bytes, nodes);
+    }
+
+    /** Binds each node on its own; a node that does not bind is kept as an invalid entry. */
+    private Snapshot bind(byte[] bytes, List<JsonNode> nodes) {
+        List<Entry> entries = new ArrayList<>();
         List<ConnectionRecord> records = new ArrayList<>();
         List<InvalidEntry> invalid = new ArrayList<>();
-        for (int index = 0; index < root.size(); index++) {
-            JsonNode node = root.get(index);
+        for (int index = 0; index < nodes.size(); index++) {
+            JsonNode node = nodes.get(index);
             String problem;
             try {
                 ConnectionRecord record = mapper.treeToValue(node, ConnectionRecord.class);
                 if (record != null) {
                     records.add(record);
+                    entries.add(new Entry(node, record.payerId(), record.environment()));
                     continue;
                 }
                 problem = "NullEntry";
             } catch (JsonProcessingException | IllegalArgumentException e) {
                 problem = rootCause(e).getClass().getSimpleName();
             }
-            invalid.add(new InvalidEntry(index, payerIdOf(node), environmentOf(node), problem));
+            InvalidEntry entry = new InvalidEntry(index, payerIdOf(node), environmentOf(node), problem);
+            invalid.add(entry);
+            entries.add(new Entry(node, entry.payerId(), entry.environment()));
         }
-        return new Snapshot(bytes, List.copyOf(records), List.copyOf(invalid));
+        return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid));
     }
 
     private static Throwable rootCause(Throwable e) {
@@ -272,11 +302,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     }
 
     private static String payerIdOf(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
         JsonNode value = node.get("payerId");
         return value != null && value.isValueNode() && !value.isNull() ? value.asText() : null;
     }
 
     private static Environment environmentOf(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
         JsonNode value = node.get("environment");
         if (value == null || !value.isTextual()) {
             return null;
@@ -306,7 +342,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    private void writeAll(List<ConnectionRecord> records) {
+    private void writeAll(List<JsonNode> nodes) {
         Path dir = path.toAbsolutePath().getParent();
         Path tmp = null;
         try {
@@ -317,7 +353,9 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, path);
             mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            mapper.writeValue(buffer, records);
+            ArrayNode list = mapper.createArrayNode();
+            list.addAll(nodes);
+            mapper.writeValue(buffer, list);
             byte[] bytes = buffer.toByteArray();
             AtomicFiles.writeDurably(tmp, bytes);
             try {
@@ -327,7 +365,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                         + ": the file is open in another process or access is denied", e);
             }
             tmp = null;
-            cache = new Snapshot(bytes, List.copyOf(records), List.of());
+            cache = bind(bytes, nodes);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing connection store at " + path, e);
         } finally {
@@ -347,16 +385,28 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      */
     public record InvalidEntry(int index, String payerId, Environment environment, String problem) { }
 
+    /**
+     * One item of the stored list: its node as read, never modified, and its key, which is null where
+     * this version cannot read it.
+     */
+    private record Entry(JsonNode node, String payerId, Environment environment) {
+        boolean hasKey(String otherPayerId, Environment otherEnvironment) {
+            return otherPayerId.equals(payerId) && otherEnvironment == environment;
+        }
+    }
+
     /** What the file held, together with the exact file bytes it came from. */
     private static final class Snapshot {
-        static final Snapshot EMPTY = new Snapshot(new byte[0], List.of(), List.of());
+        static final Snapshot EMPTY = new Snapshot(new byte[0], List.of(), List.of(), List.of());
 
         private final byte[] bytes;
+        private final List<Entry> entries;
         private final List<ConnectionRecord> records;
         private final List<InvalidEntry> invalid;
 
-        private Snapshot(byte[] bytes, List<ConnectionRecord> records, List<InvalidEntry> invalid) {
+        private Snapshot(byte[] bytes, List<Entry> entries, List<ConnectionRecord> records, List<InvalidEntry> invalid) {
             this.bytes = bytes;
+            this.entries = entries;
             this.records = records;
             this.invalid = invalid;
         }

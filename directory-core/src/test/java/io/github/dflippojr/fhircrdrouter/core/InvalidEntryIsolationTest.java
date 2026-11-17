@@ -1,5 +1,8 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -9,7 +12,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -149,39 +151,131 @@ class InvalidEntryIsolationTest {
         }
     }
 
-    /** Stage 1 of #231: a rewrite would drop the invalid entry, so writes refuse and leave the file as it was. */
+    static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
+
+    static JsonNode nodes(Path file) throws Exception {
+        return YAML.readTree(file.toFile());
+    }
+
+    static List<String> baseUrls(List<ConnectionRecord> records) {
+        return records.stream().map(r -> r.key() + " " + r.baseUrl()).toList();
+    }
+
+    static ConnectionRecord.Builder recordFor(String payerId) {
+        return ConnectionRecord.builder().payerId(payerId).environment(Environment.PRODUCTION)
+                .baseUrl("https://" + payerId.toLowerCase() + ".example/r4").authType(AuthType.NONE);
+    }
+
+    /** Stage 2 of #231: a rewrite keeps every entry it did not touch as it was read, readable or not. */
     @ParameterizedTest
     @EnumSource(Bad.class)
-    void writesRefuseWhileAnInvalidEntryExistsAndLeaveTheBytesUnchanged(Bad bad, @TempDir Path dir) throws Exception {
+    void saveOfAnotherRecordKeepsTheInvalidEntryAsRead(Bad bad, @TempDir Path dir) throws Exception {
         Path file = storeWith(dir, bad);
-        byte[] before = Files.readAllBytes(file);
+        JsonNode before = nodes(file);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
-        ConnectionRecord other = ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.PRODUCTION)
-                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build();
 
-        RouterException onSave = assertThrows(RouterException.class, () -> store.save(other));
-        RouterException onDelete = assertThrows(RouterException.class,
-                () -> store.delete("PAYER-OK", Environment.PRODUCTION));
+        store.save(recordFor("PAYER-NEW").build());
 
-        for (RouterException e : List.of(onSave, onDelete)) {
-            assertTrue(e.getMessage().contains("payerId=PAYER-BAD"), e.getMessage());
-            assertTrue(e.getMessage().contains(bad.problem), e.getMessage());
-            assertNoSentinel(e);
-        }
-        assertArrayEquals(before, Files.readAllBytes(file));
+        JsonNode after = nodes(file);
+        assertEquals(3, after.size());
+        assertEquals(before.get(0), after.get(0));
+        assertEquals(before.get(1), after.get(1));
+        assertEquals("PAYER-NEW", after.get(2).get("payerId").asText());
+        assertThrows(InvalidConnectionRecordException.class, () -> store.findByPayerId("PAYER-BAD"));
+        // The cache the save refreshed answers like a fresh read of the file. PAYER-OK has no stored
+        // createdAt, so each read fills it with the time of the read; compare what the file holds.
+        assertEquals(baseUrls(new FileBasedConnectionStore(file).findAll()), baseUrls(store.findAll()));
+        assertEquals(List.of("PAYER-OK", "PAYER-NEW"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+    }
+
+    @ParameterizedTest
+    @EnumSource(Bad.class)
+    void deleteOfAnotherRecordKeepsTheInvalidEntryAsRead(Bad bad, @TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, bad);
+        JsonNode before = nodes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.delete("PAYER-OK", Environment.PRODUCTION);
+
+        JsonNode after = nodes(file);
+        assertEquals(1, after.size());
+        assertEquals(before.get(0), after.get(0));
+        assertEquals(List.of(), store.findAll());
+    }
+
+    /** An older writer's update of an entry a newer version wrote keeps the newer field. */
+    @Test
+    void saveOverAnEntryWithAnUnknownFieldKeepsThatField(@TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, Bad.UNKNOWN_PROPERTY);
+        JsonNode before = nodes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-BAD").baseUrl("https://updated.example/r4").build());
+
+        JsonNode after = nodes(file);
+        assertEquals(2, after.size());
+        assertEquals("SENTINEL-UNKNOWN-VALUE", after.get(0).get("futureField").asText());
+        assertEquals("https://updated.example/r4", after.get(0).get("baseUrl").asText());
+        assertEquals(before.get(1), after.get(1));
+        // The field is still one this version does not know, so the entry stays unreadable here.
+        InvalidConnectionRecordException e = assertThrows(InvalidConnectionRecordException.class,
+                () -> store.findByPayerIdAndEnvironment("PAYER-BAD", Environment.PRODUCTION));
+        assertEquals("UnrecognizedPropertyException", e.problem());
     }
 
     @Test
-    void aNullOrScalarListItemIsAnInvalidEntryWithNoKey(@TempDir Path dir) throws Exception {
+    void saveOverAnEntryMissingARequiredFieldRepairsItInPlace(@TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, Bad.OAUTH2_MISSING_CLIENT_ID);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-BAD").authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
+                .tokenEndpoint("https://auth.example/token").clientId("client").build());
+
+        assertEquals("client", new PayerRouter(store).resolve("PAYER-BAD", Environment.PRODUCTION).clientId());
+        assertEquals(List.of("PAYER-BAD", "PAYER-OK"),
+                new FileBasedConnectionStore(file).findAll().stream().map(ConnectionRecord::payerId).toList());
+    }
+
+    /** Delete is how the API clears a broken entry. */
+    @ParameterizedTest
+    @EnumSource(value = Bad.class, mode = EnumSource.Mode.EXCLUDE, names = "UNKNOWN_ENVIRONMENT")
+    void deleteRemovesAnInvalidEntry(Bad bad, @TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, bad);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.delete("PAYER-BAD", Environment.PRODUCTION);
+
+        assertEquals(List.of(), store.findByPayerId("PAYER-BAD"));
+        assertEquals(1, nodes(file).size());
+        assertEquals(List.of("PAYER-OK"), store.findByPayerId("PAYER-OK").stream().map(ConnectionRecord::payerId).toList());
+    }
+
+    @Test
+    void savingAnExistingKeyKeepsItsPosition(@TempDir Path dir) {
+        FileBasedConnectionStore store = new FileBasedConnectionStore(dir.resolve("connections.yaml"));
+        for (String payerId : List.of("A", "B", "C")) {
+            store.save(recordFor(payerId).build());
+        }
+
+        store.save(recordFor("A").displayName("renamed").build());
+
+        assertEquals(List.of("A", "B", "C"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+        assertEquals("renamed", store.findAll().get(0).displayName());
+    }
+
+    @Test
+    void aNullOrScalarListItemIsKeptByAWrite(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("connections.yaml");
         Files.writeString(file, "-\n- \"SENTINEL-UNKNOWN-VALUE\"\n" + OK_ENTRY);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
         assertEquals(List.of("PAYER-OK"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
-        RouterException e = assertThrows(RouterException.class, () -> store.save(store.findAll().get(0)));
-        assertTrue(e.getMessage().contains("entry 0, NullEntry"), e.getMessage());
-        assertTrue(e.getMessage().contains("entry 1, MismatchedInputException"), e.getMessage());
-        assertNoSentinel(e);
+        store.save(recordFor("PAYER-NEW").build());
+
+        JsonNode after = nodes(file);
+        assertEquals(4, after.size());
+        assertTrue(after.get(0).isNull());
+        assertEquals("SENTINEL-UNKNOWN-VALUE", after.get(1).asText());
     }
 
     /** The exception for a key carries the key and problem, for a caller that wants to tell this case apart. */
