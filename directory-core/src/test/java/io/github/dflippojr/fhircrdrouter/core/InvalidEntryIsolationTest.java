@@ -640,14 +640,17 @@ class InvalidEntryIsolationTest {
         assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
-    static final String DUPLICATE_STATUS = """
-            - payerId: "PAYER-DUP"
-              environment: "PRODUCTION"
-              baseUrl: "https://dup.example/r4"
-              authType: "NONE"
-              status: "INACTIVE"
-              status: "ACTIVE"
-            """;
+    /**
+     * The migration review's reproduction: a complete record with {@code status: INACTIVE}, as the store writes
+     * it, with a second {@code status: ACTIVE} appended after its last field. It does not bind.
+     */
+    static String duplicateStatus(Path dir) throws Exception {
+        Path scratch = dir.resolve("scratch.yaml");
+        new FileBasedConnectionStore(scratch).save(recordFor("PAYER-DUP").status(ConnectionStatus.INACTIVE)
+                .createdAt(java.time.Instant.EPOCH).updatedAt(java.time.Instant.EPOCH).build());
+        String written = Files.readString(scratch).replaceFirst("^---\n", "");
+        return written + "  status: \"ACTIVE\"\n";
+    }
 
     /**
      * A rewrite cannot keep a duplicate mapping key: the tree keeps one value, so an unrelated save would turn
@@ -657,7 +660,7 @@ class InvalidEntryIsolationTest {
     @Test
     void aDuplicateKeyRefusesTheWriteAndTheEntryStaysUnroutable(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("connections.yaml");
-        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        Files.writeString(file, duplicateStatus(dir) + OK_ENTRY);
         byte[] bytes = Files.readAllBytes(file);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
         assertThrows(RouterException.class, () -> new PayerRouter(store).resolve("PAYER-DUP", Environment.PRODUCTION));
@@ -680,14 +683,15 @@ class InvalidEntryIsolationTest {
     @Test
     void anEntryWithADuplicateKeyCanStillBeRepairedOrDeleted(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("connections.yaml");
-        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        String duplicate = duplicateStatus(dir);
+        Files.writeString(file, duplicate + OK_ENTRY);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
         store.save(recordFor("PAYER-DUP").status(ConnectionStatus.INACTIVE).build());
 
         assertEquals(ConnectionStatus.INACTIVE, new FileBasedConnectionStore(file)
                 .findByPayerIdAndEnvironment("PAYER-DUP", Environment.PRODUCTION).orElseThrow().status());
-        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        Files.writeString(file, duplicate + OK_ENTRY);
         store.delete("PAYER-DUP", Environment.PRODUCTION);
         assertEquals(List.of("PAYER-OK"), new FileBasedConnectionStore(file).findAll().stream()
                 .map(ConnectionRecord::payerId).toList());
