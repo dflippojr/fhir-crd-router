@@ -122,6 +122,16 @@ class StoredYamlTest {
         }
     }
 
+    /** A null first document has no list to check (allowlist gets no root), but a document after it still refuses. */
+    @Test
+    void aNullDocumentIsWritableUnlessAnotherFollows() {
+        for (String first : List.of("null\n", "~\n", "---\n", "--- # empty\n...\n")) {
+            assertNull(StoredYaml.allowlist(null, first.getBytes(StandardCharsets.UTF_8)), first);
+            assertEquals("a second YAML document",
+                    StoredYaml.allowlist(null, (first + "---\n- a: 1\n").getBytes(StandardCharsets.UTF_8)), first);
+        }
+    }
+
     /** Events that do not match the tree the store read refuse the whole document rather than write it. */
     @Test
     void eventsThatDoNotMatchTheTreeRefuseTheDocument() {

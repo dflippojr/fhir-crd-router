@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -209,6 +211,21 @@ class PlainTreeAllowlistTest {
         assertRefuses(file, store -> store.save(other()), "the document itself (a second YAML document)");
         assertEquals(List.of("PAYER-OK"),
                 new FileBasedConnectionStore(file).findAll().stream().map(ConnectionRecord::payerId).toList());
+    }
+
+    /**
+     * A first document that holds no list (null, ~ or an empty document) reads as no records, but a save would
+     * replace the whole file, so the later document it never read still refuses the write; the bytes stay as
+     * they were. A single such document stays writable (FileBasedConnectionStoreTest#emptyDocumentReadsAsNoRecords).
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"null\n", "~\n", "---\n"})
+    void aSecondDocumentAfterAnEmptyFirstOneRefusesAWrite(String first, @TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, first + "---\n" + OK_ENTRY);
+        assertEquals(List.of(), new FileBasedConnectionStore(file).findAll());
+
+        assertRefuses(file, store -> store.save(other()), "the document itself (a second YAML document)");
     }
 
     /** A tag or anchor on the list itself belongs to no entry: writes refuse at document level; reads go on. */
