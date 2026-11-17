@@ -128,23 +128,23 @@ final class StoredYaml {
             events.getEvent(); // stream start
             events.getEvent(); // document start
             String reason = null;
-            List<Found> found = new ArrayList<>();
             if (root == null) {
                 events.getEvent(); // the null the store read: nothing of it is written back
             } else {
                 reason = notPlain((SequenceStartEvent) events.getEvent()); // the store has read a list
+                List<Found> found = new ArrayList<>();
                 for (int index = 0; !events.checkEvent(Event.ID.SequenceEnd); index++) {
                     walk(events, List.of(index), found);
                 }
                 events.getEvent(); // sequence end
+                for (Found value : found) {
+                    int index = (Integer) value.path().get(0);
+                    root.set(index, wrapped(root.get(index), value.path(), 1, value.reason()));
+                }
             }
             events.getEvent(); // document end
             if (reason == null && !events.checkEvent(Event.ID.StreamEnd)) {
                 reason = "a second YAML document"; // never read, so a rewrite would drop it
-            }
-            for (Found value : found) {
-                int index = (Integer) value.path().get(0);
-                root.set(index, wrapped(root.get(index), value.path(), 1, value.reason()));
             }
             return reason;
         } catch (RuntimeException e) {
