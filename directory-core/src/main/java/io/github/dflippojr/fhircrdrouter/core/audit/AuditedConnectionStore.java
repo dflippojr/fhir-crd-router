@@ -3,6 +3,7 @@ package io.github.dflippojr.fhircrdrouter.core.audit;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionStore;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
+import io.github.dflippojr.fhircrdrouter.core.InvalidConnectionRecordException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -24,6 +25,11 @@ import java.util.function.Function;
  * with the write, so it is exact for writers that go through this instance (one store instance
  * should own the file). The delegate throwing {@link AuditPersistenceException} is a failed mutation
  * like any other: FAILED is recorded and the exception propagates.
+ *
+ * <p>When the delegate holds an entry for the key that it cannot read and says so with
+ * {@link InvalidConnectionRecordException} (#231), a save over it is {@code connection.update} naming
+ * every audited field, since the old values are unknown and the save writes them all, and a delete is
+ * {@code connection.delete}.
  */
 public final class AuditedConnectionStore implements ConnectionStore {
     public static final String TARGET_KIND = "connection";
@@ -87,8 +93,17 @@ public final class AuditedConnectionStore implements ConnectionStore {
         Objects.requireNonNull(record, "record");
         writeLock.lock();
         try {
-            Optional<ConnectionRecord> before =
-                    delegate.findByPayerIdAndEnvironment(record.payerId(), record.environment());
+            Optional<ConnectionRecord> before;
+            try {
+                before = delegate.findByPayerIdAndEnvironment(record.payerId(), record.environment());
+            } catch (InvalidConnectionRecordException e) {
+                // The key has a stored entry this version cannot read (#231). Saving over it is how it is
+                // repaired. The old values are unknown and the save writes every field, a cleared one too,
+                // so the update names them all.
+                mutation.run(context, "connection.update", record.payerId(), record.environment(),
+                        FIELDS.stream().map(Field::name).toList(), () -> delegate.save(record));
+                return;
+            }
             String action;
             List<String> fields;
             if (before.isEmpty()) {
@@ -110,7 +125,12 @@ public final class AuditedConnectionStore implements ConnectionStore {
         Objects.requireNonNull(environment, "environment");
         writeLock.lock();
         try {
-            boolean exists = delegate.findByPayerIdAndEnvironment(payerId, environment).isPresent();
+            boolean exists;
+            try {
+                exists = delegate.findByPayerIdAndEnvironment(payerId, environment).isPresent();
+            } catch (InvalidConnectionRecordException e) {
+                exists = true; // an entry this version cannot read is still there to delete (#231)
+            }
             mutation.run(context, exists ? "connection.delete" : "connection.delete_missing", payerId,
                     environment, List.of(), () -> delegate.delete(payerId, environment));
         } finally {

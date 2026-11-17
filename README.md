@@ -17,7 +17,10 @@ so far.
   (`FileBasedConnectionStore`), `CredentialProvider` interface, and
   `PayerRouter` (the `payerId -> ConnectionRecord` resolver, which returns
   only `ACTIVE` records and refuses `INACTIVE` and `DEPRECATED` ones;
-  `CdsHooksClient.verify` still runs on any status). A record
+  `CdsHooksClient.verify` still runs on any status). One stored entry the
+  store cannot read, such as one a newer version wrote, fails only lookups of
+  its own payer, with `InvalidConnectionRecordException`; writes keep it as
+  read, and `FileBasedConnectionStore.invalidEntries()` lists it. A record
   never holds a secret, only opaque `credentialRef` / `mtlsCredentialRef`
   references into a `CredentialProvider`. It also holds the opt-in
   `core.audit` package: an append-only JSONL audit trail, store and
