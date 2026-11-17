@@ -51,13 +51,24 @@ class StoredYamlTest {
         JsonNode root = read("a: 1.10\nb: [yes, 2]\nc: null\n");
 
         JsonNode binding = StoredYaml.forBinding(root);
-        assertTrue(binding.get("a").isDouble());
+        assertTrue(binding.get("a").isBigDecimal());
         assertEquals("1.10", binding.get("a").numberValue().toString());
         assertEquals(new TextNode("yes"), binding.get("b").get(0));
         assertEquals(2, binding.get("b").get(1).intValue());
         assertEquals("2", binding.get("b").get(1).numberValue().toString());
         assertTrue(binding.get("c").isNull());
         assertEquals("---\na: 1.10\nb:\n- yes\n- 2\nc: null\n", YAML.writeValueAsString(root));
+    }
+
+    @Test
+    void aFloatBindsAsItsExactDecimalOrAsItsSpellingWhereItHasNoNumber() throws Exception {
+        JsonNode root = read("d: 0.1000000000000000055511151231257827\nnan: .nan\ninf: -.inf\n");
+        JsonNode binding = StoredYaml.forBinding(root);
+
+        assertEquals(new java.math.BigDecimal("0.1000000000000000055511151231257827"), binding.get("d").decimalValue());
+        assertEquals(new TextNode(".nan"), binding.get("nan"));
+        assertEquals(new TextNode("-.inf"), binding.get("inf"));
+        assertEquals("---\nd: 0.1000000000000000055511151231257827\nnan: .nan\ninf: -.inf\n", YAML.writeValueAsString(root));
     }
 
     @Test
@@ -76,6 +87,9 @@ class StoredYamlTest {
         JsonNode root = read("f: !!float 1\ng: !!float 1.5\nb: !!bool true\n");
 
         assertEquals("---\nf: 1.0\ng: 1.5\nb: true\n", YAML.writeValueAsString(root));
+        // What it binds as is still its spelling.
+        assertEquals("1", root.get("f").asText());
+        assertEquals("1", StoredYaml.forBinding(root).get("f").numberValue().toString());
     }
 
     @Test
@@ -86,6 +100,7 @@ class StoredYamlTest {
         assertEquals(one.hashCode(), new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1", 1).hashCode());
         assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_FLOAT, "1", 1.0));
         assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "01", 1));
+        assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1", "1.0", 1));
         assertFalse(one.equals(new TextNode("1")));
     }
 }

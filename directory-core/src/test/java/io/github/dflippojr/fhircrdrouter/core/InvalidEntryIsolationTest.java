@@ -514,6 +514,26 @@ class InvalidEntryIsolationTest {
         assertEquals(before.get(0), after.get(0));
     }
 
+    /**
+     * The canonical form a tagged number is written in is not what it binds as: {@code !!float 1} binds as
+     * "1", as the typed binding gave it. A decimal time keeps every digit ({@code .123456789} seconds).
+     */
+    @Test
+    void aTaggedNumberBindsAsItsSpellingAndADecimalTimeKeepsItsPrecision(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: !!float 1
+                  environment: "PRODUCTION"
+                  baseUrl: "https://ok.example/r4"
+                  authType: "NONE"
+                  lastVerifiedAt: 1730000000.123456789
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        ConnectionRecord record = store.findByPayerIdAndEnvironment("1", Environment.PRODUCTION).orElseThrow();
+        assertEquals(java.time.Instant.ofEpochSecond(1730000000L, 123456789L), record.lastVerifiedAt());
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {

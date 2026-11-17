@@ -10,7 +10,7 @@ import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.BigIntegerNode;
-import com.fasterxml.jackson.databind.node.DoubleNode;
+import com.fasterxml.jackson.databind.node.DecimalNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.JsonNodeType;
 import com.fasterxml.jackson.databind.node.LongNode;
@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.node.ValueNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Map;
 import java.util.Objects;
@@ -74,10 +75,10 @@ final class StoredYaml {
                 return NODES.nullNode();
             }
             case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT -> {
-                return new PlainScalar(token, writtenText(p), p.getNumberValue());
+                return new PlainScalar(token, p.getText(), writtenText(p), numberOf(p));
             }
             case VALUE_TRUE, VALUE_FALSE -> {
-                return new PlainScalar(token, writtenText(p), null);
+                return new PlainScalar(token, p.getText(), writtenText(p), null);
             }
             case VALUE_EMBEDDED_OBJECT -> {
                 // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
@@ -101,6 +102,19 @@ final class StoredYaml {
             return text;
         }
         return p.currentToken().isNumeric() ? String.valueOf(p.getNumberValue()) : String.valueOf(p.getBooleanValue());
+    }
+
+    /**
+     * The current number's value: a float as its exact decimal, as the typed binding read it (a time of
+     * {@code 1730000000.123456789} keeps its nanoseconds), or null where the parser has no number for it
+     * ({@code .nan}, {@code .inf}), so it binds as its spelling.
+     */
+    private static Number numberOf(JsonParser p) {
+        try {
+            return p.currentToken() == JsonToken.VALUE_NUMBER_FLOAT ? p.getDecimalValue() : p.getNumberValue();
+        } catch (IOException | NumberFormatException e) {
+            return null;
+        }
     }
 
     /** The token YAML infers for a plain scalar with this text and no tag. */
@@ -179,25 +193,34 @@ final class StoredYaml {
         }
     }
 
-    /** A YAML plain number or boolean, kept as its text and written back unquoted as it was read. */
+    /**
+     * A YAML plain number or boolean. It binds as its spelling (with its value, for a number) and is written
+     * back unquoted as its written text, which is the spelling unless a tag needs a canonical form.
+     */
     static final class PlainScalar extends ValueNode {
         private static final long serialVersionUID = 1L;
 
         private final JsonToken token;
+        private final String spelling;
         private final String text;
         private final transient Number value;
 
         PlainScalar(JsonToken token, String text, Number value) {
+            this(token, text, text, value);
+        }
+
+        PlainScalar(JsonToken token, String spelling, String written, Number value) {
             this.token = token;
-            this.text = text;
+            this.spelling = spelling;
+            this.text = written;
             this.value = value;
         }
 
         private JsonNode forBinding() {
-            Number spelled = value == null ? null : new SpelledNumber(text, value);
-            if (spelled == null) {
-                return NODES.textNode(text);
+            if (value == null) {
+                return NODES.textNode(spelling);
             }
+            Number spelled = new SpelledNumber(spelling, value);
             if (value instanceof BigInteger big) {
                 return new BigIntegerNode(big) {
                     @Override
@@ -214,7 +237,7 @@ final class StoredYaml {
                     }
                 };
             }
-            return new DoubleNode(value.doubleValue()) {
+            return new DecimalNode((BigDecimal) value) {
                 @Override
                 public Number numberValue() {
                     return spelled;
@@ -234,7 +257,7 @@ final class StoredYaml {
 
         @Override
         public String asText() {
-            return text;
+            return spelling;
         }
 
         @Override
@@ -245,12 +268,13 @@ final class StoredYaml {
 
         @Override
         public boolean equals(Object o) {
-            return o instanceof PlainScalar other && token == other.token && text.equals(other.text);
+            return o instanceof PlainScalar other && token == other.token && spelling.equals(other.spelling)
+                    && text.equals(other.text);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(token, text);
+            return Objects.hash(token, spelling, text);
         }
     }
 }
