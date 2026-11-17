@@ -27,8 +27,9 @@ import java.util.function.Function;
  * like any other: FAILED is recorded and the exception propagates.
  *
  * <p>When the delegate holds an entry for the key that it cannot read and says so with
- * {@link InvalidConnectionRecordException} (#231), a save over it is {@code connection.update} with
- * every field the save sets, since the old values are unknown, and a delete is {@code connection.delete}.
+ * {@link InvalidConnectionRecordException} (#231), a save over it is {@code connection.update} naming
+ * every audited field, since the old values are unknown and the save writes them all, and a delete is
+ * {@code connection.delete}.
  */
 public final class AuditedConnectionStore implements ConnectionStore {
     public static final String TARGET_KIND = "connection";
@@ -97,9 +98,10 @@ public final class AuditedConnectionStore implements ConnectionStore {
                 before = delegate.findByPayerIdAndEnvironment(record.payerId(), record.environment());
             } catch (InvalidConnectionRecordException e) {
                 // The key has a stored entry this version cannot read (#231). Saving over it is how it is
-                // repaired, so record an update that names every field the save sets.
+                // repaired. The old values are unknown and the save writes every field, a cleared one too,
+                // so the update names them all.
                 mutation.run(context, "connection.update", record.payerId(), record.environment(),
-                        presentFields(record), () -> delegate.save(record));
+                        FIELDS.stream().map(Field::name).toList(), () -> delegate.save(record));
                 return;
             }
             String action;

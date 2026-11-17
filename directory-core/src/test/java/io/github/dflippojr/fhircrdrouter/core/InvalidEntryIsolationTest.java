@@ -335,7 +335,7 @@ class InvalidEntryIsolationTest {
         assertEquals(List.of(
                         new FileBasedConnectionStore.InvalidEntry(0, null, Environment.PRODUCTION, "NullPointerException"),
                         new FileBasedConnectionStore.InvalidEntry(1, null, Environment.PRODUCTION, "NullPointerException"),
-                        new FileBasedConnectionStore.InvalidEntry(2, "42", null, "InvalidFormatException"),
+                        new FileBasedConnectionStore.InvalidEntry(2, "42", Environment.PRODUCTION, "InvalidFormatException"),
                         new FileBasedConnectionStore.InvalidEntry(3, null, Environment.PRODUCTION, "MismatchedInputException")),
                 store.invalidEntries());
         assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK").baseUrl());
@@ -359,6 +359,42 @@ class InvalidEntryIsolationTest {
 
         assertArrayEquals(before, Files.readAllBytes(file));
         assertEquals(2, store.invalidEntries().size() + store.findAll().size());
+    }
+
+    /**
+     * The key is read with the binding's own rules: Jackson binds an enum ordinal ({@code environment: 2})
+     * to {@code PRODUCTION}, so an entry written that way keeps its key when another field fails.
+     */
+    @Test
+    void anInvalidEntryWithANumericEnvironmentKeepsItsKey(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-BAD"
+                  environment: 2
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "OAUTH2_CLIENT_CREDENTIALS"
+                  tokenEndpoint: "https://sentinel-token.example/token"
+                """ + OK_ENTRY);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertThrows(InvalidConnectionRecordException.class,
+                () -> new PayerRouter(store).resolve("PAYER-BAD", Environment.PRODUCTION));
+        store.delete("PAYER-BAD", Environment.PRODUCTION);
+        assertEquals(List.of(), store.invalidEntries());
+        assertEquals(1, nodes(file).size());
+    }
+
+    /** A null environment matched nothing before #231, and must not match an entry whose environment is unknown. */
+    @Test
+    void aNullEnvironmentMatchesNothing(@TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, Bad.UNKNOWN_ENVIRONMENT);
+        byte[] before = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertTrue(store.findByPayerIdAndEnvironment("PAYER-BAD", null).isEmpty());
+        store.delete("PAYER-BAD", null);
+
+        assertArrayEquals(before, Files.readAllBytes(file));
     }
 
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */

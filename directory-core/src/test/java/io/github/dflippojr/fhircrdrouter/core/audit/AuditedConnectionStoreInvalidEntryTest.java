@@ -54,7 +54,10 @@ class AuditedConnectionStoreInvalidEntryTest {
         }
         List<AuditEvent> done = succeeded(events);
         assertEquals(List.of("connection.update"), done.stream().map(AuditEvent::action).toList());
-        assertEquals(List.of("baseUrl", "authType", "tokenEndpoint", "clientId", "status"),
+        // The old values are unknown and the save writes every field, cleared ones included, so all are named.
+        assertEquals(List.of("displayName", "baseUrl", "authType", "tokenEndpoint", "clientId", "keyId", "jwksUrl",
+                        "tenant", "scopes", "credentialRef", "mtlsCredentialRef", "igVersion", "status",
+                        "lastVerifiedAt", "contactInfo"),
                 done.get(0).changedFields());
     }
 

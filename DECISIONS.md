@@ -483,7 +483,9 @@ never fail the whole catalog for one entry.
 - **Read.** The file is read as a list of raw nodes and each node is bound on
   its own. A node that does not bind becomes an `InvalidEntry` (index,
   payerId and environment where readable, and the problem class: the simple
-  name of the root exception). A file that is not YAML, or not a list, still
+  name of the root exception). The payerId and environment are read with the
+  binding's own rules, so `environment: 2` is `PRODUCTION` there too. A null
+  payerId or environment argument matches nothing, as before. A file that is not YAML, or not a list, still
   fails as a whole.
 - **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
   for an invalid entry's key, and `findByPayerId` for its payer, throw
@@ -508,7 +510,8 @@ never fail the whole catalog for one entry.
   cannot delete it; only a hand edit can.
 - **Audit.** `AuditedConnectionStore` reads the old record before it writes.
   On `InvalidConnectionRecordException` it records a save as
-  `connection.update` with every field the save sets, and a delete as
+  `connection.update` naming every audited field (the old values are
+  unknown, and the save writes every field, a cleared one too), and a delete as
   `connection.delete`, so the wrapper is no barrier to repair.
 - **Diagnostics.** `FileBasedConnectionStore.invalidEntries()` lists the
   invalid entries for an admin tool. It is not on `ConnectionStore`.

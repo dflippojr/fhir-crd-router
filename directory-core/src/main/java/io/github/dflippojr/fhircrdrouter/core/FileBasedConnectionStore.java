@@ -157,7 +157,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     public Optional<ConnectionRecord> findByPayerIdAndEnvironment(String payerId, Environment environment) {
         Snapshot snapshot = readAll();
         for (InvalidEntry invalid : snapshot.invalid) {
-            if (invalid.hasPayerId(payerId) && invalid.environment() == environment) {
+            if (invalid.hasPayerId(payerId) && environment != null && invalid.environment() == environment) {
                 throw invalidRecord(invalid);
             }
         }
@@ -317,7 +317,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             } catch (JsonProcessingException | IllegalArgumentException e) {
                 problem = rootCause(e).getClass().getSimpleName();
             }
-            InvalidEntry entry = new InvalidEntry(index, payerIdOf(node), environmentOf(node), problem);
+            InvalidEntry entry = new InvalidEntry(index, keyFieldOf(node, "payerId", String.class),
+                    keyFieldOf(node, "environment", Environment.class), problem);
             invalid.add(entry);
             entries.add(new Entry(node, entry.payerId(), entry.environment()));
         }
@@ -332,17 +333,19 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         return root;
     }
 
-    /** The node's payerId as Jackson would coerce a scalar to text, or null; null for a non-object node. */
-    private static String payerIdOf(JsonNode node) {
-        JsonNode value = node.path("payerId");
-        return value.isValueNode() && !value.isNull() ? value.asText() : null;
-    }
-
-    /** The node's environment if it names a constant this version knows, else null. */
-    private static Environment environmentOf(JsonNode node) {
+    /**
+     * One key field of an entry that did not bind, read with the same rules as the record binding (so
+     * {@code environment: 2} is {@code PRODUCTION}, as Jackson binds it, and a scalar payerId is text),
+     * or null when it is missing, null or does not bind. A list item that is not an object has neither.
+     */
+    private <T> T keyFieldOf(JsonNode node, String field, Class<T> type) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            return null;
+        }
         try {
-            return Environment.valueOf(node.path("environment").asText());
-        } catch (IllegalArgumentException e) {
+            return mapper.treeToValue(value, type);
+        } catch (JsonProcessingException | IllegalArgumentException e) {
             return null;
         }
     }
@@ -417,9 +420,10 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      */
     private record Entry(JsonNode node, String payerId, Environment environment) {
         boolean hasKey(String otherPayerId, Environment otherEnvironment) {
-            // The entry's payerId first: a lookup with a null payerId matched nothing before #231 and must not
-            // throw, nor match an entry with no readable payerId.
-            return payerId != null && payerId.equals(otherPayerId) && otherEnvironment == environment;
+            // A null payerId or environment matched nothing before #231 and must not throw, nor match an entry
+            // whose payerId or environment this version cannot read.
+            return payerId != null && payerId.equals(otherPayerId)
+                    && environment != null && otherEnvironment == environment;
         }
     }
 
