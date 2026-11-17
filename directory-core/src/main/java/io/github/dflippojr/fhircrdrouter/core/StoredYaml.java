@@ -71,8 +71,11 @@ final class StoredYaml {
             case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE -> {
                 return new PlainScalar(token, p.getText());
             }
+            case VALUE_EMBEDDED_OBJECT -> {
+                // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
+                return NODES.binaryNode(p.getBinaryValue());
+            }
             default -> {
-                // A string, or anything else YAML can hold (such as !!binary), as its text.
                 return NODES.textNode(p.getText());
             }
         }

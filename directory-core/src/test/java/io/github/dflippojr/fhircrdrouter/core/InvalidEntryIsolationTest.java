@@ -437,6 +437,27 @@ class InvalidEntryIsolationTest {
         assertEquals("007", reread.invalidEntries().get(0).payerId());
     }
 
+    /** A {@code !!binary} value in an untouched entry is still binary after a rewrite (compares parsed nodes). */
+    @Test
+    void aBinaryValueSurvivesARewrite(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-BAD"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://bad.example/r4"
+                  authType: "NONE"
+                  futureBytes: !!binary AQI=
+                """ + OK_ENTRY);
+        JsonNode before = nodes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-NEW").build());
+
+        JsonNode after = nodes(file);
+        assertTrue(before.get(0).get("futureBytes").isBinary());
+        assertEquals(before.get(0), after.get(0));
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {
