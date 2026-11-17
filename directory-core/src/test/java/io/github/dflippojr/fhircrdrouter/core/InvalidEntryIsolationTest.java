@@ -640,6 +640,59 @@ class InvalidEntryIsolationTest {
         assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
+    static final String DUPLICATE_STATUS = """
+            - payerId: "PAYER-DUP"
+              environment: "PRODUCTION"
+              baseUrl: "https://dup.example/r4"
+              authType: "NONE"
+              status: "INACTIVE"
+              status: "ACTIVE"
+            """;
+
+    /**
+     * A rewrite cannot keep a duplicate mapping key: the tree keeps one value, so an unrelated save would turn
+     * this unreadable entry (status INACTIVE, then a duplicate status ACTIVE) into a routable ACTIVE one. Writes
+     * refuse while an entry they would write holds one, name it and leave the bytes unchanged (#231).
+     */
+    @Test
+    void aDuplicateKeyRefusesTheWriteAndTheEntryStaysUnroutable(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        byte[] bytes = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        assertThrows(RouterException.class, () -> new PayerRouter(store).resolve("PAYER-DUP", Environment.PRODUCTION));
+
+        RouterException onSave = assertThrows(RouterException.class, () -> store.save(recordFor("PAYER-NEW").build()));
+        RouterException onDelete = assertThrows(RouterException.class,
+                () -> store.delete("PAYER-OK", Environment.PRODUCTION));
+
+        for (RouterException e : List.of(onSave, onDelete)) {
+            assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-DUP environment=PRODUCTION), field status"),
+                    e.getMessage());
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(file));
+        FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
+        assertThrows(RouterException.class, () -> new PayerRouter(reread).resolve("PAYER-DUP", Environment.PRODUCTION));
+        assertEquals(1, reread.invalidEntries().size());
+    }
+
+    /** The entry's own explicit repair, or its delete, is still allowed: the save writes over the duplicate field. */
+    @Test
+    void anEntryWithADuplicateKeyCanStillBeRepairedOrDeleted(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-DUP").status(ConnectionStatus.INACTIVE).build());
+
+        assertEquals(ConnectionStatus.INACTIVE, new FileBasedConnectionStore(file)
+                .findByPayerIdAndEnvironment("PAYER-DUP", Environment.PRODUCTION).orElseThrow().status());
+        Files.writeString(file, DUPLICATE_STATUS + OK_ENTRY);
+        store.delete("PAYER-DUP", Environment.PRODUCTION);
+        assertEquals(List.of("PAYER-OK"), new FileBasedConnectionStore(file).findAll().stream()
+                .map(ConnectionRecord::payerId).toList());
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {
