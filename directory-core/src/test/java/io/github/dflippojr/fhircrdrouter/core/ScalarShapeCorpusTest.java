@@ -17,7 +17,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * #231: a sweep over the scalar shapes YAML allows, in a string, a time and an enum field. Two checks per shape:
@@ -55,17 +57,17 @@ class ScalarShapeCorpusTest {
             "PRODUCTION", "2", "+2", "0x2", "!!int 2", "!!str 2", "!!float 2", "\"2\"", "production", "~", "7");
 
     /**
-     * Shapes whose YAML type a rewrite cannot keep: the generator writes no scalar tag and quotes a leading
-     * zero. Their spelling, and so their binding, survives; DECISIONS.md records the limit.
+     * Shapes whose YAML type a rewrite cannot keep: the generator quotes a number with a leading zero. Their
+     * spelling, and so their binding, survives; DECISIONS.md records the limit.
      */
-    private static final List<String> TYPE_NOT_KEPT = List.of("007", "010", "!!float 1", "!!float 2", "!!bool yes");
+    private static final List<String> TYPE_NOT_KEPT = List.of("007", "010");
 
     /**
-     * The one shape whose binding a rewrite changes, because it binds by YAML type and the tag is not written:
-     * an enum given {@code !!float 2} fails to bind (a float is no enum index), and after a rewrite it is the
-     * plain {@code 2}, which binds as {@code PRODUCTION}. The entry goes from invalid to readable.
+     * Shapes with an explicit tag their plain text disagrees with. The generator writes no scalar tag, so a
+     * rewrite would change how the entry binds ({@code environment: !!float 2} would become the readable
+     * {@code 2}); writes refuse instead and leave the file as it was (#231, owner decision).
      */
-    private static final String BINDING_CHANGES = "environment: !!float 2";
+    private static final List<String> TAG_WOULD_BE_DROPPED = List.of("!!float 1", "!!float 2");
 
     static Stream<Arguments> shapes() {
         return Stream.of(
@@ -114,7 +116,14 @@ class ScalarShapeCorpusTest {
         assertEquals(expected == null ? List.of() : List.of(expected), store.findAll());
         assertEquals(expected == null ? 2 : 1, store.invalidEntries().size());
 
-        // 2. A save of another payer leaves both entries as they were.
+        // 2. A save of another payer leaves both entries as they were, or refuses where it cannot.
+        if (TAG_WOULD_BE_DROPPED.contains(shape)) {
+            byte[] bytes = Files.readAllBytes(file);
+            assertThrows(RouterException.class, () -> store.save(ConnectionRecord.builder().payerId("PAYER-NEW")
+                    .environment(Environment.SANDBOX).baseUrl("https://new.example/r4").authType(AuthType.NONE).build()));
+            assertArrayEquals(bytes, Files.readAllBytes(file));
+            return;
+        }
         JsonNode before = nodes(file);
         List<FileBasedConnectionStore.InvalidEntry> invalidBefore = store.invalidEntries();
         store.save(ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.SANDBOX)
@@ -130,9 +139,6 @@ class ScalarShapeCorpusTest {
         }
         assertEquals(before.get(0), after.get(0));
         assertEquals(before.get(1), after.get(1));
-        if (BINDING_CHANGES.equals(field + ": " + shape)) {
-            return;
-        }
         FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
         assertEquals(expected == null ? List.of() : List.of(expected),
                 reread.findAll().stream().filter(r -> r.payerId().equals("PAYER-A")).toList());

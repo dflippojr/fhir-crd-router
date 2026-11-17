@@ -500,14 +500,20 @@ never fail the whole catalog for one entry.
   rewrite. (Five automated review rounds on #238 found one shape at a time
   while items were bound from the tree.)
 - **Known limit: YAML tags and leading zeros.** Jackson's YAML generator
-  writes no scalar tag and quotes a number with a leading zero. So
-  `!!float 1` comes back as `1` and `007` as `'007'`: same spelling, and the
-  same binding for string fields and number fields, but a different YAML
-  type. The one binding this changes is an enum given a tagged float
-  (`environment: !!float 2`), which fails to bind before a rewrite and binds
-  as `PRODUCTION` after it. Writing a canonical form (`1.0`) instead would
-  keep the type but change the text a string field binds to, which is
-  worse for keys.
+  writes no scalar tag and quotes a number with a leading zero.
+  - A leading zero keeps its spelling: `007` comes back as `'007'`, which
+    binds the same into string and number fields, though its YAML type
+    changes. Writes go ahead.
+  - An explicit tag that disagrees with its value's plain text cannot be
+    kept. `environment: !!float 2` does not bind (a float is no enum index),
+    but its rewrite `environment: 2` would bind as `PRODUCTION`. `save` and
+    `delete` refuse while any entry they would write holds such a tag, name
+    each entry by position, key and field, and leave the file unchanged. A
+    save that sets the tagged field itself writes over the tag and goes
+    ahead. The owner chose this on #238 over accepting the loss (option 1)
+    or writing a canonical form such as `1.0` (which changes what a string
+    field binds to). A lossless emitter that keeps each scalar's tag and
+    style is a follow-up issue (option 2).
 - **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
   for an invalid entry's key, and `findByPayerId` for its payer, throw
   `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`

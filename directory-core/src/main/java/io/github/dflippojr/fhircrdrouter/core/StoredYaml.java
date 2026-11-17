@@ -13,8 +13,10 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.JsonNodeType;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ValueNode;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -67,7 +69,8 @@ final class StoredYaml {
                 return NODES.nullNode();
             }
             case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE -> {
-                return new PlainScalar(token, p.getText());
+                String text = p.getText();
+                return new PlainScalar(token, text, p.getTypeId() != null && impliedToken(text) != token);
             }
             case VALUE_EMBEDDED_OBJECT -> {
                 // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
@@ -79,24 +82,66 @@ final class StoredYaml {
         }
     }
 
+    /** The token YAML infers for a plain scalar with this text and no tag. */
+    private static JsonToken impliedToken(String text) throws IOException {
+        try (JsonParser plain = PLAIN.createParser("- " + text)) {
+            plain.nextToken();
+            return plain.nextToken();
+        }
+    }
+
+    private static final YAMLFactory PLAIN = new YAMLFactory();
+
+    /**
+     * Where in this node a rewrite would drop a tag that disagrees with its plain text (a field name, with
+     * {@code .name} and {@code [index]} for nested values), or null when there is none.
+     */
+    static String droppedTagPath(JsonNode node, String path) {
+        if (node instanceof PlainScalar plain) {
+            return plain.tagDisagrees ? path : null;
+        }
+        if (node.isObject()) {
+            for (Map.Entry<String, JsonNode> field : node.properties()) {
+                String found = droppedTagPath(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey());
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        for (int i = 0; i < node.size() && node.isArray(); i++) {
+            String found = droppedTagPath(node.get(i), path + "[" + i + "]");
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
     /**
      * A YAML plain number or boolean, written back unquoted as it was spelled. Records are bound from the
      * parser, never from this node.
      *
-     * <p>Two shapes keep their spelling but not their YAML type, because the generator cannot do better: it
-     * writes no scalar tag, so {@code !!float 1} comes back as the integer {@code 1}, and it quotes a number
-     * with a leading zero, so {@code 007} comes back as the string {@code '007'}. Each still binds as before:
-     * a string field gets the same text, and a number field the same value.
+     * <p>The generator writes no scalar tag, so a tag that disagrees with the plain text ({@code !!float 1},
+     * whose text alone reads as an integer) would be lost; such a node is marked, and the store refuses to
+     * write it (#231). It also quotes a number with a leading zero, so {@code 007} comes back as the string
+     * {@code '007'}, which binds as before: a string field gets the same text, and a number field the same
+     * value.
      */
     static final class PlainScalar extends ValueNode {
         private static final long serialVersionUID = 1L;
 
         private final JsonToken token;
         private final String text;
+        private final boolean tagDisagrees;
 
         PlainScalar(JsonToken token, String text) {
+            this(token, text, false);
+        }
+
+        PlainScalar(JsonToken token, String text, boolean tagDisagrees) {
             this.token = token;
             this.text = text;
+            this.tagDisagrees = tagDisagrees;
         }
 
         @Override

@@ -53,12 +53,19 @@ class StoredYamlTest {
         assertEquals("---\na: 1.10\nb:\n- yes\n- 2\nc: null\nnan: .nan\ninf: -.inf\n", YAML.writeValueAsString(root));
     }
 
-    /** The generator writes no scalar tag and quotes a leading zero: the spelling survives, the YAML type not. */
+    /** The generator quotes a leading zero: the spelling survives, the YAML type not. */
     @Test
-    void aTaggedOrLeadingZeroNumberKeepsItsSpelling() throws Exception {
-        JsonNode root = read("f: !!float 1\no: 007\n");
+    void aLeadingZeroNumberKeepsItsSpelling() throws Exception {
+        assertEquals("---\no: '007'\n", YAML.writeValueAsString(read("o: 007\n")));
+    }
 
-        assertEquals("---\nf: 1\no: '007'\n", YAML.writeValueAsString(root));
+    /** Only a tag the plain text disagrees with is one a rewrite would drop; the path names where it is. */
+    @Test
+    void aDisagreeingTagIsFoundByPath() throws Exception {
+        assertEquals("f", StoredYaml.droppedTagPath(read("f: !!float 1\n"), ""));
+        assertEquals("a.b[1]", StoredYaml.droppedTagPath(read("a: {b: [1, !!float 2]}\n"), ""));
+        assertEquals(null, StoredYaml.droppedTagPath(
+                read("i: !!int 7\nf: !!float 1.5\nb: !!bool yes\ns: !!str 3\nplain: 1\nlist: [x]\n"), ""));
     }
 
     @Test

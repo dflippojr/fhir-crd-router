@@ -76,7 +76,10 @@ complete record with the same key, which lays its fields over the stored entry
 in place, or `delete` the key. A field this version does not know is kept by
 both, so an entry a newer version wrote stays unreadable here after an older
 writer's update. An entry whose environment this version does not know matches
-no key, so only a hand edit removes it.
+no key, so only a hand edit removes it. `save` and `delete` also refuse,
+naming the entry, while an entry they would write holds an explicit YAML tag
+that disagrees with its plain text (`environment: !!float 2`): the writer
+cannot keep the tag, and dropping it would change how the entry binds.
 
 ## Audit foundation
 

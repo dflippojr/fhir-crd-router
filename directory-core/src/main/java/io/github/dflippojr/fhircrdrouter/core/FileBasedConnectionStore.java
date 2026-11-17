@@ -78,7 +78,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * that entry survives an older writer's update, and appends a new key at the
  * end. {@code delete} removes every entry with the key, including an unreadable
  * one, which is how the API clears it. YAML comments and formatting are not
- * kept by a rewrite.
+ * kept by a rewrite. The YAML writer cannot write a scalar tag, so while an
+ * entry to be written holds an explicit tag that disagrees with its plain text
+ * ({@code environment: !!float 2}), writes refuse and name the entry rather
+ * than change how it binds.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -198,18 +201,26 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             List<Entry> entries = readAll().entries;
             ObjectNode known = mapper.valueToTree(record);
             List<JsonNode> nodes = new ArrayList<>();
+            List<String> droppedTags = new ArrayList<>();
             boolean placed = false;
-            for (Entry entry : entries) {
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                JsonNode node;
                 if (!entry.hasKey(record.payerId(), record.environment())) {
-                    nodes.add(entry.node);
+                    node = entry.node;
                 } else if (!placed) {
-                    nodes.add(overlay(entry.node, known));
+                    node = overlay(entry.node, known);
                     placed = true;
+                } else {
+                    continue;
                 }
+                nodes.add(node);
+                noteDroppedTag(droppedTags, index, entry, node);
             }
             if (!placed) {
                 nodes.add(known);
             }
+            refuseDroppedTags(droppedTags);
             writeAll(nodes);
         } finally {
             lock.writeLock().unlock();
@@ -226,17 +237,46 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         lock.writeLock().lock();
         try {
             List<Entry> entries = readAll().entries;
-            List<JsonNode> kept = entries.stream()
-                    .filter(entry -> !entry.hasKey(payerId, environment))
-                    .map(entry -> entry.node)
-                    .toList();
+            List<JsonNode> kept = new ArrayList<>();
+            List<String> droppedTags = new ArrayList<>();
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                if (!entry.hasKey(payerId, environment)) {
+                    kept.add(entry.node);
+                    noteDroppedTag(droppedTags, index, entry, entry.node);
+                }
+            }
             // No match: leave the file alone, so a no-op delete neither creates it nor
             // risks a refused replace on Windows.
             if (kept.size() != entries.size()) {
+                refuseDroppedTags(droppedTags);
                 writeAll(kept);
             }
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+
+    /** Notes the entry if the node it would be written as holds a YAML tag the rewrite would drop. */
+    private static void noteDroppedTag(List<String> droppedTags, int index, Entry entry, JsonNode node) {
+        String field = StoredYaml.droppedTagPath(node, "");
+        if (field != null) {
+            droppedTags.add("entry " + index + " (payerId=" + entry.payerId() + " environment="
+                    + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), field " + field);
+        }
+    }
+
+    /**
+     * The YAML generator writes no scalar tag, so a rewrite would drop an explicit tag that disagrees with
+     * its plain text and change how the entry binds: {@code environment: !!float 2} (no enum index) would
+     * come back as {@code environment: 2}, which binds as {@code PRODUCTION}. Writes refuse, before anything
+     * is written, and name each such entry by position, key and field, never by value (#231, owner decision).
+     */
+    private void refuseDroppedTags(List<String> droppedTags) {
+        if (!droppedTags.isEmpty()) {
+            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite would drop an"
+                    + " explicit YAML tag that disagrees with its value's plain text, and change how the entry binds: "
+                    + String.join("; ", droppedTags) + ". Edit the tag out of the file by hand first.");
         }
     }
 
