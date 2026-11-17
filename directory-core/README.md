@@ -12,6 +12,11 @@ Core contracts and the default implementations:
   the v1 default (flat YAML file, whole-file read/rewrite). Writes are atomic
   (temp file + move), so a crash never leaves a partial file, but there is no
   cross-process locking: one process must own the file.
+  One entry this version cannot read (a missing required field, or a property
+  or enum constant from a newer version) does not break the others: other
+  payers resolve, a lookup of that entry's payer or key throws
+  `InvalidConnectionRecordException`, `invalidEntries()` lists it, and writes
+  keep it, and any unknown field, as read. See "Unreadable entries" below.
 - `CredentialProvider` — pluggable secret resolution; the default
   implementation lives in the sibling `credential-store-encrypted-local`
   module to keep crypto code out of the core module.
@@ -52,6 +57,27 @@ if (report.ok()) {
 
 Through `AuditedConnectionStore`, that save is recorded as `connection.update`
 with `lastVerifiedAt` as the only changed field.
+## Unreadable entries
+
+`FileBasedConnectionStore` binds each list entry on its own. An entry it cannot
+bind stays in the file and out of `findAll()`:
+
+```java
+for (FileBasedConnectionStore.InvalidEntry bad : store.invalidEntries()) {
+    // index, payerId and environment (null where unreadable), and problem:
+    // the exception class, e.g. UnrecognizedPropertyException
+}
+```
+
+`resolve` of that entry's key, and `findByPayerId` of its payer, throw
+`InvalidConnectionRecordException` (a `RouterException`) with the payer,
+environment and problem class, never a field value. To repair it, `save` a
+complete record with the same key, which lays its fields over the stored entry
+in place, or `delete` the key. A field this version does not know is kept by
+both, so an entry a newer version wrote stays unreadable here after an older
+writer's update. An entry whose environment this version does not know matches
+no key, so only a hand edit removes it.
+
 ## Audit foundation
 
 Optional actor-attributed JSONL history and the owner read/export API are documented

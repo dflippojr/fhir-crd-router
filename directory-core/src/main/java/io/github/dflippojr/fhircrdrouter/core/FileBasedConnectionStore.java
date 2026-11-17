@@ -54,6 +54,28 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * <p>A file with no YAML content (empty, whitespace or comments only) reads as
  * no records, like a missing file, and {@link #save} writes into it.
  *
+ * <p><b>One unreadable entry does not break the others (#231).</b> The file is
+ * read as a YAML list of raw nodes and each node is bound on its own. A node
+ * that does not bind (a field its auth type requires is missing, or it has a
+ * property or enum constant this version does not know, as a file written by a
+ * newer version can) is kept as an {@link InvalidEntry}, listed by
+ * {@link #invalidEntries()}. Other payers resolve as usual, and {@link #findAll}
+ * leaves the entry out. A lookup that would include it, by its payerId or by
+ * its key, throws {@link InvalidConnectionRecordException} naming the payer,
+ * the environment and the problem class, never a field value. An entry whose
+ * environment this version does not know matches no key; only
+ * {@link #findByPayerId} and {@link #invalidEntries()} see it. A file that is
+ * not YAML, or not a list, still fails every read.
+ *
+ * <p>Writes are lossless at node level: every entry {@link #save} or
+ * {@link #delete} does not touch is written back as it was read, readable or
+ * not, with any field this version does not know. {@code save} lays the
+ * record's fields over its key's stored node, in place, so a newer field on
+ * that entry survives an older writer's update, and appends a new key at the
+ * end. {@code delete} removes every entry with the key, including an unreadable
+ * one, which is how the API clears it. YAML comments and formatting are not
+ * kept by a rewrite.
+ *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
  * writers in separate processes or instances can lose each other's updates.
@@ -148,6 +170,15 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     @Override
     public List<ConnectionRecord> findAll() {
         return readAll().records;
+    }
+
+    /**
+     * The stored entries this version cannot read, in file order, for an admin tool to show (#231).
+     * Empty when every entry binds. Not on {@link ConnectionStore}: it describes this file format.
+     * A read that fails as a whole (the file is not YAML, or not a list) throws, as the lookups do.
+     */
+    public List<InvalidEntry> invalidEntries() {
+        return readAll().invalid;
     }
 
     /**

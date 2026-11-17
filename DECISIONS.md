@@ -467,3 +467,52 @@ as they are.
 
 Behaviour is unchanged. `ConnectionRecordTest` and `EndpointUrlsTest` pin, for
 all five types, which fields each requires and which URLs each checks.
+
+## Isolate an unreadable connection entry (2026-11-17, #231)
+
+`FileBasedConnectionStore` used to bind the whole file as one
+`ConnectionRecord[]`. One entry that failed to bind (a field its auth type
+requires missing, or a property or enum constant this version does not know)
+failed every read, so `resolve` failed for every payer, and failed `save` and
+`delete`, which read first. The one consumer pins an older commit, so a writer
+and a reader on different versions is a normal state. The owner chose option A
+on the issue: isolate the entry, and make its own key throw a specific error
+rather than read as absent. This is the rule #156 and #107 already state:
+never fail the whole catalog for one entry.
+
+- **Read.** The file is read as a list of raw nodes and each node is bound on
+  its own. A node that does not bind becomes an `InvalidEntry` (index,
+  payerId and environment where readable, and the problem class: the simple
+  name of the root exception). A file that is not YAML, or not a list, still
+  fails as a whole.
+- **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
+  for an invalid entry's key, and `findByPayerId` for its payer, throw
+  `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`
+  throws rather than return the payer's other records, because a silently
+  partial answer is the "reads as absent" case the owner ruled out. The
+  message names payer, environment, entry index and problem class only; the
+  Jackson exception is not attached as the cause, because its message can
+  quote a field value (as with #164's token).
+- **Write.** `save` and `delete` rebuild the file from the raw nodes. An entry
+  they do not touch is written back as read. `save` lays the record's fields
+  over its key's node in place, so an unknown field survives, and appends a new
+  key. `delete` removes an invalid entry by key, which is the repair path.
+  Saving an existing key now keeps its position; it used to move it to the
+  end. An entry with no stored `createdAt` or `updatedAt` keeps none, where a
+  rewrite used to fill them in with the time of the read.
+- **Unknown properties still make an entry invalid.** `ConnectionRecord` keeps
+  Jackson's `FAIL_ON_UNKNOWN_PROPERTIES` (option C was declined). After an
+  older writer's `save` over an entry a newer version wrote, the newer field
+  survives and that key still does not resolve on the older version. An entry
+  whose environment this version does not know matches no key, so the API
+  cannot delete it; only a hand edit can.
+- **Audit.** `AuditedConnectionStore` reads the old record before it writes.
+  On `InvalidConnectionRecordException` it records a save as
+  `connection.update` with every field the save sets, and a delete as
+  `connection.delete`, so the wrapper is no barrier to repair.
+- **Diagnostics.** `FileBasedConnectionStore.invalidEntries()` lists the
+  invalid entries for an admin tool. It is not on `ConnectionStore`.
+
+The issue planned three stages, the first refusing writes until lossless
+writes landed. They shipped in one pull request, one commit each, so no
+released version refuses writes.

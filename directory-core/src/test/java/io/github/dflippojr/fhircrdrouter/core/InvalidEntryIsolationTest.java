@@ -272,10 +272,44 @@ class InvalidEntryIsolationTest {
         assertEquals(List.of("PAYER-OK"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
         store.save(recordFor("PAYER-NEW").build());
 
+        assertEquals(List.of(new FileBasedConnectionStore.InvalidEntry(0, null, null, "NullEntry"),
+                        new FileBasedConnectionStore.InvalidEntry(1, null, null, "MismatchedInputException")),
+                store.invalidEntries());
+
         JsonNode after = nodes(file);
         assertEquals(4, after.size());
         assertTrue(after.get(0).isNull());
         assertEquals("SENTINEL-UNKNOWN-VALUE", after.get(1).asText());
+    }
+
+    @ParameterizedTest
+    @EnumSource(Bad.class)
+    void invalidEntriesListsTheEntryByKeyAndProblem(Bad bad, @TempDir Path dir) throws Exception {
+        FileBasedConnectionStore store = new FileBasedConnectionStore(storeWith(dir, bad));
+
+        assertEquals(List.of(new FileBasedConnectionStore.InvalidEntry(0, "PAYER-BAD",
+                        bad.keyed ? Environment.PRODUCTION : null, bad.problem)),
+                store.invalidEntries());
+    }
+
+    @Test
+    void invalidEntriesIsEmptyForAGoodOrMissingFile(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        assertEquals(List.of(), store.invalidEntries());
+
+        Files.writeString(file, OK_ENTRY);
+        assertEquals(List.of(), store.invalidEntries());
+    }
+
+    @Test
+    void invalidEntriesFollowsADeleteThatClearsTheEntry(@TempDir Path dir) throws Exception {
+        FileBasedConnectionStore store = new FileBasedConnectionStore(storeWith(dir, Bad.UNKNOWN_AUTH_TYPE));
+        assertEquals(1, store.invalidEntries().size());
+
+        store.delete("PAYER-BAD", Environment.PRODUCTION);
+
+        assertEquals(List.of(), store.invalidEntries());
     }
 
     /** The exception for a key carries the key and problem, for a caller that wants to tell this case apart. */
