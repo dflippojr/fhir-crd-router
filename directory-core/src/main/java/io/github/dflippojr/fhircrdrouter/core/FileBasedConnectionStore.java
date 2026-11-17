@@ -2,7 +2,11 @@ package io.github.dflippojr.fhircrdrouter.core;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonStreamContext;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -281,12 +285,12 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     }
 
     /**
-     * Reads the file as a YAML list of raw nodes, then binds each node on its own, so one entry this
-     * version cannot read leaves the others usable (#231). A file that is not a list, or not YAML,
-     * still fails as a whole.
+     * Reads the file as a YAML list, then binds each list item on its own, so one entry this version
+     * cannot read leaves the others usable (#231). A file that is not a list, or not YAML, still fails as
+     * a whole.
      */
     private Snapshot parse(byte[] bytes) throws IOException {
-        // StoredYaml keeps each unquoted scalar as it was spelled, for binding and for the rewrite.
+        // The tree is what a rewrite writes back; StoredYaml keeps each unquoted scalar as it was spelled.
         StoredYaml.Document document = hasContent(bytes) ? mapper.readValue(bytes, StoredYaml.Document.class) : null;
         // A null document (null, ~) never reaches the deserializer: readValue answers it as null.
         JsonNode root = document == null ? null : document.root();
@@ -301,31 +305,84 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         return bind(bytes, nodes);
     }
 
-    /** Binds each node on its own; a node that does not bind is kept as an invalid entry. */
-    private Snapshot bind(byte[] bytes, List<JsonNode> nodes) {
+    /**
+     * Pairs each node with what its list item binds to. Items are bound from the YAML parser over the
+     * file's bytes, item by item, never from the tree: that is the binding the store always had, so every
+     * scalar (an unquoted {@code 1.10}, {@code +2}, a tagged or decimal value) binds as it did before. An
+     * item that does not bind is kept as an invalid entry; its key is read the same way, field by field.
+     */
+    private Snapshot bind(byte[] bytes, List<JsonNode> nodes) throws IOException {
+        if (nodes.isEmpty()) {
+            return new Snapshot(bytes, List.of(), List.of(), List.of());
+        }
+        List<Bound<ConnectionRecord>> bound = bindEach(bytes, mapper.readerFor(ConnectionRecord.class), nodes.size());
+        List<Bound<PayerIdField>> payerIds = null;
+        List<Bound<EnvironmentField>> environments = null;
         List<Entry> entries = new ArrayList<>();
         List<ConnectionRecord> records = new ArrayList<>();
         List<InvalidEntry> invalid = new ArrayList<>();
         for (int index = 0; index < nodes.size(); index++) {
             JsonNode node = nodes.get(index);
-            String problem;
-            try {
-                ConnectionRecord record = mapper.treeToValue(StoredYaml.forBinding(node), ConnectionRecord.class);
-                if (record != null) {
-                    records.add(record);
-                    entries.add(new Entry(node, record.payerId(), record.environment()));
-                    continue;
-                }
-                problem = "NullEntry";
-            } catch (JsonProcessingException | IllegalArgumentException e) {
-                problem = rootCause(e).getClass().getSimpleName();
+            ConnectionRecord record = bound.get(index).value();
+            if (record != null) {
+                records.add(record);
+                entries.add(new Entry(node, record.payerId(), record.environment()));
+                continue;
             }
-            InvalidEntry entry = new InvalidEntry(index, keyFieldOf(node, "payerId", String.class),
-                    keyFieldOf(node, "environment", Environment.class), problem);
+            if (payerIds == null) {
+                payerIds = bindEach(bytes, keyReader(PayerIdField.class), nodes.size());
+                environments = bindEach(bytes, keyReader(EnvironmentField.class)
+                        .with(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL), nodes.size());
+            }
+            PayerIdField payerId = payerIds.get(index).value();
+            EnvironmentField environment = environments.get(index).value();
+            InvalidEntry entry = new InvalidEntry(index, payerId == null ? null : payerId.payerId(),
+                    environment == null ? null : environment.environment(), bound.get(index).problem());
             invalid.add(entry);
             entries.add(new Entry(node, entry.payerId(), entry.environment()));
         }
         return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid));
+    }
+
+    private ObjectReader keyReader(Class<?> type) {
+        return mapper.readerFor(type).without(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+    }
+
+    /** What one list item bound to, or the simple class name of the root exception that stopped it. */
+    private record Bound<T>(T value, String problem) { }
+
+    /** One key field of an entry, bound alone so a broken environment cannot hide a readable payerId. */
+    private record PayerIdField(String payerId) { }
+
+    private record EnvironmentField(Environment environment) { }
+
+    /**
+     * Binds each item of the file's top-level list with {@code reader}, on the YAML parser. After an item
+     * fails, the parser is moved to the item's end (back to the list's own context), so the next item
+     * binds as usual. A read failure inside an item is caught too (the parser has no number for
+     * {@code .nan} in a string field): the bytes already parsed as a tree, so the stream itself is sound.
+     */
+    private <T> List<Bound<T>> bindEach(byte[] bytes, ObjectReader reader, int expected) throws IOException {
+        List<Bound<T>> out = new ArrayList<>();
+        try (JsonParser parser = mapper.createParser(bytes)) {
+            parser.nextToken();
+            JsonStreamContext list = parser.getParsingContext();
+            while (parser.nextToken() != JsonToken.END_ARRAY) {
+                try {
+                    T value = reader.readValue(parser);
+                    out.add(value == null ? new Bound<>(null, "NullEntry") : new Bound<>(value, null));
+                } catch (JsonProcessingException | IllegalArgumentException e) {
+                    out.add(new Bound<>(null, rootCause(e).getClass().getSimpleName()));
+                    while (parser.getParsingContext() != list) {
+                        parser.nextToken();
+                    }
+                }
+            }
+        }
+        if (out.size() != expected) {
+            throw new IOException("the YAML list read as " + expected + " items but bound as " + out.size());
+        }
+        return out;
     }
 
     private static Throwable rootCause(Throwable e) {
@@ -334,23 +391,6 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             root = root.getCause();
         }
         return root;
-    }
-
-    /**
-     * One key field of an entry that did not bind, read with the same rules as the record binding (so
-     * {@code environment: 2} is {@code PRODUCTION}, as Jackson binds it, and a scalar payerId is text),
-     * or null when it is missing, null or does not bind. A list item that is not an object has neither.
-     */
-    private <T> T keyFieldOf(JsonNode node, String field, Class<T> type) {
-        JsonNode value = node.path(field);
-        if (value.isMissingNode() || value.isNull()) {
-            return null;
-        }
-        try {
-            return mapper.treeToValue(StoredYaml.forBinding(value), type);
-        } catch (JsonProcessingException | IllegalArgumentException e) {
-            return null;
-        }
     }
 
     /**
@@ -385,6 +425,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             list.addAll(nodes);
             mapper.writeValue(buffer, list);
             byte[] bytes = buffer.toByteArray();
+            // Bound before the replace, so a binding failure cannot report a write that already happened.
+            Snapshot written = bind(bytes, nodes);
             AtomicFiles.writeDurably(tmp, bytes);
             try {
                 AtomicFiles.replace(tmp, path, mover);
@@ -393,7 +435,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                         + ": the file is open in another process or access is denied", e);
             }
             tmp = null;
-            cache = bind(bytes, nodes);
+            cache = written;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing connection store at " + path, e);
         } finally {

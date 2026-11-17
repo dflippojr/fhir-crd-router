@@ -489,32 +489,6 @@ class InvalidEntryIsolationTest {
     }
 
     /**
-     * The YAML generator writes no scalar tag, so a tagged number whose text would read back as another
-     * type ({@code !!float 1} as an integer) is written in a form that reads back as the same value.
-     */
-    @Test
-    void aTaggedNumberKeepsItsTypeThroughARewrite(@TempDir Path dir) throws Exception {
-        Path file = dir.resolve("connections.yaml");
-        Files.writeString(file, """
-                - payerId: "PAYER-BAD"
-                  environment: "PRODUCTION"
-                  baseUrl: "https://bad.example/r4"
-                  authType: "NONE"
-                  futureFloat: !!float 1
-                  futureInt: !!int 7
-                  futureText: !!str 3
-                """ + OK_ENTRY);
-        JsonNode before = nodes(file);
-        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
-
-        store.save(recordFor("PAYER-NEW").build());
-
-        JsonNode after = nodes(file);
-        assertTrue(before.get(0).get("futureFloat").isFloatingPointNumber());
-        assertEquals(before.get(0), after.get(0));
-    }
-
-    /**
      * The canonical form a tagged number is written in is not what it binds as: {@code !!float 1} binds as
      * "1", as the typed binding gave it. A decimal time keeps every digit ({@code .123456789} seconds).
      */

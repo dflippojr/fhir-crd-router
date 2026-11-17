@@ -487,12 +487,27 @@ never fail the whole catalog for one entry.
   binding's own rules, so `environment: 2` is `PRODUCTION` there too. A null
   payerId or environment argument matches nothing, as before. A file that is not YAML, or not a list, still
   fails as a whole.
-- **Scalars keep their spelling.** Jackson's own tree turns a YAML plain
-  scalar into a number or boolean, so `payerId: 1.10` would read as `1.1`
-  and a rewrite would store the changed value. The typed binding read it as
-  the text `"1.10"`. `StoredYaml` builds the tree instead: a plain number or
-  boolean keeps its text, is bound as that text, and is written back
-  unquoted as it was read.
+- **Bind from the parser, write from a tree.** Each list item is bound
+  straight from the YAML parser, item by item, the way the whole-file
+  binding always bound it, so every scalar binds as before: `payerId: 1.10`
+  is `"1.10"`, `environment: +2` is `PRODUCTION`, a decimal time keeps its
+  nanoseconds. After an item fails, the parser skips to the item's end and
+  the next item binds as usual. The tree is used only for the rewrite.
+  Jackson's own tree turns `1.10` into `1.1`, so `StoredYaml` builds it
+  instead: a plain number or boolean keeps its spelling and is written back
+  unquoted. `ScalarShapeCorpusTest` checks about 60 scalar shapes, each in a
+  string, a time and an enum field, against the old binding and through a
+  rewrite. (Five automated review rounds on #238 found one shape at a time
+  while items were bound from the tree.)
+- **Known limit: YAML tags and leading zeros.** Jackson's YAML generator
+  writes no scalar tag and quotes a number with a leading zero. So
+  `!!float 1` comes back as `1` and `007` as `'007'`: same spelling, and the
+  same binding for string fields and number fields, but a different YAML
+  type. The one binding this changes is an enum given a tagged float
+  (`environment: !!float 2`), which fails to bind before a rewrite and binds
+  as `PRODUCTION` after it. Writing a canonical form (`1.0`) instead would
+  keep the type but change the text a string field binds to, which is
+  worse for keys.
 - **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
   for an invalid entry's key, and `findByPayerId` for its payer, throw
   `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`

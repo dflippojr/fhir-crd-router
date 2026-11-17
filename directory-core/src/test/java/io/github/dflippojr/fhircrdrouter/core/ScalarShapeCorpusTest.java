@@ -1,0 +1,170 @@
+package io.github.dflippojr.fhircrdrouter.core;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+/**
+ * #231: a sweep over the scalar shapes YAML allows, in a string, a time and an enum field. Two checks per shape:
+ * <ol>
+ *   <li>a readable entry binds exactly as the whole-file typed binding before #231 bound it (the oracle), or,
+ *   where that failed, is an invalid entry;</li>
+ *   <li>after a save of another payer, the untouched entries, the readable one and one that holds the shape in a
+ *   property this version does not know, parse to the same nodes and bind to the same records.</li>
+ * </ol>
+ */
+class ScalarShapeCorpusTest {
+
+    /** The store's mapper before #231, which bound the whole file as {@code ConnectionRecord[]}. */
+    private static final ObjectMapper ORACLE = new ObjectMapper(new YAMLFactory())
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .enable(SerializationFeature.INDENT_OUTPUT);
+
+    private static final ObjectMapper PLAIN = new ObjectMapper(new YAMLFactory());
+
+    private static final List<String> SCALARS = List.of(
+            "1.10", "+2", "-0", "007", "010", "0x1F", "0o17", "1e3", "1.5e3", ".5", ".nan", "-.inf", "99999999999999999999",
+            "~", "null", "yes", "no", "on", "off", "y", "n", "true", "False",
+            "!!float 1", "!!int 7", "!!str 3", "!!bool yes", "!!null ''", "!!binary AQI=",
+            "2026-01-01", "2026-01-01T10:00:00Z", "2026-01-01 10:00:00",
+            "'single'", "\"double\"", "plain text", "\"\"", "''",
+            "|\n    line one\n    line two", ">\n    folded\n    text", "|-\n    kept",
+            "&anchor 1.10", "[a, 1.10]", "{k: 1.10}");
+
+    private static final List<String> TIMES = List.of(
+            "5", "+5", "-1.5", "1730000000.123456789", "0x10", "!!float 1", "!!str 5",
+            "2026-01-01T10:00:00Z", "\"2026-01-01T10:00:00.123456789Z\"", "2026-01-01", "~");
+
+    private static final List<String> ENVIRONMENTS = List.of(
+            "PRODUCTION", "2", "+2", "0x2", "!!int 2", "!!str 2", "!!float 2", "\"2\"", "production", "~", "7");
+
+    /**
+     * Shapes whose YAML type a rewrite cannot keep: the generator writes no scalar tag and quotes a leading
+     * zero. Their spelling, and so their binding, survives; DECISIONS.md records the limit.
+     */
+    private static final List<String> TYPE_NOT_KEPT = List.of("007", "010", "!!float 1", "!!float 2", "!!bool yes");
+
+    /**
+     * The one shape whose binding a rewrite changes, because it binds by YAML type and the tag is not written:
+     * an enum given {@code !!float 2} fails to bind (a float is no enum index), and after a rewrite it is the
+     * plain {@code 2}, which binds as {@code PRODUCTION}. The entry goes from invalid to readable.
+     */
+    private static final String BINDING_CHANGES = "environment: !!float 2";
+
+    static Stream<Arguments> shapes() {
+        return Stream.of(
+                SCALARS.stream().map(s -> Arguments.of("igVersion", s)),
+                TIMES.stream().map(s -> Arguments.of("lastVerifiedAt", s)),
+                ENVIRONMENTS.stream().map(s -> Arguments.of("environment", s))).flatMap(s -> s);
+    }
+
+    /**
+     * The file as the store's tree: each plain scalar compared by its spelling and kind, which is stricter
+     * than Jackson's own tree (that reads 1.10 and 1.1 alike) and also reads {@code .nan}.
+     */
+    private static JsonNode nodes(Path file) throws Exception {
+        return PLAIN.readValue(Files.readAllBytes(file), StoredYaml.Document.class).root();
+    }
+
+    private static String entry(String payerId, String field, String shape) {
+        StringBuilder yaml = new StringBuilder("- payerId: \"").append(payerId).append("\"\n");
+        if (!field.equals("environment")) {
+            yaml.append("  environment: \"PRODUCTION\"\n");
+        }
+        yaml.append("  baseUrl: \"https://").append(payerId.toLowerCase()).append(".example/r4\"\n")
+                .append("  authType: \"NONE\"\n")
+                .append("  createdAt: \"2026-01-01T00:00:00Z\"\n")
+                .append("  updatedAt: \"2026-01-01T00:00:00Z\"\n")
+                .append("  ").append(field).append(": ").append(shape).append('\n');
+        return yaml.toString();
+    }
+
+    @ParameterizedTest(name = "{0}: {1}")
+    @MethodSource("shapes")
+    void aShapeBindsAsBeforeAndSurvivesARewrite(String field, String shape, @TempDir Path dir) throws Exception {
+        String readable = entry("PAYER-A", field, shape);
+        String unknown = entry("PAYER-U", "futureField", shape);
+        ConnectionRecord expected;
+        try {
+            expected = ORACLE.readValue(readable, ConnectionRecord[].class)[0];
+        } catch (Exception e) {
+            expected = null;
+        }
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, readable + unknown);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        // 1. The readable entry binds as the oracle bound it, or is invalid where the oracle failed.
+        assertEquals(expected == null ? List.of() : List.of(expected), store.findAll());
+        assertEquals(expected == null ? 2 : 1, store.invalidEntries().size());
+
+        // 2. A save of another payer leaves both entries as they were.
+        JsonNode before = nodes(file);
+        List<FileBasedConnectionStore.InvalidEntry> invalidBefore = store.invalidEntries();
+        store.save(ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.SANDBOX)
+                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build());
+
+        JsonNode after = nodes(file);
+        if (TYPE_NOT_KEPT.contains(shape)) {
+            // The shape's own field keeps its spelling, not its YAML type; the binding checks below cover it.
+            ((ObjectNode) before.get(0)).remove(field);
+            ((ObjectNode) after.get(0)).remove(field);
+            ((ObjectNode) before.get(1)).remove("futureField");
+            ((ObjectNode) after.get(1)).remove("futureField");
+        }
+        assertEquals(before.get(0), after.get(0));
+        assertEquals(before.get(1), after.get(1));
+        if (BINDING_CHANGES.equals(field + ": " + shape)) {
+            return;
+        }
+        FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
+        assertEquals(expected == null ? List.of() : List.of(expected),
+                reread.findAll().stream().filter(r -> r.payerId().equals("PAYER-A")).toList());
+        assertEquals(invalidBefore, reread.invalidEntries());
+    }
+
+    /** An alias and a merge key read as the oracle read them, and a rewrite keeps what they resolved to. */
+    @Test
+    void anAliasAndAMergeKeyBindAsBeforeAndSurviveARewrite(@TempDir Path dir) throws Exception {
+        String yaml = """
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: &url "https://a.example/r4"
+                  authType: "NONE"
+                  createdAt: "2026-01-01T00:00:00Z"
+                  updatedAt: "2026-01-01T00:00:00Z"
+                - payerId: "PAYER-B"
+                  environment: "PRODUCTION"
+                  baseUrl: *url
+                  authType: "NONE"
+                  createdAt: "2026-01-01T00:00:00Z"
+                  updatedAt: "2026-01-01T00:00:00Z"
+                """;
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, yaml);
+        List<ConnectionRecord> expected = List.of(ORACLE.readValue(yaml, ConnectionRecord[].class));
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(expected, store.findAll());
+        store.save(ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.SANDBOX)
+                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build());
+
+        assertEquals(expected, new FileBasedConnectionStore(file).findAll().subList(0, 2));
+    }
+}
