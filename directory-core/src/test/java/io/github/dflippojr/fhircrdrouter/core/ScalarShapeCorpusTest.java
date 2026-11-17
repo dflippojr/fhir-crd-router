@@ -3,7 +3,6 @@ package io.github.dflippojr.fhircrdrouter.core;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
@@ -51,16 +50,18 @@ class ScalarShapeCorpusTest {
 
     private static final List<String> TIMES = List.of(
             "5", "+5", "-1.5", "1730000000.123456789", "0x10", "!!float 1", "!!str 5",
-            "2026-01-01T10:00:00Z", "\"2026-01-01T10:00:00.123456789Z\"", "2026-01-01", "~");
+            "2026-01-01T10:00:00Z", "\"2026-01-01T10:00:00.123456789Z\"", "2026-01-01", "~", "010", "02", "08");
 
     private static final List<String> ENVIRONMENTS = List.of(
-            "PRODUCTION", "2", "+2", "0x2", "!!int 2", "!!str 2", "!!float 2", "\"2\"", "production", "~", "7");
+            "PRODUCTION", "2", "+2", "0x2", "!!int 2", "!!str 2", "!!float 2", "\"2\"", "production", "~", "7",
+            "02", "002", "010");
 
     /**
-     * Shapes whose YAML type a rewrite cannot keep: the generator quotes a number with a leading zero. Their
-     * spelling, and so their binding, survives; DECISIONS.md records the limit.
+     * Numbers with a leading zero, which YAML reads as octal ({@code 010} is 8) and the generator writes back
+     * quoted, as a string. In a known field of a readable entry the rewrite writes the field's bound value
+     * instead, so it binds as before; anywhere else its type is unknown and the write refuses (#231).
      */
-    private static final List<String> TYPE_NOT_KEPT = List.of("007", "010");
+    private static final List<String> LEADING_ZERO = List.of("007", "010", "02", "002");
 
     /**
      * Shapes with an explicit tag their plain text disagrees with. The generator writes no scalar tag, so a
@@ -117,6 +118,21 @@ class ScalarShapeCorpusTest {
         assertEquals(expected == null ? 2 : 1, store.invalidEntries().size());
 
         // 2. A save of another payer leaves both entries as they were, or refuses where it cannot.
+        if (LEADING_ZERO.contains(shape)) {
+            // The unknown field's type is unknown, so a rewrite refuses; with the readable entry alone, it goes
+            // ahead and the entry binds as before (or refuses, where the entry is not readable).
+            assertRefuses(store, file);
+            Files.writeString(file, readable);
+            FileBasedConnectionStore alone = new FileBasedConnectionStore(file);
+            if (expected == null) {
+                assertRefuses(alone, file);
+                return;
+            }
+            alone.save(other());
+            alone.delete("PAYER-NEW", Environment.SANDBOX);
+            assertEquals(List.of(expected), new FileBasedConnectionStore(file).findAll());
+            return;
+        }
         if (TAG_WOULD_BE_DROPPED.contains(shape)) {
             byte[] bytes = Files.readAllBytes(file);
             assertThrows(RouterException.class, () -> store.save(ConnectionRecord.builder().payerId("PAYER-NEW")
@@ -130,19 +146,23 @@ class ScalarShapeCorpusTest {
                 .baseUrl("https://new.example/r4").authType(AuthType.NONE).build());
 
         JsonNode after = nodes(file);
-        if (TYPE_NOT_KEPT.contains(shape)) {
-            // The shape's own field keeps its spelling, not its YAML type; the binding checks below cover it.
-            ((ObjectNode) before.get(0)).remove(field);
-            ((ObjectNode) after.get(0)).remove(field);
-            ((ObjectNode) before.get(1)).remove("futureField");
-            ((ObjectNode) after.get(1)).remove("futureField");
-        }
         assertEquals(before.get(0), after.get(0));
         assertEquals(before.get(1), after.get(1));
         FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
         assertEquals(expected == null ? List.of() : List.of(expected),
                 reread.findAll().stream().filter(r -> r.payerId().equals("PAYER-A")).toList());
         assertEquals(invalidBefore, reread.invalidEntries());
+    }
+
+    private static ConnectionRecord other() {
+        return ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.SANDBOX)
+                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build();
+    }
+
+    private static void assertRefuses(FileBasedConnectionStore store, Path file) throws Exception {
+        byte[] bytes = Files.readAllBytes(file);
+        assertThrows(RouterException.class, () -> store.save(other()));
+        assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
     /** An alias and a merge key read as the oracle read them, and a rewrite keeps what they resolved to. */

@@ -399,8 +399,8 @@ class InvalidEntryIsolationTest {
 
     /**
      * An unquoted YAML scalar keeps its spelling, as the typed binding before #231 kept it: {@code 1.10} is the
-     * payerId "1.10", not 1.1, and {@code 007} is "007". A rewrite writes a plain number or boolean back as
-     * it was spelled, in an untouched entry, an unknown field and a known one alike.
+     * payerId "1.10", not 1.1. A rewrite writes a plain number or boolean back as it was spelled, in an
+     * untouched entry, an unknown field and a known one alike.
      */
     @Test
     void unquotedScalarsKeepTheirSpelling(@TempDir Path dir) throws Exception {
@@ -411,7 +411,7 @@ class InvalidEntryIsolationTest {
                   baseUrl: "https://ok.example/r4"
                   authType: "NONE"
                   igVersion: 2.10
-                - payerId: 007
+                - payerId: 7.50
                   environment: 2
                   baseUrl: "https://bad.example/r4"
                   authType: "NONE"
@@ -421,20 +421,19 @@ class InvalidEntryIsolationTest {
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
         assertEquals("2.10", store.findByPayerIdAndEnvironment("1.10", Environment.PRODUCTION).orElseThrow().igVersion());
-        assertEquals(List.of(new FileBasedConnectionStore.InvalidEntry(1, "007", Environment.PRODUCTION,
+        assertEquals(List.of(new FileBasedConnectionStore.InvalidEntry(1, "7.50", Environment.PRODUCTION,
                 "UnrecognizedPropertyException")), store.invalidEntries());
 
         store.save(recordFor("PAYER-NEW").build());
 
         String written = Files.readString(file);
-        for (String kept : List.of("payerId: 1.10", "igVersion: 2.10", "environment: 2",
+        for (String kept : List.of("payerId: 1.10", "igVersion: 2.10", "payerId: 7.50", "environment: 2",
                 "futureRatio: 1.50", "futureFlag: yes")) {
             assertTrue(written.contains(kept), kept + " not in\n" + written);
         }
         FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
         assertEquals("2.10", reread.findByPayerIdAndEnvironment("1.10", Environment.PRODUCTION).orElseThrow().igVersion());
-        // The YAML parser reads 007 as a string, which the rewrite may quote; the value is what must survive.
-        assertEquals("007", reread.invalidEntries().get(0).payerId());
+        assertEquals("7.50", reread.invalidEntries().get(0).payerId());
     }
 
     /** A {@code !!binary} value in an untouched entry is still binary after a rewrite (compares parsed nodes). */
@@ -577,6 +576,66 @@ class InvalidEntryIsolationTest {
 
         assertTrue(e.getMessage().contains("field futureLimits[1]"), e.getMessage());
         assertArrayEquals(before, Files.readAllBytes(file));
+    }
+
+    /**
+     * YAML reads a leading-zero number as octal ({@code 02} is 2, {@code 010} is 8), and the generator writes it
+     * back quoted, as a string, which would bind differently ({@code "02"} is no environment, {@code "010"} is
+     * epoch second 10). In a known field of a readable entry the rewrite writes the bound value instead, so the
+     * entry binds as before, through a save and a delete of other payers (#231).
+     */
+    @Test
+    void aLeadingZeroNumberInAReadableEntryStillBindsAfterARewrite(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: 007
+                  environment: 02
+                  baseUrl: "https://ok.example/r4"
+                  authType: "NONE"
+                  lastVerifiedAt: 010
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        ConnectionRecord before = store.findAll().get(0);
+        assertEquals(Environment.PRODUCTION, before.environment());
+        assertEquals(java.time.Instant.ofEpochSecond(8), before.lastVerifiedAt());
+
+        store.save(recordFor("PAYER-NEW").build());
+        store.delete("PAYER-NEW", Environment.PRODUCTION);
+
+        assertEquals(List.of(before), new FileBasedConnectionStore(file).findAll());
+    }
+
+    /** Where the type is unknown (an unreadable entry, or a field this version does not know), the write refuses. */
+    @Test
+    void aLeadingZeroNumberWhoseTypeIsUnknownRefusesTheWrite(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-BAD"
+                  environment: 02
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "OAUTH2_CLIENT_CREDENTIALS"
+                  tokenEndpoint: "https://sentinel-token.example/token"
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://a.example/r4"
+                  authType: "NONE"
+                  futureCount: 010
+                """ + OK_ENTRY);
+        byte[] bytes = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        RouterException onSave = assertThrows(RouterException.class, () -> store.save(recordFor("PAYER-NEW").build()));
+        RouterException onDelete = assertThrows(RouterException.class,
+                () -> store.delete("PAYER-OK", Environment.PRODUCTION));
+
+        for (RouterException e : List.of(onSave, onDelete)) {
+            assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-BAD environment=PRODUCTION), field environment"),
+                    e.getMessage());
+            assertTrue(e.getMessage().contains("entry 1 (payerId=PAYER-A environment=PRODUCTION), field futureCount"),
+                    e.getMessage());
+            assertNoSentinel(e);
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
