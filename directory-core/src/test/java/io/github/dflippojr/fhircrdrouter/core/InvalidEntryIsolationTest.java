@@ -593,6 +593,8 @@ class InvalidEntryIsolationTest {
                   baseUrl: "https://ok.example/r4"
                   authType: "NONE"
                   lastVerifiedAt: 010
+                  createdAt: "2026-01-01T00:00:00Z"
+                  updatedAt: "2026-01-01T00:00:00Z"
                 """);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
         ConnectionRecord before = store.findAll().get(0);

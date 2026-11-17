@@ -79,7 +79,10 @@ writer's update. An entry whose environment this version does not know matches
 no key, so only a hand edit removes it. `save` and `delete` also refuse,
 naming the entry, while an entry they would write holds an explicit YAML tag
 that disagrees with its plain text (`environment: !!float 2`): the writer
-cannot keep the tag, and dropping it would change how the entry binds.
+cannot keep the tag, and dropping it would change how the entry binds. A
+number with a leading zero (`environment: 02`, read as octal 2) is written as
+its field's value in a readable entry, so it binds as before, and refused
+where its type is unknown (an unreadable entry, or an unknown field).
 
 ## Audit foundation
 

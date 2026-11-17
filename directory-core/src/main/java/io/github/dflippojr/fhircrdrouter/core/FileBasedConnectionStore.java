@@ -81,7 +81,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * kept by a rewrite. The YAML writer cannot write a scalar tag, so while an
  * entry to be written holds an explicit tag that disagrees with its plain text
  * ({@code environment: !!float 2}), writes refuse and name the entry rather
- * than change how it binds.
+ * than change how it binds. A number with a leading zero, which YAML reads as
+ * octal and the writer would quote, is written as its field's bound value in a
+ * readable entry, and refused where its type is unknown.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -201,7 +203,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             List<Entry> entries = readAll().entries;
             ObjectNode known = mapper.valueToTree(record);
             List<JsonNode> nodes = new ArrayList<>();
-            List<String> droppedTags = new ArrayList<>();
+            List<String> refusals = new ArrayList<>();
             boolean placed = false;
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
@@ -214,13 +216,13 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                 } else {
                     continue;
                 }
-                nodes.add(node);
-                noteDroppedTag(droppedTags, index, entry, node);
+                // The saved entry's known fields come from the saved record; an untouched entry's from its own.
+                nodes.add(prepare(index, entry, node, node == entry.node ? entry.record() : record, refusals));
             }
             if (!placed) {
                 nodes.add(known);
             }
-            refuseDroppedTags(droppedTags);
+            refuseUnwritable(refusals);
             writeAll(nodes);
         } finally {
             lock.writeLock().unlock();
@@ -238,18 +240,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         try {
             List<Entry> entries = readAll().entries;
             List<JsonNode> kept = new ArrayList<>();
-            List<String> droppedTags = new ArrayList<>();
+            List<String> refusals = new ArrayList<>();
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
                 if (!entry.hasKey(payerId, environment)) {
-                    kept.add(entry.node);
-                    noteDroppedTag(droppedTags, index, entry, entry.node);
+                    kept.add(prepare(index, entry, entry.node, entry.record(), refusals));
                 }
             }
             // No match: leave the file alone, so a no-op delete neither creates it nor
             // risks a refused replace on Windows.
             if (kept.size() != entries.size()) {
-                refuseDroppedTags(droppedTags);
+                refuseUnwritable(refusals);
                 writeAll(kept);
             }
         } finally {
@@ -257,26 +258,53 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /** Notes the entry if the node it would be written as holds a YAML tag the rewrite would drop. */
-    private static void noteDroppedTag(List<String> droppedTags, int index, Entry entry, JsonNode node) {
-        String field = StoredYaml.droppedTagPath(node, "");
-        if (field != null) {
-            droppedTags.add("entry " + index + " (payerId=" + entry.payerId() + " environment="
-                    + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), field " + field);
+    /**
+     * The node to write for one entry. The YAML generator cannot write every scalar back as it was read
+     * (#231), so a value it would change is handled before anything is written:
+     * <ul>
+     *   <li>an explicit tag that disagrees with its plain text ({@code environment: !!float 2}, which would
+     *   come back as the readable {@code 2}) is refused (owner decision on #238);</li>
+     *   <li>a number with a leading zero ({@code environment: 02}, octal 2; {@code lastVerifiedAt: 010},
+     *   octal 8), which would come back quoted, as a string, is written as the field's bound value when it is
+     *   a known field of a readable entry, the same value the store wrote before #231, so it binds as before;
+     *   anywhere else its type is unknown and it is refused.</li>
+     * </ul>
+     * A refusal is noted by position, key and field, never by value.
+     */
+    private JsonNode prepare(int index, Entry entry, JsonNode node, ConnectionRecord record, List<String> refusals) {
+        String tagged = StoredYaml.droppedTagPath(node, "");
+        if (tagged != null) {
+            refusals.add(where(index, entry, tagged) + " (an explicit YAML tag that disagrees with its plain text)");
+            return node;
         }
+        List<String> unkept = StoredYaml.unkeptPaths(node);
+        if (unkept.isEmpty()) {
+            return node;
+        }
+        ObjectNode bound = record == null ? null : mapper.valueToTree(record);
+        ObjectNode fixed = bound == null ? null : ((ObjectNode) node).deepCopy();
+        for (String path : unkept) {
+            String field = path.split("[.\\[]", 2)[0];
+            if (bound != null && bound.has(field)) {
+                fixed.set(field, bound.get(field));
+            } else {
+                refusals.add(where(index, entry, path) + " (a number with a leading zero, whose type is unknown here)");
+            }
+        }
+        return fixed == null ? node : fixed;
     }
 
-    /**
-     * The YAML generator writes no scalar tag, so a rewrite would drop an explicit tag that disagrees with
-     * its plain text and change how the entry binds: {@code environment: !!float 2} (no enum index) would
-     * come back as {@code environment: 2}, which binds as {@code PRODUCTION}. Writes refuse, before anything
-     * is written, and name each such entry by position, key and field, never by value (#231, owner decision).
-     */
-    private void refuseDroppedTags(List<String> droppedTags) {
-        if (!droppedTags.isEmpty()) {
-            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite would drop an"
-                    + " explicit YAML tag that disagrees with its value's plain text, and change how the entry binds: "
-                    + String.join("; ", droppedTags) + ". Edit the tag out of the file by hand first.");
+    private static String where(int index, Entry entry, String field) {
+        return "entry " + index + " (payerId=" + entry.payerId() + " environment="
+                + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), field " + field;
+    }
+
+    /** Refuses the write, before anything is written, when an entry holds a value it cannot write back. */
+    private void refuseUnwritable(List<String> refusals) {
+        if (!refusals.isEmpty()) {
+            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite cannot write"
+                    + " these values back as they were read, and would change how the entry binds: "
+                    + String.join("; ", refusals) + ". Edit them in the file by hand first.");
         }
     }
 
@@ -366,7 +394,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             ConnectionRecord record = bound.get(index).value();
             if (record != null) {
                 records.add(record);
-                entries.add(new Entry(node, record.payerId(), record.environment()));
+                entries.add(new Entry(node, record.payerId(), record.environment(), record));
                 continue;
             }
             if (payerIds == null) {
@@ -379,7 +407,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             InvalidEntry entry = new InvalidEntry(index, payerId == null ? null : payerId.payerId(),
                     environment == null ? null : environment.environment(), bound.get(index).problem());
             invalid.add(entry);
-            entries.add(new Entry(node, entry.payerId(), entry.environment()));
+            entries.add(new Entry(node, entry.payerId(), entry.environment(), null));
         }
         return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid));
     }
@@ -500,10 +528,10 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     }
 
     /**
-     * One item of the stored list: its node as read, never modified, and its key, which is null where
-     * this version cannot read it.
+     * One item of the stored list: its node as read, never modified, its key, which is null where this
+     * version cannot read it, and the record it binds to, or null when it does not bind.
      */
-    private record Entry(JsonNode node, String payerId, Environment environment) {
+    private record Entry(JsonNode node, String payerId, Environment environment, ConnectionRecord record) {
         boolean hasKey(String otherPayerId, Environment otherEnvironment) {
             // A null payerId or environment matched nothing before #231 and must not throw, nor match an entry
             // whose payerId or environment this version cannot read.

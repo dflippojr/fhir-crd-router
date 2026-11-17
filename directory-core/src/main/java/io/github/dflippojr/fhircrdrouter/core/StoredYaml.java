@@ -16,6 +16,9 @@ import com.fasterxml.jackson.databind.node.ValueNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
+import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -70,7 +73,8 @@ final class StoredYaml {
             }
             case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE -> {
                 String text = p.getText();
-                return new PlainScalar(token, text, p.getTypeId() != null && impliedToken(text) != token);
+                return new PlainScalar(token, text, p.getTypeId() != null && impliedToken(text) != token,
+                        writtenBackAsRead(token, text));
             }
             case VALUE_EMBEDDED_OBJECT -> {
                 // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
@@ -91,6 +95,50 @@ final class StoredYaml {
     }
 
     private static final YAMLFactory PLAIN = new YAMLFactory();
+
+    /**
+     * Whether the generator writes this number or boolean so that it reads back as the same token and text.
+     * It does not for a number with a leading zero: YAML reads {@code 010} as the octal 8, and the generator
+     * writes it back quoted, as the string {@code '010'}.
+     */
+    private static boolean writtenBackAsRead(JsonToken token, String text) throws IOException {
+        StringWriter out = new StringWriter();
+        try (JsonGenerator g = PLAIN.createGenerator(out)) {
+            g.writeStartArray();
+            g.writeNumber(text);
+            g.writeEndArray();
+        }
+        try (JsonParser p = PLAIN.createParser(out.toString())) {
+            p.nextToken();
+            return p.nextToken() == token && text.equals(p.getText());
+        }
+    }
+
+    /**
+     * The paths in this node of numbers or booleans the generator would not write back as read, other than
+     * those with a disagreeing tag ({@link #droppedTagPath}), in document order.
+     */
+    static List<String> unkeptPaths(JsonNode node) {
+        List<String> paths = new ArrayList<>();
+        collectUnkept(node, "", paths);
+        return paths;
+    }
+
+    private static void collectUnkept(JsonNode node, String path, List<String> paths) {
+        if (node instanceof PlainScalar plain) {
+            if (!plain.tagDisagrees && !plain.writtenAsRead) {
+                paths.add(path);
+            }
+        } else if (node.isObject()) {
+            for (Map.Entry<String, JsonNode> field : node.properties()) {
+                collectUnkept(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey(), paths);
+            }
+        } else {
+            for (int i = 0; i < node.size(); i++) {
+                collectUnkept(node.get(i), path + "[" + i + "]", paths);
+            }
+        }
+    }
 
     /**
      * Where in this node a rewrite would drop a tag that disagrees with its plain text (a field name, with
@@ -123,9 +171,9 @@ final class StoredYaml {
      *
      * <p>The generator writes no scalar tag, so a tag that disagrees with the plain text ({@code !!float 1},
      * whose text alone reads as an integer) would be lost; such a node is marked, and the store refuses to
-     * write it (#231). It also quotes a number with a leading zero, so {@code 007} comes back as the string
-     * {@code '007'}, which binds as before: a string field gets the same text, and a number field the same
-     * value.
+     * write it (#231). It also quotes a number with a leading zero, so {@code 010} (octal 8) would come back
+     * as the string {@code '010'}; such a node is marked too, and the store writes the field's bound value
+     * instead, or refuses where it has none.
      */
     static final class PlainScalar extends ValueNode {
         private static final long serialVersionUID = 1L;
@@ -133,15 +181,17 @@ final class StoredYaml {
         private final JsonToken token;
         private final String text;
         private final boolean tagDisagrees;
+        private final boolean writtenAsRead;
 
         PlainScalar(JsonToken token, String text) {
-            this(token, text, false);
+            this(token, text, false, true);
         }
 
-        PlainScalar(JsonToken token, String text, boolean tagDisagrees) {
+        PlainScalar(JsonToken token, String text, boolean tagDisagrees, boolean writtenAsRead) {
             this.token = token;
             this.text = text;
             this.tagDisagrees = tagDisagrees;
+            this.writtenAsRead = writtenAsRead;
         }
 
         @Override

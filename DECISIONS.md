@@ -501,9 +501,17 @@ never fail the whole catalog for one entry.
   while items were bound from the tree.)
 - **Known limit: YAML tags and leading zeros.** Jackson's YAML generator
   writes no scalar tag and quotes a number with a leading zero.
-  - A leading zero keeps its spelling: `007` comes back as `'007'`, which
-    binds the same into string and number fields, though its YAML type
-    changes. Writes go ahead.
+  - YAML reads a number with a leading zero as octal (`environment: 02` is
+    2, `lastVerifiedAt: 010` is 8), and the generator writes it back
+    quoted, as a string, which binds differently (`"02"` is no environment,
+    `"010"` is epoch second 10). In a known field of a readable entry the
+    rewrite writes the field's bound value instead (`PRODUCTION`, the
+    instant), the value the store wrote before #231, so the entry binds as
+    before. Anywhere else (an unreadable entry, or a field this version does
+    not know) its type is unknown, and the write refuses like a disagreeing
+    tag. Each scalar is checked by writing it through the generator and
+    reading it back, so any other value the generator would change is caught
+    the same way. (Migration review on #238.)
   - An explicit tag that disagrees with its value's plain text cannot be
     kept. `environment: !!float 2` does not bind (a float is no enum index),
     but its rewrite `environment: 2` would bind as `PRODUCTION`. `save` and
