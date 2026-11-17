@@ -524,8 +524,12 @@ never fail the whole catalog for one entry.
     on it would only block what Jackson happens to show. A tag or anchor on
     a key makes that key's value unwritable. A tag or anchor on the list
     itself, or a second YAML document (never read, so a rewrite would drop
-    it), refuses writes for the whole file. So do events that do not match
-    the tree the store read. Reads never depend on the check.
+    it), refuses writes for the whole file. A first document that is null
+    (`null`, `~` or an empty `---`) holds no records, but a document after
+    it refuses writes the same way (migration review 4: a save had replaced
+    the file and erased it). A file with one such document, or none, stays
+    writable. Events that do not match the tree the store read refuse the
+    whole file too. Reads never depend on the check.
   - YAML reads a number with a leading zero as octal (`environment: 02` is
     2, `lastVerifiedAt: 010` is 8), and the generator writes it back
     quoted, as a string, which binds differently (`"02"` is no environment,

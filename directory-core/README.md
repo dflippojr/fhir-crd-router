@@ -82,7 +82,8 @@ YAML tree: an anchor, an alias, any explicit tag (`environment: !!float 2`,
 `!!str 3`, a newer version's type id `!<limit>`) or a duplicate key. The
 writer cannot keep any of them, and losing one can change how the entry binds
 or leave a newer reader unable to read it. A tag or anchor on the list itself,
-or a second YAML document, refuses writes for the whole file. A number with a
+or a second YAML document (even after an empty or `null` first one), refuses
+writes for the whole file. A number with a
 leading zero (`environment: 02`, read as octal 2) is written as its field's
 value in a readable entry, so it binds as before, and refused where its type is
 unknown (an unreadable entry, or an unknown field). Saving over the affected

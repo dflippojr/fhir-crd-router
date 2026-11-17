@@ -85,8 +85,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * ({@code environment: !!float 2} would become the readable {@code 2}) or
  * break a newer reader (a {@code @JsonIdentityInfo} alias would become a
  * string). While an entry to be written holds one, writes refuse and name the
- * entry and field; a tag on the list itself, or a second YAML document, refuses
- * them for the whole file. A number with a leading zero, which YAML reads as
+ * entry and field; a tag on the list itself, or a second YAML document (also after a null
+ * first one), refuses them for the whole file. A number with a leading zero, which YAML reads as
  * octal and the writer would quote, is written as its field's bound value in a
  * readable entry, and refused where its type is unknown.
  *
@@ -372,11 +372,15 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      */
     private Snapshot parse(byte[] bytes) throws IOException {
         // The tree is what a rewrite writes back; StoredYaml keeps each unquoted scalar as it was spelled.
-        StoredYaml.Document document = hasContent(bytes) ? mapper.readValue(bytes, StoredYaml.Document.class) : null;
+        if (!hasContent(bytes)) {
+            return bind(bytes, List.of(), null); // blanks and comments only: no document at all
+        }
+        StoredYaml.Document document = mapper.readValue(bytes, StoredYaml.Document.class);
         // A null document (null, ~) never reaches the deserializer: readValue answers it as null.
         JsonNode root = document == null ? null : document.root();
         if (root == null) {
-            return bind(bytes, List.of(), null);
+            // No records, but a save replaces the whole file: a document after this one still refuses it.
+            return bind(bytes, List.of(), StoredYaml.allowlist(null, bytes));
         }
         if (!root.isArray()) {
             throw new IOException("expected a YAML list of connection records, found " + root.getNodeType());

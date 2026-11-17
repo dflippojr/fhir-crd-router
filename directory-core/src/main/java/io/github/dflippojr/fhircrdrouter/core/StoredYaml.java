@@ -117,6 +117,9 @@ final class StoredYaml {
      * anchor and no tag, and no mapping repeats a key. An alias, or anything else, makes the value holding it
      * unwritable; a tag or anchor on a key makes that key's value unwritable. The store has already read
      * {@code root} as the file's list; should the events ever not match it, the whole document is refused.
+     *
+     * <p>{@code root} is null where the store read the first document as null ({@code null}, {@code ~} or an
+     * empty document): it holds no entry, and a write replaces it whole, but a document after it is still refused.
      */
     static String allowlist(ArrayNode root, byte[] bytes) {
         try {
@@ -124,12 +127,17 @@ final class StoredYaml {
                     new StreamReader(new UnicodeReader(new ByteArrayInputStream(bytes))), new LoaderOptions());
             events.getEvent(); // stream start
             events.getEvent(); // document start
-            String reason = notPlain((SequenceStartEvent) events.getEvent()); // the store has read a list
+            String reason = null;
             List<Found> found = new ArrayList<>();
-            for (int index = 0; !events.checkEvent(Event.ID.SequenceEnd); index++) {
-                walk(events, List.of(index), found);
+            if (root == null) {
+                events.getEvent(); // the null the store read: nothing of it is written back
+            } else {
+                reason = notPlain((SequenceStartEvent) events.getEvent()); // the store has read a list
+                for (int index = 0; !events.checkEvent(Event.ID.SequenceEnd); index++) {
+                    walk(events, List.of(index), found);
+                }
+                events.getEvent(); // sequence end
             }
-            events.getEvent(); // sequence end
             events.getEvent(); // document end
             if (reason == null && !events.checkEvent(Event.ID.StreamEnd)) {
                 reason = "a second YAML document"; // never read, so a rewrite would drop it
