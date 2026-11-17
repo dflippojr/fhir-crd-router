@@ -286,8 +286,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      * still fails as a whole.
      */
     private Snapshot parse(byte[] bytes) throws IOException {
-        JsonNode root = hasContent(bytes) ? mapper.readValue(bytes, JsonNode.class) : null;
-        if (root == null || root.isNull()) {
+        // StoredYaml keeps each unquoted scalar as it was spelled, for binding and for the rewrite.
+        StoredYaml.Document document = hasContent(bytes) ? mapper.readValue(bytes, StoredYaml.Document.class) : null;
+        // A null document (null, ~) never reaches the deserializer: readValue answers it as null.
+        JsonNode root = document == null ? null : document.root();
+        if (root == null) {
             return bind(bytes, List.of());
         }
         if (!root.isArray()) {
@@ -307,7 +310,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             JsonNode node = nodes.get(index);
             String problem;
             try {
-                ConnectionRecord record = mapper.treeToValue(node, ConnectionRecord.class);
+                ConnectionRecord record = mapper.treeToValue(StoredYaml.forBinding(node), ConnectionRecord.class);
                 if (record != null) {
                     records.add(record);
                     entries.add(new Entry(node, record.payerId(), record.environment()));
@@ -344,7 +347,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             return null;
         }
         try {
-            return mapper.treeToValue(value, type);
+            return mapper.treeToValue(StoredYaml.forBinding(value), type);
         } catch (JsonProcessingException | IllegalArgumentException e) {
             return null;
         }

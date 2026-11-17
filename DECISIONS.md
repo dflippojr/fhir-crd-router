@@ -487,6 +487,12 @@ never fail the whole catalog for one entry.
   binding's own rules, so `environment: 2` is `PRODUCTION` there too. A null
   payerId or environment argument matches nothing, as before. A file that is not YAML, or not a list, still
   fails as a whole.
+- **Scalars keep their spelling.** Jackson's own tree turns a YAML plain
+  scalar into a number or boolean, so `payerId: 1.10` would read as `1.1`
+  and a rewrite would store the changed value. The typed binding read it as
+  the text `"1.10"`. `StoredYaml` builds the tree instead: a plain number or
+  boolean keeps its text, is bound as that text, and is written back
+  unquoted as it was read.
 - **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
   for an invalid entry's key, and `findByPayerId` for its payer, throw
   `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`

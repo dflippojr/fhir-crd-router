@@ -397,6 +397,46 @@ class InvalidEntryIsolationTest {
         assertArrayEquals(before, Files.readAllBytes(file));
     }
 
+    /**
+     * An unquoted YAML scalar keeps its spelling, as the typed binding before #231 kept it: {@code 1.10} is the
+     * payerId "1.10", not 1.1, and {@code 007} is "007". A rewrite writes a plain number or boolean back as
+     * it was spelled, in an untouched entry, an unknown field and a known one alike.
+     */
+    @Test
+    void unquotedScalarsKeepTheirSpelling(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: 1.10
+                  environment: "PRODUCTION"
+                  baseUrl: "https://ok.example/r4"
+                  authType: "NONE"
+                  igVersion: 2.10
+                - payerId: 007
+                  environment: 2
+                  baseUrl: "https://bad.example/r4"
+                  authType: "NONE"
+                  futureRatio: 1.50
+                  futureFlag: yes
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals("2.10", store.findByPayerIdAndEnvironment("1.10", Environment.PRODUCTION).orElseThrow().igVersion());
+        assertEquals(List.of(new FileBasedConnectionStore.InvalidEntry(1, "007", Environment.PRODUCTION,
+                "UnrecognizedPropertyException")), store.invalidEntries());
+
+        store.save(recordFor("PAYER-NEW").build());
+
+        String written = Files.readString(file);
+        for (String kept : List.of("payerId: 1.10", "igVersion: 2.10", "environment: 2",
+                "futureRatio: 1.50", "futureFlag: yes")) {
+            assertTrue(written.contains(kept), kept + " not in\n" + written);
+        }
+        FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
+        assertEquals("2.10", reread.findByPayerIdAndEnvironment("1.10", Environment.PRODUCTION).orElseThrow().igVersion());
+        // The YAML parser reads 007 as a string, which the rewrite may quote; the value is what must survive.
+        assertEquals("007", reread.invalidEntries().get(0).payerId());
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {
