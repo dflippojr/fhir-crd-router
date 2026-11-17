@@ -484,7 +484,10 @@ never fail the whole catalog for one entry.
   its own. A node that does not bind becomes an `InvalidEntry` (index,
   payerId and environment where readable, and the problem class: the simple
   name of the root exception). The payerId and environment are read with the
-  binding's own rules, so `environment: 2` is `PRODUCTION` there too. A null
+  binding's own rules, so `environment: 2` is `PRODUCTION` there too. A key
+  field written twice takes its last value there as well, as the record
+  binding does (automated review at `dd5c066`: a one-property creator had
+  failed on the repeat and lost the key, so the entry read as absent). A null
   payerId or environment argument matches nothing, as before. A file that is not YAML, or not a list, still
   fails as a whole.
 - **Bind from the parser, write from a tree.** Each list item is bound

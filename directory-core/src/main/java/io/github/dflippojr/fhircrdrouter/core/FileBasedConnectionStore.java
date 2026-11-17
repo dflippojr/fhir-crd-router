@@ -1,5 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.JsonStreamContext;
@@ -424,8 +425,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             }
             PayerIdField payerId = payerIds.get(index).value();
             EnvironmentField environment = environments.get(index).value();
-            InvalidEntry entry = new InvalidEntry(index, payerId == null ? null : payerId.payerId(),
-                    environment == null ? null : environment.environment(), bound.get(index).problem());
+            InvalidEntry entry = new InvalidEntry(index, payerId == null ? null : payerId.payerId,
+                    environment == null ? null : environment.environment, bound.get(index).problem());
             invalid.add(entry);
             entries.add(new Entry(node, entry.payerId(), entry.environment(), null));
         }
@@ -439,10 +440,20 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     /** What one list item bound to, or the simple class name of the root exception that stopped it. */
     private record Bound<T>(T value, String problem) { }
 
-    /** One key field of an entry, bound alone so a broken environment cannot hide a readable payerId. */
-    private record PayerIdField(String payerId) { }
+    /**
+     * One key field of an entry, bound alone so a broken environment cannot hide a readable payerId. Bound to a
+     * field, not through a creator: a key written twice takes its last value, as {@link ConnectionRecord} does,
+     * where a one-property creator would be built on the first and fail on the second, losing the key.
+     */
+    private static final class PayerIdField {
+        @JsonProperty("payerId")
+        private String payerId;
+    }
 
-    private record EnvironmentField(Environment environment) { }
+    private static final class EnvironmentField {
+        @JsonProperty("environment")
+        private Environment environment;
+    }
 
     /**
      * Binds each item of the file's top-level list with {@code reader}, on the YAML parser. After an item

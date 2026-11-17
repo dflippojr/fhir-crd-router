@@ -163,6 +163,32 @@ class InvalidEntryIsolationTest {
         assertEquals("https://ok.example/r4", new PayerRouter(reread).resolve("PAYER-OK", Environment.PRODUCTION).baseUrl());
     }
 
+    /**
+     * A key field written twice with different values takes the last, as {@link ConnectionRecord} binds it when the
+     * entry is readable, so a repaired entry keeps the key its invalid version was listed under.
+     */
+    @Test
+    void aKeyFieldWrittenTwiceWithDifferentValuesTakesTheLastAsTheRecordDoes(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        String entry = """
+                - payerId: "PAYER-FIRST"
+                  environment: "SANDBOX"
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "OAUTH2_CLIENT_CREDENTIALS"
+                  tokenEndpoint: "https://sentinel-token.example/token"
+                  payerId: "PAYER-BAD"
+                  environment: "PRODUCTION"
+                """;
+        Files.writeString(file, entry + OK_ENTRY);
+
+        FileBasedConnectionStore.InvalidEntry invalid = new FileBasedConnectionStore(file).invalidEntries().get(0);
+        Files.writeString(file, entry + "  clientId: \"client\"\n");
+        ConnectionRecord repaired = new FileBasedConnectionStore(file).findAll().get(0);
+
+        assertEquals(List.of("PAYER-BAD", Environment.PRODUCTION), List.of(invalid.payerId(), invalid.environment()));
+        assertEquals(List.of("PAYER-BAD", Environment.PRODUCTION), List.of(repaired.payerId(), repaired.environment()));
+    }
+
     @ParameterizedTest
     @EnumSource(Bad.class)
     void findByPayerIdOfTheInvalidPayerThrows(Bad bad, @TempDir Path dir) throws Exception {
