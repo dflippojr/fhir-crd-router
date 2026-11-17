@@ -458,6 +458,62 @@ class InvalidEntryIsolationTest {
         assertEquals(before.get(0), after.get(0));
     }
 
+    /**
+     * A plain number binds as the typed binding bound it: as a number for an enum or time field
+     * ({@code environment: +2} is {@code PRODUCTION}) and as its spelling for a string field.
+     */
+    @Test
+    void aSignedNumberBindsAsANumberAndAsText(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: +2
+                  environment: +2
+                  baseUrl: "https://ok.example/r4"
+                  authType: "NONE"
+                  lastVerifiedAt: 5
+                  igVersion: 99999999999999999999
+                - payerId: "PAYER-BAD"
+                  environment: +2
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "OAUTH2_CLIENT_CREDENTIALS"
+                  tokenEndpoint: "https://sentinel-token.example/token"
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        ConnectionRecord ok = store.findByPayerIdAndEnvironment("+2", Environment.PRODUCTION).orElseThrow();
+        assertEquals(java.time.Instant.ofEpochSecond(5), ok.lastVerifiedAt());
+        assertEquals("99999999999999999999", ok.igVersion());
+        InvalidConnectionRecordException e = assertThrows(InvalidConnectionRecordException.class,
+                () -> store.findByPayerIdAndEnvironment("PAYER-BAD", Environment.PRODUCTION));
+        assertEquals("IllegalArgumentException", e.problem());
+    }
+
+    /**
+     * The YAML generator writes no scalar tag, so a tagged number whose text would read back as another
+     * type ({@code !!float 1} as an integer) is written in a form that reads back as the same value.
+     */
+    @Test
+    void aTaggedNumberKeepsItsTypeThroughARewrite(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-BAD"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://bad.example/r4"
+                  authType: "NONE"
+                  futureFloat: !!float 1
+                  futureInt: !!int 7
+                  futureText: !!str 3
+                """ + OK_ENTRY);
+        JsonNode before = nodes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-NEW").build());
+
+        JsonNode after = nodes(file);
+        assertTrue(before.get(0).get("futureFloat").isFloatingPointNumber());
+        assertEquals(before.get(0), after.get(0));
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {

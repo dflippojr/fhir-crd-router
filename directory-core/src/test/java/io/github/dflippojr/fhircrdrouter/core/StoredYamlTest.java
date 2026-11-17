@@ -35,7 +35,7 @@ class StoredYamlTest {
                 list: [1.0, off]
                 """);
 
-        assertEquals(new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "010"), root.get("int"));
+        assertEquals(new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "010", 10), root.get("int"));
         assertEquals(JsonNodeType.NUMBER, root.get("float").getNodeType());
         assertEquals(JsonToken.VALUE_NUMBER_FLOAT, root.get("float").asToken());
         assertEquals("1.10", root.get("float").asText());
@@ -50,18 +50,42 @@ class StoredYamlTest {
     void bindingSeesTheTextAndTheRewriteWritesItBackUnquoted() throws Exception {
         JsonNode root = read("a: 1.10\nb: [yes, 2]\nc: null\n");
 
-        assertEquals(YAML.readTree("a: '1.10'\nb: ['yes', '2']\nc: null\n"), StoredYaml.forBinding(root));
+        JsonNode binding = StoredYaml.forBinding(root);
+        assertTrue(binding.get("a").isDouble());
+        assertEquals("1.10", binding.get("a").numberValue().toString());
+        assertEquals(new TextNode("yes"), binding.get("b").get(0));
+        assertEquals(2, binding.get("b").get(1).intValue());
+        assertEquals("2", binding.get("b").get(1).numberValue().toString());
+        assertTrue(binding.get("c").isNull());
         assertEquals("---\na: 1.10\nb:\n- yes\n- 2\nc: null\n", YAML.writeValueAsString(root));
     }
 
     @Test
-    void plainScalarEqualityIsByKindAndText() {
-        StoredYaml.PlainScalar one = new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1");
+    void aSpelledNumberIsItsValueWithItsSpelling() {
+        Number n = new StoredYaml.SpelledNumber("+2.50", 2.5);
 
-        assertEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1"));
-        assertEquals(one.hashCode(), new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1").hashCode());
-        assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_FLOAT, "1"));
-        assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "01"));
+        assertEquals("+2.50", n.toString());
+        assertEquals(2, n.intValue());
+        assertEquals(2L, n.longValue());
+        assertEquals(2.5f, n.floatValue());
+        assertEquals(2.5, n.doubleValue());
+    }
+
+    @Test
+    void aTaggedScalarIsWrittenSoItReadsBackAsTheSameType() throws Exception {
+        JsonNode root = read("f: !!float 1\ng: !!float 1.5\nb: !!bool true\n");
+
+        assertEquals("---\nf: 1.0\ng: 1.5\nb: true\n", YAML.writeValueAsString(root));
+    }
+
+    @Test
+    void plainScalarEqualityIsByKindAndText() {
+        StoredYaml.PlainScalar one = new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1", 1);
+
+        assertEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1", 1));
+        assertEquals(one.hashCode(), new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "1", 1).hashCode());
+        assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_FLOAT, "1", 1.0));
+        assertNotEquals(one, new StoredYaml.PlainScalar(JsonToken.VALUE_NUMBER_INT, "01", 1));
         assertFalse(one.equals(new TextNode("1")));
     }
 }

@@ -9,12 +9,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BigIntegerNode;
+import com.fasterxml.jackson.databind.node.DoubleNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.JsonNodeType;
+import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ValueNode;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.util.Map;
 import java.util.Objects;
 
@@ -68,8 +73,11 @@ final class StoredYaml {
             case VALUE_NULL -> {
                 return NODES.nullNode();
             }
-            case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE -> {
-                return new PlainScalar(token, p.getText());
+            case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT -> {
+                return new PlainScalar(token, writtenText(p), p.getNumberValue());
+            }
+            case VALUE_TRUE, VALUE_FALSE -> {
+                return new PlainScalar(token, writtenText(p), null);
             }
             case VALUE_EMBEDDED_OBJECT -> {
                 // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
@@ -82,13 +90,38 @@ final class StoredYaml {
     }
 
     /**
-     * The node to bind: a copy with every {@link PlainScalar} as a text node, so a string field gets the
-     * scalar's spelling, as the typed binding gave it. Enum and time fields accept the text as they
-     * accepted the number ({@code environment: 2} is still {@code PRODUCTION}).
+     * The text to write back for the current number or boolean: its spelling, unless an explicit tag made
+     * it a type its plain text would not read back as ({@code !!float 1} would read back as an integer).
+     * The YAML generator writes no scalar tag, so such a value is written in its canonical form instead,
+     * which keeps its type and value.
+     */
+    private static String writtenText(JsonParser p) throws IOException {
+        String text = p.getText();
+        if (p.getTypeId() == null || impliedToken(text) == p.currentToken()) {
+            return text;
+        }
+        return p.currentToken().isNumeric() ? String.valueOf(p.getNumberValue()) : String.valueOf(p.getBooleanValue());
+    }
+
+    /** The token YAML infers for a plain scalar with this text and no tag. */
+    private static JsonToken impliedToken(String text) throws IOException {
+        try (JsonParser plain = PLAIN.createParser("- " + text)) {
+            plain.nextToken();
+            return plain.nextToken();
+        }
+    }
+
+    private static final YAMLFactory PLAIN = new YAMLFactory();
+
+    /**
+     * The node to bind. A plain number binds as the typed binding bound it: as its number for an enum or
+     * time field ({@code environment: +2} is {@code PRODUCTION}) and as its spelling for a string field
+     * ({@code payerId: 1.10} is "1.10"), through a numeric node whose number prints as the spelling. A
+     * plain boolean binds as its spelling.
      */
     static JsonNode forBinding(JsonNode node) {
         if (node instanceof PlainScalar plain) {
-            return NODES.textNode(plain.text);
+            return plain.forBinding();
         }
         if (node.isObject()) {
             ObjectNode copy = NODES.objectNode();
@@ -105,16 +138,88 @@ final class StoredYaml {
         return node;
     }
 
+    /**
+     * A number whose {@link #toString()} is the YAML spelling: Jackson binds a string field from a numeric
+     * node through its number's text, so this gives it the spelling, as the typed binding did.
+     */
+    static final class SpelledNumber extends Number {
+        private static final long serialVersionUID = 1L;
+
+        private final String text;
+        private final Number value;
+
+        SpelledNumber(String text, Number value) {
+            this.text = text;
+            this.value = value;
+        }
+
+        @Override
+        public int intValue() {
+            return value.intValue();
+        }
+
+        @Override
+        public long longValue() {
+            return value.longValue();
+        }
+
+        @Override
+        public float floatValue() {
+            return value.floatValue();
+        }
+
+        @Override
+        public double doubleValue() {
+            return value.doubleValue();
+        }
+
+        @Override
+        public String toString() {
+            return text;
+        }
+    }
+
     /** A YAML plain number or boolean, kept as its text and written back unquoted as it was read. */
     static final class PlainScalar extends ValueNode {
         private static final long serialVersionUID = 1L;
 
         private final JsonToken token;
         private final String text;
+        private final transient Number value;
 
-        PlainScalar(JsonToken token, String text) {
+        PlainScalar(JsonToken token, String text, Number value) {
             this.token = token;
             this.text = text;
+            this.value = value;
+        }
+
+        private JsonNode forBinding() {
+            Number spelled = value == null ? null : new SpelledNumber(text, value);
+            if (spelled == null) {
+                return NODES.textNode(text);
+            }
+            if (value instanceof BigInteger big) {
+                return new BigIntegerNode(big) {
+                    @Override
+                    public Number numberValue() {
+                        return spelled;
+                    }
+                };
+            }
+            if (token == JsonToken.VALUE_NUMBER_INT) {
+                return new LongNode(value.longValue()) {
+                    @Override
+                    public Number numberValue() {
+                        return spelled;
+                    }
+                };
+            }
+            return new DoubleNode(value.doubleValue()) {
+                @Override
+                public Number numberValue() {
+                    return spelled;
+                }
+            };
         }
 
         @Override
