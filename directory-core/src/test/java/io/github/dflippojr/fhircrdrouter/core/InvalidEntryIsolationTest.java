@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -641,6 +642,37 @@ class InvalidEntryIsolationTest {
                     e.getMessage());
             assertNoSentinel(e);
         }
+        assertArrayEquals(bytes, Files.readAllBytes(file));
+    }
+
+    /**
+     * Migration review 5: a property name may itself hold {@code .} or {@code [}. An unknown {@code status.future:
+     * 010} is not the known {@code status}, so a save over its entry must not take the bound value of {@code status}
+     * as its type: the type is unknown and the save refuses, with the bytes unchanged. Before the fix the save went
+     * ahead and wrote {@code '010'}, so a newer reader of {@code status.future} went from 8 to 10.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"status.future", "status[0]", "environment.next", "environment[1]", "'status.future'"})
+    void aLeadingZeroUnderAnUnknownNameThatLooksLikeAPathRefusesASaveOverItsEntry(String name, @TempDir Path dir)
+            throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://a.example/r4"
+                  authType: "NONE"
+                  status: "ACTIVE"
+                """ + "  " + name + ": 010\n");
+        byte[] bytes = Files.readAllBytes(file);
+        String literal = name.replace("'", "");
+        assertEquals(8, new ObjectMapper(new YAMLFactory()).readTree(bytes).get(0).get(literal).asInt());
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        RouterException e = assertThrows(RouterException.class,
+                () -> store.save(recordFor("PAYER-A").baseUrl("https://a2.example/r4").build()));
+
+        assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-A environment=PRODUCTION), field \"" + literal
+                + "\" (a number with a leading zero, whose type is unknown here)"), e.getMessage());
         assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
