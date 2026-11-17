@@ -110,16 +110,25 @@ class NativeTypeIdRoundTripTest {
         assertEquals(List.of(before), List.of(NEWER.readValue(Files.readAllBytes(file), NewerConnection[].class)));
     }
 
-    /** YAML's own standard tags (!!map, !!seq, !!str) are not type ids; a rewrite goes ahead. */
+    /**
+     * YAML's own standard tags (!!map, !!seq, !!str) are not type ids, but they are explicit tags, which the
+     * rewrite cannot keep either: only a plain tree is written back (#231, owner decision: allowlist).
+     */
     @Test
-    void standardTagsDoNotRefuse(@TempDir Path dir) throws Exception {
+    void standardTagsRefuseToo(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("connections.yaml");
         Files.writeString(file, newerEntry("  futureMap: !!map {a: 1}\n  futureSeq: !!seq [1]\n  futureText: !!str x\n")
                 + OK_ENTRY);
+        byte[] bytes = Files.readAllBytes(file);
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
-        store.delete("PAYER-OK", Environment.PRODUCTION);
+        RouterException e = assertThrows(RouterException.class, () -> store.delete("PAYER-OK", Environment.PRODUCTION));
 
+        for (String field : List.of("futureMap", "futureSeq", "futureText")) {
+            assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-NEWER environment=PRODUCTION), field " + field),
+                    e.getMessage());
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(file));
         assertEquals(1, new FileBasedConnectionStore(file).invalidEntries().size());
     }
 

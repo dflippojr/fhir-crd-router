@@ -436,9 +436,12 @@ class InvalidEntryIsolationTest {
         assertEquals("7.50", reread.invalidEntries().get(0).payerId());
     }
 
-    /** A {@code !!binary} value in an untouched entry is still binary after a rewrite (compares parsed nodes). */
+    /**
+     * A {@code !!binary} value is read as binary, but it carries an explicit tag, which is outside the plain tree
+     * a rewrite may write back (#231, owner decision: allowlist): a save of another payer refuses, bytes unchanged.
+     */
     @Test
-    void aBinaryValueSurvivesARewrite(@TempDir Path dir) throws Exception {
+    void aBinaryValueRefusesARewrite(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("connections.yaml");
         Files.writeString(file, """
                 - payerId: "PAYER-BAD"
@@ -447,14 +450,15 @@ class InvalidEntryIsolationTest {
                   authType: "NONE"
                   futureBytes: !!binary AQI=
                 """ + OK_ENTRY);
-        JsonNode before = nodes(file);
+        byte[] bytes = Files.readAllBytes(file);
+        assertTrue(nodes(file).get(0).get("futureBytes").isBinary());
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
-        store.save(recordFor("PAYER-NEW").build());
+        RouterException e = assertThrows(RouterException.class, () -> store.save(recordFor("PAYER-NEW").build()));
 
-        JsonNode after = nodes(file);
-        assertTrue(before.get(0).get("futureBytes").isBinary());
-        assertEquals(before.get(0), after.get(0));
+        assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-BAD environment=PRODUCTION), field futureBytes"),
+                e.getMessage());
+        assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
     /**

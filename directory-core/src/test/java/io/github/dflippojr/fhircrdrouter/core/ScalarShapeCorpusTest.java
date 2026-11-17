@@ -42,7 +42,7 @@ class ScalarShapeCorpusTest {
     private static final List<String> SCALARS = List.of(
             "1.10", "+2", "-0", "007", "010", "0x1F", "0o17", "1e3", "1.5e3", ".5", ".nan", "-.inf", "99999999999999999999",
             "~", "null", "yes", "no", "on", "off", "y", "n", "true", "False",
-            "!!float 1", "!!int 7", "!!str 3", "!!bool yes", "!!null ''", "!!binary AQI=",
+            "!!float 1", "!!int 7", "!!str 3", "!!bool yes", "!!null ''", "!!binary AQI=", "! 3",
             "2026-01-01", "2026-01-01T10:00:00Z", "2026-01-01 10:00:00",
             "'single'", "\"double\"", "plain text", "\"\"", "''",
             "|\n    line one\n    line two", ">\n    folded\n    text", "|-\n    kept",
@@ -64,11 +64,14 @@ class ScalarShapeCorpusTest {
     private static final List<String> LEADING_ZERO = List.of("007", "010", "02", "002");
 
     /**
-     * Shapes with an explicit tag their plain text disagrees with. The generator writes no scalar tag, so a
-     * rewrite would change how the entry binds ({@code environment: !!float 2} would become the readable
-     * {@code 2}); writes refuse instead and leave the file as it was (#231, owner decision).
+     * Shapes outside the plain tree a rewrite may write back: an explicit tag, YAML's own included, or an anchor.
+     * The generator writes neither, so a rewrite could change how the entry binds ({@code environment: !!float 2}
+     * would become the readable {@code 2}); writes refuse instead and leave the file as it was (#231, owner
+     * decisions: option 3, then the allowlist).
      */
-    private static final List<String> TAG_WOULD_BE_DROPPED = List.of("!!float 1", "!!float 2");
+    private static final List<String> NOT_PLAIN = List.of(
+            "!!float 1", "!!int 7", "!!str 3", "!!bool yes", "!!null ''", "!!binary AQI=", "&anchor 1.10",
+            "!!str 5", "!!int 2", "!!str 2", "!!float 2", "! 3");
 
     static Stream<Arguments> shapes() {
         return Stream.of(
@@ -133,11 +136,8 @@ class ScalarShapeCorpusTest {
             assertEquals(List.of(expected), new FileBasedConnectionStore(file).findAll());
             return;
         }
-        if (TAG_WOULD_BE_DROPPED.contains(shape)) {
-            byte[] bytes = Files.readAllBytes(file);
-            assertThrows(RouterException.class, () -> store.save(ConnectionRecord.builder().payerId("PAYER-NEW")
-                    .environment(Environment.SANDBOX).baseUrl("https://new.example/r4").authType(AuthType.NONE).build()));
-            assertArrayEquals(bytes, Files.readAllBytes(file));
+        if (NOT_PLAIN.contains(shape)) {
+            assertRefuses(store, file);
             return;
         }
         JsonNode before = nodes(file);
@@ -165,9 +165,12 @@ class ScalarShapeCorpusTest {
         assertArrayEquals(bytes, Files.readAllBytes(file));
     }
 
-    /** An alias and a merge key read as the oracle read them, and a rewrite keeps what they resolved to. */
+    /**
+     * An anchor and its alias read as the oracle read them. Neither is in the plain tree a rewrite may write back,
+     * so a save of another payer refuses and leaves the bytes unchanged (#231, owner decision: allowlist).
+     */
     @Test
-    void anAliasAndAMergeKeyBindAsBeforeAndSurviveARewrite(@TempDir Path dir) throws Exception {
+    void anAnchorAndAnAliasBindAsBeforeAndRefuseARewrite(@TempDir Path dir) throws Exception {
         String yaml = """
                 - payerId: "PAYER-A"
                   environment: "PRODUCTION"
@@ -188,9 +191,7 @@ class ScalarShapeCorpusTest {
         FileBasedConnectionStore store = new FileBasedConnectionStore(file);
 
         assertEquals(expected, store.findAll());
-        store.save(ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.SANDBOX)
-                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build());
-
-        assertEquals(expected, new FileBasedConnectionStore(file).findAll().subList(0, 2));
+        assertRefuses(store, file);
+        assertEquals(expected, new FileBasedConnectionStore(file).findAll());
     }
 }
