@@ -1,5 +1,6 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -8,8 +9,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -144,6 +147,55 @@ class InvalidEntryIsolationTest {
         for (Environment environment : Environment.values()) {
             assertTrue(store.findByPayerIdAndEnvironment("PAYER-BAD", environment).isEmpty());
         }
+    }
+
+    /** Stage 1 of #231: a rewrite would drop the invalid entry, so writes refuse and leave the file as it was. */
+    @ParameterizedTest
+    @EnumSource(Bad.class)
+    void writesRefuseWhileAnInvalidEntryExistsAndLeaveTheBytesUnchanged(Bad bad, @TempDir Path dir) throws Exception {
+        Path file = storeWith(dir, bad);
+        byte[] before = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        ConnectionRecord other = ConnectionRecord.builder().payerId("PAYER-NEW").environment(Environment.PRODUCTION)
+                .baseUrl("https://new.example/r4").authType(AuthType.NONE).build();
+
+        RouterException onSave = assertThrows(RouterException.class, () -> store.save(other));
+        RouterException onDelete = assertThrows(RouterException.class,
+                () -> store.delete("PAYER-OK", Environment.PRODUCTION));
+
+        for (RouterException e : List.of(onSave, onDelete)) {
+            assertTrue(e.getMessage().contains("payerId=PAYER-BAD"), e.getMessage());
+            assertTrue(e.getMessage().contains(bad.problem), e.getMessage());
+            assertNoSentinel(e);
+        }
+        assertArrayEquals(before, Files.readAllBytes(file));
+    }
+
+    @Test
+    void aNullOrScalarListItemIsAnInvalidEntryWithNoKey(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, "-\n- \"SENTINEL-UNKNOWN-VALUE\"\n" + OK_ENTRY);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        assertEquals(List.of("PAYER-OK"), store.findAll().stream().map(ConnectionRecord::payerId).toList());
+        RouterException e = assertThrows(RouterException.class, () -> store.save(store.findAll().get(0)));
+        assertTrue(e.getMessage().contains("entry 0, NullEntry"), e.getMessage());
+        assertTrue(e.getMessage().contains("entry 1, MismatchedInputException"), e.getMessage());
+        assertNoSentinel(e);
+    }
+
+    /** The exception for a key carries the key and problem, for a caller that wants to tell this case apart. */
+    @Test
+    void theKeyExceptionExposesTheKeyAndProblem(@TempDir Path dir) throws Exception {
+        FileBasedConnectionStore store = new FileBasedConnectionStore(storeWith(dir, Bad.UNKNOWN_STATUS));
+
+        InvalidConnectionRecordException e = assertThrows(InvalidConnectionRecordException.class,
+                () -> store.findByPayerIdAndEnvironment("PAYER-BAD", Environment.PRODUCTION));
+
+        assertEquals("PAYER-BAD", e.payerId());
+        assertEquals(Environment.PRODUCTION, e.environment());
+        assertEquals("InvalidFormatException", e.problem());
+        assertNull(e.getCause());
     }
 
     static void assertNoSentinel(Throwable thrown) {
