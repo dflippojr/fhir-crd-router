@@ -537,7 +537,11 @@ never fail the whole catalog for one entry.
     rewrite writes the field's bound value instead (`PRODUCTION`, the
     instant), the value the store wrote before #231, so the entry binds as
     before. Anywhere else (an unreadable entry, or a field this version does
-    not know) its type is unknown, and the write refuses. Each plain number
+    not know) its type is unknown, and the write refuses. A known field is
+    matched by its exact name: a name that holds `.` or `[` (`status.future`,
+    `status[0]`) is a field of its own, never a path into `status`
+    (migration review 5: a save had written `'010'` there). A refusal shows
+    such a name quoted. Each plain number
     is checked by writing it through the generator and reading it back, so
     any other value the generator would change is caught the same way.
   - The entry's own repair still goes ahead: a save that sets the affected

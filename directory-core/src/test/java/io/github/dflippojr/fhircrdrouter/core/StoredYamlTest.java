@@ -76,6 +76,27 @@ class StoredYamlTest {
     }
 
     /**
+     * A property name may hold {@code .}, {@code [} or nothing at all: the problem carries the exact top-level name
+     * apart from the path it shows, which quotes such a name.
+     */
+    @Test
+    void aNameThatLooksLikeAPathIsKeptWhole() throws Exception {
+        assertEquals("status.future", StoredYaml.problems(entry("- status.future: 010\n")).get(0).field());
+        assertEquals("status[0]", StoredYaml.problems(entry("- status[0]: 010\n")).get(0).field());
+        assertEquals("status", StoredYaml.problems(entry("- status: {next: [010]}\n")).get(0).field());
+        assertNull(new StoredYaml.Problem(List.of(), "r", false).field());
+        assertNull(new StoredYaml.Problem(List.of(0), "r", false).field());
+        assertEquals("", new StoredYaml.Problem(List.of(), "r", false).path());
+        assertEquals("[0].a", new StoredYaml.Problem(List.of(0, "a"), "r", false).path());
+        assertEquals(List.of("\"status.future\": a number with a leading zero"), problemPaths("- status.future: 010\n"));
+        assertEquals(List.of("\"status[0]\": a number with a leading zero"), problemPaths("- status[0]: 010\n"));
+        assertEquals(List.of("a.\"b.c\"[0]: a number with a leading zero"), problemPaths("- a: {b.c: [010]}\n"));
+        assertEquals(List.of("\"\": a number with a leading zero"), problemPaths("- '': 010\n"));
+        assertEquals(List.of("\"say \\\"hi\\\"\": a number with a leading zero"),
+                problemPaths("- 'say \"hi\"': 010\n"));
+    }
+
+    /**
      * Each value outside the plain tree (an anchor, an alias, any explicit tag, a duplicate key) is found by path,
      * as is a number the writer cannot write back; a plain value, in any scalar style, is not (#231, allowlist).
      */

@@ -612,6 +612,31 @@ class InvalidEntryIsolationTest {
         assertEquals(List.of(before), new FileBasedConnectionStore(file).findAll());
     }
 
+    /**
+     * A leading zero nested in a known field of a readable entry ({@code scopes: [010]}) still takes the field's
+     * bound value through a rewrite: the field is matched by its exact name at any depth (migration review 5).
+     */
+    @Test
+    void aLeadingZeroNestedInAKnownFieldStillBindsAfterARewrite(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://a.example/r4"
+                  authType: "NONE"
+                  scopes: [010, "x"]
+                  createdAt: "2026-01-01T00:00:00Z"
+                  updatedAt: "2026-01-01T00:00:00Z"
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        ConnectionRecord before = store.findAll().get(0);
+
+        store.save(recordFor("PAYER-NEW").build());
+        store.delete("PAYER-NEW", Environment.PRODUCTION);
+
+        assertEquals(List.of(before), new FileBasedConnectionStore(file).findAll());
+    }
+
     /** Where the type is unknown (an unreadable entry, or a field this version does not know), the write refuses. */
     @Test
     void aLeadingZeroNumberWhoseTypeIsUnknownRefusesTheWrite(@TempDir Path dir) throws Exception {

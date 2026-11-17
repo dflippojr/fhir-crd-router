@@ -247,26 +247,53 @@ final class StoredYaml {
     }
 
     /**
-     * One value in a node that the writer cannot write back as it was read, by path (a field name, with
-     * {@code .name} and {@code [index]} for nested values; empty for the node itself). {@code
-     * boundValueKeepsBinding} is true for a leading-zero number, which the store may replace with its field's
-     * bound value; every other problem is refused.
+     * One value in a node that the writer cannot write back as it was read, by path: the field names and item
+     * indexes that lead to it (empty for the node itself), kept as segments because a field name may itself hold
+     * {@code .} or {@code [} (migration review 5). {@code boundValueKeepsBinding} is true for a leading-zero number,
+     * which the store may replace with its field's bound value; every other problem is refused.
      */
-    record Problem(String path, String reason, boolean boundValueKeepsBinding) {
-        /** The top-level field the path is in. */
+    record Problem(List<Object> segments, String reason, boolean boundValueKeepsBinding) {
+        Problem {
+            segments = List.copyOf(segments);
+        }
+
+        /** The exact name of the top-level field the value is in, or null where it is in none. */
         String field() {
-            return path.split("[.\\[]", 2)[0];
+            return !segments.isEmpty() && segments.get(0) instanceof String name ? name : null;
+        }
+
+        /**
+         * The path as a refusal shows it: {@code .name} and {@code [index]}, with a name that is empty or holds
+         * {@code .}, {@code [}, {@code ]}, a quote or a backslash shown quoted, so it cannot pass for a path.
+         */
+        String path() {
+            StringBuilder shown = new StringBuilder();
+            for (Object segment : segments) {
+                if (segment instanceof String name) {
+                    shown.append(shown.isEmpty() ? "" : ".").append(shownName(name));
+                } else {
+                    shown.append('[').append(segment).append(']');
+                }
+            }
+            return shown.toString();
+        }
+
+        private static String shownName(String name) {
+            if (!name.isEmpty() && name.chars().noneMatch(c -> ".[]\"\\".indexOf(c) >= 0)) {
+                return name;
+            }
+            return '"' + name.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
         }
     }
 
     /** Every value in this node the writer cannot write back as read, in document order. */
     static List<Problem> problems(JsonNode node) {
         List<Problem> problems = new ArrayList<>();
-        collect(node, "", problems);
+        collect(node, List.of(), problems);
         return problems;
     }
 
-    private static void collect(JsonNode node, String path, List<Problem> problems) {
+    private static void collect(JsonNode node, List<Object> path, List<Problem> problems) {
         if (node instanceof Unwritable unwritable) {
             problems.add(new Problem(path, unwritable.reason, false));
         } else if (node instanceof PlainScalar plain) {
@@ -275,11 +302,11 @@ final class StoredYaml {
             }
         } else if (node.isObject()) {
             for (Map.Entry<String, JsonNode> field : node.properties()) {
-                collect(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey(), problems);
+                collect(field.getValue(), append(path, field.getKey()), problems);
             }
         } else {
             for (int i = 0; i < node.size(); i++) {
-                collect(node.get(i), path + "[" + i + "]", problems);
+                collect(node.get(i), append(path, i), problems);
             }
         }
     }

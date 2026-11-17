@@ -290,7 +290,9 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         ObjectNode bound = record == null || !(node instanceof ObjectNode) ? null : mapper.valueToTree(record);
         ObjectNode fixed = null;
         for (StoredYaml.Problem problem : problems) {
-            if (problem.boundValueKeepsBinding() && bound != null && bound.has(problem.field())) {
+            // A known field is matched by its exact name: status.future is its own field, never a path into status.
+            if (problem.boundValueKeepsBinding() && bound != null && problem.field() != null
+                    && bound.has(problem.field())) {
                 fixed = fixed == null ? ((ObjectNode) node).deepCopy() : fixed;
                 fixed.set(problem.field(), bound.get(problem.field()));
             } else {
