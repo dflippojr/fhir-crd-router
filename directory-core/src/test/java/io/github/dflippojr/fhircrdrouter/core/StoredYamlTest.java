@@ -9,10 +9,12 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** #231: the tree a rewrite writes keeps a plain scalar's spelling and type. */
@@ -59,13 +61,39 @@ class StoredYamlTest {
         assertEquals("---\no: '007'\n", YAML.writeValueAsString(read("o: 007\n")));
     }
 
-    /** Only a tag the plain text disagrees with is one a rewrite would drop; the path names where it is. */
+    private static List<String> problemPaths(String yaml) throws Exception {
+        return StoredYaml.problems(read(yaml)).stream().map(p -> p.path() + ": " + p.reason()).toList();
+    }
+
+    /** Each value the writer cannot write back as read is found by path; YAML's own tags and plain values are not. */
     @Test
-    void aDisagreeingTagIsFoundByPath() throws Exception {
-        assertEquals("f", StoredYaml.droppedTagPath(read("f: !!float 1\n"), ""));
-        assertEquals("a.b[1]", StoredYaml.droppedTagPath(read("a: {b: [1, !!float 2]}\n"), ""));
-        assertEquals(null, StoredYaml.droppedTagPath(
-                read("i: !!int 7\nf: !!float 1.5\nb: !!bool yes\ns: !!str 3\nplain: 1\nlist: [x]\n"), ""));
+    void problemsAreFoundByPath() throws Exception {
+        assertEquals(List.of("f: an explicit YAML tag that disagrees with its plain text"), problemPaths("f: !!float 1\n"));
+        assertEquals(List.of("a.b[1]: an explicit YAML tag that disagrees with its plain text"),
+                problemPaths("a: {b: [1, !!float 2]}\n"));
+        assertEquals(List.of("z: a number with a leading zero"), problemPaths("z: 010\n"));
+        assertEquals(List.of("s: a duplicate key"), problemPaths("s: 1\ns: 2\n"));
+        assertEquals(List.of("m: a YAML type id the rewrite cannot keep", "q[0]: a YAML type id the rewrite cannot keep"),
+                problemPaths("m: !<limit> {count: 2}\nq: [!<code> abc]\n"));
+        assertEquals(List.of(), problemPaths(
+                "i: !!int 7\nf: !!float 1.5\nb: !!bool yes\ns: !!str 3\nm: !!map {a: 1}\nq: !!seq [x]\nplain: 1\n"));
+    }
+
+    /** A value the store refuses to write fails if it is ever written, instead of being written changed. */
+    @Test
+    void anUnwritableValueRefusesToBeWritten() throws Exception {
+        JsonNode root = read("s: 1\ns: 2\n");
+
+        assertTrue(root.get("s") instanceof StoredYaml.Unwritable);
+        assertEquals("2", root.get("s").asText());
+        assertEquals(root.get("s"), read("s: 0\ns: 2\n").get("s"));
+        assertEquals(root.get("s").hashCode(), read("s: 0\ns: 2\n").get("s").hashCode());
+        assertEquals(JsonToken.VALUE_EMBEDDED_OBJECT, root.get("s").asToken());
+        assertEquals(JsonNodeType.POJO, root.get("s").getNodeType());
+        assertThrows(Exception.class, () -> YAML.writeValueAsString(root));
+        assertNotEquals(root.get("s"), read("s: 0\ns: 3\n").get("s"));
+        assertNotEquals(root.get("s"), read("s: !<x> 2\n").get("s"));
+        assertNotEquals(root.get("s"), new TextNode("2"));
     }
 
     @Test

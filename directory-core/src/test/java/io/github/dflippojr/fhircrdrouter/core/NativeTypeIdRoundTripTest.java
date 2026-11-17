@@ -123,6 +123,38 @@ class NativeTypeIdRoundTripTest {
         assertEquals(1, new FileBasedConnectionStore(file).invalidEntries().size());
     }
 
+    /**
+     * An entry tagged as a whole still binds (the record has no polymorphic type), but a rewrite cannot keep its
+     * tag: a save of another payer, and a save over the entry itself, both refuse and name the entry.
+     */
+    @Test
+    void anEntryTaggedAsAWholeRefusesEveryRewriteOfIt(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - !<newer>
+                  payerId: "PAYER-T"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://t.example/r4"
+                  authType: "NONE"
+                """ + OK_ENTRY);
+        byte[] bytes = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+        assertEquals("https://t.example/r4", new PayerRouter(store).resolve("PAYER-T").baseUrl());
+
+        RouterException onOther = assertThrows(RouterException.class, () -> store.save(ConnectionRecord.builder()
+                .payerId("PAYER-NEW").environment(Environment.SANDBOX).baseUrl("https://new.example/r4")
+                .authType(AuthType.NONE).build()));
+        RouterException onItself = assertThrows(RouterException.class, () -> store.save(ConnectionRecord.builder()
+                .payerId("PAYER-T").environment(Environment.PRODUCTION).baseUrl("https://t2.example/r4")
+                .authType(AuthType.NONE).build()));
+
+        for (RouterException e : List.of(onOther, onItself)) {
+            assertTrue(e.getMessage().contains("entry 0 (payerId=PAYER-T environment=PRODUCTION), the entry itself"),
+                    e.getMessage());
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(file));
+    }
+
     /** Deleting the entry that holds the type id is still allowed: nothing of it is rewritten. */
     @Test
     void theEntryWithATypeIdCanStillBeDeleted(@TempDir Path dir) throws Exception {

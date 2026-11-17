@@ -83,7 +83,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * ({@code environment: !!float 2}), writes refuse and name the entry rather
  * than change how it binds. A number with a leading zero, which YAML reads as
  * octal and the writer would quote, is written as its field's bound value in a
- * readable entry, and refused where its type is unknown.
+ * readable entry, and refused where its type is unknown. A duplicate mapping
+ * key and a native YAML type id ({@code !<limit>}) cannot be written back
+ * either, and are refused the same way.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -267,28 +269,29 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      *   <li>a number with a leading zero ({@code environment: 02}, octal 2; {@code lastVerifiedAt: 010},
      *   octal 8), which would come back quoted, as a string, is written as the field's bound value when it is
      *   a known field of a readable entry, the same value the store wrote before #231, so it binds as before;
-     *   anywhere else its type is unknown and it is refused.</li>
+     *   anywhere else its type is unknown and it is refused;</li>
+     *   <li>a duplicate mapping key (a tree keeps one value, so {@code status: INACTIVE} then
+     *   {@code status: ACTIVE} would become a routable ACTIVE entry) and a native YAML type id
+     *   ({@code futurePolicy: !<limit>}, which a newer reader needs) are refused (migration review on #238).</li>
      * </ul>
+     * A save that sets the field writes over its stored value, so the entry's own repair goes ahead; deleting
+     * the entry rewrites nothing of it.
      * A refusal is noted by position, key and field, never by value.
      */
     private JsonNode prepare(int index, Entry entry, JsonNode node, ConnectionRecord record, List<String> refusals) {
-        String tagged = StoredYaml.droppedTagPath(node, "");
-        if (tagged != null) {
-            refusals.add(where(index, entry, tagged) + " (an explicit YAML tag that disagrees with its plain text)");
+        List<StoredYaml.Problem> problems = StoredYaml.problems(node);
+        if (problems.isEmpty()) {
             return node;
         }
-        List<String> unkept = StoredYaml.unkeptPaths(node);
-        if (unkept.isEmpty()) {
-            return node;
-        }
-        ObjectNode bound = record == null ? null : mapper.valueToTree(record);
-        ObjectNode fixed = bound == null ? null : ((ObjectNode) node).deepCopy();
-        for (String path : unkept) {
-            String field = path.split("[.\\[]", 2)[0];
-            if (bound != null && bound.has(field)) {
-                fixed.set(field, bound.get(field));
+        ObjectNode bound = record == null || !(node instanceof ObjectNode) ? null : mapper.valueToTree(record);
+        ObjectNode fixed = null;
+        for (StoredYaml.Problem problem : problems) {
+            if (problem.boundValueKeepsBinding() && bound != null && bound.has(problem.field())) {
+                fixed = fixed == null ? ((ObjectNode) node).deepCopy() : fixed;
+                fixed.set(problem.field(), bound.get(problem.field()));
             } else {
-                refusals.add(where(index, entry, path) + " (a number with a leading zero, whose type is unknown here)");
+                refusals.add(where(index, entry, problem.path()) + " (" + problem.reason()
+                        + (problem.boundValueKeepsBinding() ? ", whose type is unknown here)" : ")"));
             }
         }
         return fixed == null ? node : fixed;
@@ -296,7 +299,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     private static String where(int index, Entry entry, String field) {
         return "entry " + index + " (payerId=" + entry.payerId() + " environment="
-                + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), field " + field;
+                + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), "
+                + (field.isEmpty() ? "the entry itself" : "field " + field);
     }
 
     /** Refuses the write, before anything is written, when an entry holds a value it cannot write back. */
@@ -310,10 +314,14 @@ public final class FileBasedConnectionStore implements ConnectionStore {
 
     /**
      * The stored node with the record's fields laid over it; fields this version does not know stay.
-     * A node with a key is always an object, since a scalar or null list item has no payerId.
+     * A node with a key is an object, since a scalar or null list item has no payerId, unless the whole
+     * entry carries a type id, in which case it is left as it stands and the write refuses it.
      */
     private static JsonNode overlay(JsonNode stored, ObjectNode known) {
-        ObjectNode merged = ((ObjectNode) stored).deepCopy();
+        if (!(stored instanceof ObjectNode object)) {
+            return stored; // an entry tagged as a whole: the write refuses it as it stands
+        }
+        ObjectNode merged = object.deepCopy();
         merged.setAll(known);
         return merged;
     }

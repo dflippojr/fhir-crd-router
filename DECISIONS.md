@@ -512,6 +512,19 @@ never fail the whole catalog for one entry.
     tag. Each scalar is checked by writing it through the generator and
     reading it back, so any other value the generator would change is caught
     the same way. (Migration review on #238.)
+  - A duplicate mapping key keeps one value in a tree. A complete record
+    with `status: INACTIVE` and a second `status: ACTIVE` does not bind,
+    but its rewrite would keep only `ACTIVE` and make it routable. A native
+    YAML type id (`futurePolicy: !<limit>`, which a newer version's
+    polymorphic field carries) is not written either, and the newer reader
+    needs it. Both are refused like a disagreeing tag, wherever they are,
+    under the decision line "No silent rewrite may change how an entry
+    binds" (migration review round 2 on #238). YAML's own tags (`!!map`,
+    `!!seq`, `!!str`) are not type ids and are written as before.
+  - The entry's own repair still goes ahead: a save that sets the affected
+    field writes over its stored value, and a delete removes the entry.
+    A tag on the entry as a whole cannot be written over, so any write
+    that would rewrite that entry refuses.
   - An explicit tag that disagrees with its value's plain text cannot be
     kept. `environment: !!float 2` does not bind (a float is no enum index),
     but its rewrite `environment: 2` would bind as `PRODUCTION`. `save` and

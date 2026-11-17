@@ -82,7 +82,10 @@ that disagrees with its plain text (`environment: !!float 2`): the writer
 cannot keep the tag, and dropping it would change how the entry binds. A
 number with a leading zero (`environment: 02`, read as octal 2) is written as
 its field's value in a readable entry, so it binds as before, and refused
-where its type is unknown (an unreadable entry, or an unknown field).
+where its type is unknown (an unreadable entry, or an unknown field). A
+duplicate mapping key and a native YAML type id (`!<limit>`, as a newer
+version may write) are refused the same way. Saving over the affected field,
+or deleting the entry, still works.
 
 ## Audit foundation
 

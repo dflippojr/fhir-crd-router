@@ -48,42 +48,49 @@ final class StoredYaml {
         }
     }
 
-    /** Reads the value at the parser's current token. */
+    /**
+     * Reads the value at the parser's current token. A value the writer cannot write back as read is marked:
+     * a duplicate mapping key keeps only its last value in a tree, and the writer writes no native YAML type id
+     * ({@code !<limit>}, as a newer version's polymorphic field carries), so each is wrapped in an
+     * {@link Unwritable}, which the store refuses to write (#231).
+     */
     static JsonNode read(JsonParser p) throws IOException {
         JsonToken token = p.currentToken();
-        switch (token) {
+        boolean nativeTypeId = isNativeTypeId(p.getTypeId());
+        JsonNode node = switch (token) {
             case START_OBJECT -> {
                 ObjectNode object = NODES.objectNode();
                 while (p.nextToken() == JsonToken.FIELD_NAME) {
                     String name = p.currentName();
                     p.nextToken();
-                    object.set(name, read(p));
+                    JsonNode value = read(p);
+                    object.set(name, object.has(name) ? new Unwritable(value, "a duplicate key") : value);
                 }
-                return object;
+                yield object;
             }
             case START_ARRAY -> {
                 ArrayNode array = NODES.arrayNode();
                 while (p.nextToken() != JsonToken.END_ARRAY) {
                     array.add(read(p));
                 }
-                return array;
+                yield array;
             }
-            case VALUE_NULL -> {
-                return NODES.nullNode();
-            }
+            case VALUE_NULL -> NODES.nullNode();
             case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE -> {
                 String text = p.getText();
-                return new PlainScalar(token, text, p.getTypeId() != null && impliedToken(text) != token,
+                yield new PlainScalar(token, text, p.getTypeId() != null && impliedToken(text) != token,
                         writtenBackAsRead(token, text));
             }
-            case VALUE_EMBEDDED_OBJECT -> {
-                // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
-                return NODES.binaryNode(p.getBinaryValue());
-            }
-            default -> {
-                return NODES.textNode(p.getText());
-            }
-        }
+            // The YAML parser's only embedded value is !!binary; a binary node is written back with its tag.
+            case VALUE_EMBEDDED_OBJECT -> NODES.binaryNode(p.getBinaryValue());
+            default -> NODES.textNode(p.getText());
+        };
+        return nativeTypeId ? new Unwritable(node, "a YAML type id the rewrite cannot keep") : node;
+    }
+
+    /** A tag other than YAML's own ({@code !!map}, {@code !!str}, ...), which the parser reports as a type id. */
+    private static boolean isNativeTypeId(Object typeId) {
+        return typeId != null && !typeId.toString().startsWith("tag:yaml.org,2002:");
     }
 
     /** The token YAML infers for a plain scalar with this text and no tag. */
@@ -115,54 +122,90 @@ final class StoredYaml {
     }
 
     /**
-     * The paths in this node of numbers or booleans the generator would not write back as read, other than
-     * those with a disagreeing tag ({@link #droppedTagPath}), in document order.
+     * One value in a node that the writer cannot write back as it was read, by path (a field name, with
+     * {@code .name} and {@code [index]} for nested values). {@code boundValueKeepsBinding} is true for a
+     * leading-zero number, which the store may replace with its field's bound value; every other problem is
+     * refused.
      */
-    static List<String> unkeptPaths(JsonNode node) {
-        List<String> paths = new ArrayList<>();
-        collectUnkept(node, "", paths);
-        return paths;
+    record Problem(String path, String reason, boolean boundValueKeepsBinding) {
+        /** The top-level field the path is in. */
+        String field() {
+            return path.split("[.\\[]", 2)[0];
+        }
     }
 
-    private static void collectUnkept(JsonNode node, String path, List<String> paths) {
-        if (node instanceof PlainScalar plain) {
-            if (!plain.tagDisagrees && !plain.writtenAsRead) {
-                paths.add(path);
+    /** Every value in this node the writer cannot write back as read, in document order. */
+    static List<Problem> problems(JsonNode node) {
+        List<Problem> problems = new ArrayList<>();
+        collect(node, "", problems);
+        return problems;
+    }
+
+    private static void collect(JsonNode node, String path, List<Problem> problems) {
+        if (node instanceof Unwritable unwritable) {
+            problems.add(new Problem(path, unwritable.reason, false));
+        } else if (node instanceof PlainScalar plain) {
+            if (plain.tagDisagrees) {
+                problems.add(new Problem(path, "an explicit YAML tag that disagrees with its plain text", false));
+            } else if (!plain.writtenAsRead) {
+                problems.add(new Problem(path, "a number with a leading zero", true));
             }
         } else if (node.isObject()) {
             for (Map.Entry<String, JsonNode> field : node.properties()) {
-                collectUnkept(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey(), paths);
+                collect(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey(), problems);
             }
         } else {
             for (int i = 0; i < node.size(); i++) {
-                collectUnkept(node.get(i), path + "[" + i + "]", paths);
+                collect(node.get(i), path + "[" + i + "]", problems);
             }
         }
     }
 
     /**
-     * Where in this node a rewrite would drop a tag that disagrees with its plain text (a field name, with
-     * {@code .name} and {@code [index]} for nested values), or null when there is none.
+     * A value the writer cannot write back as read: one of several values for a duplicate key, or a value with a
+     * native YAML type id. The store refuses to write it; if it ever were written, it would write the wrapped
+     * value, which is why it must not be.
      */
-    static String droppedTagPath(JsonNode node, String path) {
-        if (node instanceof PlainScalar plain) {
-            return plain.tagDisagrees ? path : null;
+    static final class Unwritable extends ValueNode {
+        private static final long serialVersionUID = 1L;
+
+        private final JsonNode value;
+        private final String reason;
+
+        Unwritable(JsonNode value, String reason) {
+            this.value = value;
+            this.reason = reason;
         }
-        if (node.isObject()) {
-            for (Map.Entry<String, JsonNode> field : node.properties()) {
-                String found = droppedTagPath(field.getValue(), path.isEmpty() ? field.getKey() : path + "." + field.getKey());
-                if (found != null) {
-                    return found;
-                }
-            }
+
+        @Override
+        public JsonToken asToken() {
+            return JsonToken.VALUE_EMBEDDED_OBJECT;
         }
-        for (int i = 0; i < node.size() && node.isArray(); i++) {
-            String found = droppedTagPath(node.get(i), path + "[" + i + "]");
-            if (found != null) {
-                return found;
-            }
+
+        @Override
+        public JsonNodeType getNodeType() {
+            return JsonNodeType.POJO;
         }
-        return null;
+
+        @Override
+        public String asText() {
+            return value.asText();
+        }
+
+        @Override
+        public void serialize(JsonGenerator g, SerializerProvider provider) throws IOException {
+            throw new IOException("refusing to write " + reason + "; the store refuses such a write before this");
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Unwritable other && value.equals(other.value) && reason.equals(other.reason);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(value, reason);
+        }
     }
 
     /**
