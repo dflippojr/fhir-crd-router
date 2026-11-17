@@ -508,6 +508,77 @@ class InvalidEntryIsolationTest {
         assertEquals(java.time.Instant.ofEpochSecond(1730000000L, 123456789L), record.lastVerifiedAt());
     }
 
+    /**
+     * The YAML generator writes no scalar tag, so a rewrite would turn {@code environment: !!float 2} (no enum
+     * index, so invalid) into {@code environment: 2}, which binds as {@code PRODUCTION}. A write that would
+     * drop a tag disagreeing with its plain text refuses, names the entry and leaves the bytes unchanged
+     * (#231, owner decision: option 3).
+     */
+    @Test
+    void aWriteThatWouldDropADisagreeingTagRefusesAndLeavesTheBytesUnchanged(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-BAD"
+                  environment: !!float 2
+                  baseUrl: "https://sentinel-base.example/r4"
+                  authType: "NONE"
+                """ + OK_ENTRY);
+        byte[] before = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        RouterException onSave = assertThrows(RouterException.class, () -> store.save(recordFor("PAYER-NEW").build()));
+        RouterException onDelete = assertThrows(RouterException.class,
+                () -> store.delete("PAYER-OK", Environment.PRODUCTION));
+
+        for (RouterException e : List.of(onSave, onDelete)) {
+            assertTrue(e.getMessage().contains("entry 0"), e.getMessage());
+            assertTrue(e.getMessage().contains("payerId=PAYER-BAD"), e.getMessage());
+            assertTrue(e.getMessage().contains("field environment"), e.getMessage());
+            assertNoSentinel(e);
+        }
+        assertArrayEquals(before, Files.readAllBytes(file));
+        assertEquals("https://ok.example/r4", new PayerRouter(store).resolve("PAYER-OK").baseUrl());
+    }
+
+    /** A tag on a field the save sets is overwritten by the save, so it does not block the write. */
+    @Test
+    void aSaveThatSetsTheTaggedFieldIsAllowed(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://a.example/r4"
+                  authType: "NONE"
+                  igVersion: !!float 1
+                """);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        store.save(recordFor("PAYER-A").igVersion("crd-2.2.1").build());
+
+        assertEquals("crd-2.2.1", new FileBasedConnectionStore(file).findAll().get(0).igVersion());
+    }
+
+    /** A disagreeing tag in a field this version does not know, on the saved entry itself, still refuses. */
+    @Test
+    void aSaveOverAnEntryWithATaggedUnknownFieldRefuses(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, """
+                - payerId: "PAYER-A"
+                  environment: "PRODUCTION"
+                  baseUrl: "https://a.example/r4"
+                  authType: "NONE"
+                  futureLimits: [1, !!float 2]
+                """);
+        byte[] before = Files.readAllBytes(file);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        RouterException e = assertThrows(RouterException.class,
+                () -> store.save(recordFor("PAYER-A").displayName("renamed").build()));
+
+        assertTrue(e.getMessage().contains("field futureLimits[1]"), e.getMessage());
+        assertArrayEquals(before, Files.readAllBytes(file));
+    }
+
     /** A save writes over the first entry with its key and drops later ones, as the old remove-then-add did. */
     @Test
     void saveOverADuplicatedKeyKeepsOneEntry(@TempDir Path dir) throws Exception {
