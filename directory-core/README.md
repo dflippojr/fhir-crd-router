@@ -77,15 +77,16 @@ in place, or `delete` the key. A field this version does not know is kept by
 both, so an entry a newer version wrote stays unreadable here after an older
 writer's update. An entry whose environment this version does not know matches
 no key, so only a hand edit removes it. `save` and `delete` also refuse,
-naming the entry, while an entry they would write holds an explicit YAML tag
-that disagrees with its plain text (`environment: !!float 2`): the writer
-cannot keep the tag, and dropping it would change how the entry binds. A
-number with a leading zero (`environment: 02`, read as octal 2) is written as
-its field's value in a readable entry, so it binds as before, and refused
-where its type is unknown (an unreadable entry, or an unknown field). A
-duplicate mapping key and a native YAML type id (`!<limit>`, as a newer
-version may write) are refused the same way. Saving over the affected field,
-or deleting the entry, still works.
+naming the entry and field, while an entry they would write is not a plain
+YAML tree: an anchor, an alias, any explicit tag (`environment: !!float 2`,
+`!!str 3`, a newer version's type id `!<limit>`) or a duplicate key. The
+writer cannot keep any of them, and losing one can change how the entry binds
+or leave a newer reader unable to read it. A tag or anchor on the list itself,
+or a second YAML document, refuses writes for the whole file. A number with a
+leading zero (`environment: 02`, read as octal 2) is written as its field's
+value in a readable entry, so it binds as before, and refused where its type is
+unknown (an unreadable entry, or an unknown field). Saving over the affected
+field, or deleting the entry, still works.
 
 ## Audit foundation
 

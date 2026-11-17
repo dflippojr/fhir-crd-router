@@ -499,8 +499,33 @@ never fail the whole catalog for one entry.
   string, a time and an enum field, against the old binding and through a
   rewrite. (Five automated review rounds on #238 found one shape at a time
   while items were bound from the tree.)
-- **Known limit: YAML tags and leading zeros.** Jackson's YAML generator
-  writes no scalar tag and quotes a number with a leading zero.
+- **Known limit: a rewrite writes back only a plain tree.** Jackson's YAML
+  generator writes no tag, anchor or alias, and quotes a number with a
+  leading zero; a tree keeps one value per mapping key. Each loss can change
+  how an entry binds or break a newer reader, so the owner chose an
+  allowlist over a growing blocklist (migration review round 3 on #238).
+  - An untouched entry is written back only if its parsed tree is plain:
+    mappings, sequences and scalars in any style (plain, quoted, block),
+    with no anchor, alias, explicit tag or duplicate key. Every explicit tag
+    counts, YAML's own (`!!str 3`) and a type id (`!<limit>`) alike. Anything
+    else makes the value that holds it unwritable, and `save` and `delete`
+    refuse, name each entry by position, key and field, and leave the file
+    unchanged. What each construct would do in a rewrite:
+    `environment: !!float 2` does not bind (a float is no enum index) but
+    would come back as `2`, which binds as `PRODUCTION`. A complete record
+    with `status: INACTIVE` and a second `status: ACTIVE` does not bind but
+    would come back as a routable `ACTIVE`. A newer version's polymorphic
+    field loses its type id (`futurePolicy: !<limit>`). A newer version's
+    `@JsonIdentityInfo` object written twice (`- &1 count: 2`, `- *1`) loses
+    its anchor, and the alias comes back as the string `"1"`, which the newer
+    reader cannot resolve.
+  - The check reads SnakeYAML's events, not Jackson's tokens. Jackson's
+    parser does not report a scalar's anchor or a key's tag, so a check built
+    on it would only block what Jackson happens to show. A tag or anchor on
+    a key makes that key's value unwritable. A tag or anchor on the list
+    itself, or a second YAML document (never read, so a rewrite would drop
+    it), refuses writes for the whole file. So do events that do not match
+    the tree the store read. Reads never depend on the check.
   - YAML reads a number with a leading zero as octal (`environment: 02` is
     2, `lastVerifiedAt: 010` is 8), and the generator writes it back
     quoted, as a string, which binds differently (`"02"` is no environment,
@@ -508,33 +533,21 @@ never fail the whole catalog for one entry.
     rewrite writes the field's bound value instead (`PRODUCTION`, the
     instant), the value the store wrote before #231, so the entry binds as
     before. Anywhere else (an unreadable entry, or a field this version does
-    not know) its type is unknown, and the write refuses like a disagreeing
-    tag. Each scalar is checked by writing it through the generator and
-    reading it back, so any other value the generator would change is caught
-    the same way. (Migration review on #238.)
-  - A duplicate mapping key keeps one value in a tree. A complete record
-    with `status: INACTIVE` and a second `status: ACTIVE` does not bind,
-    but its rewrite would keep only `ACTIVE` and make it routable. A native
-    YAML type id (`futurePolicy: !<limit>`, which a newer version's
-    polymorphic field carries) is not written either, and the newer reader
-    needs it. Both are refused like a disagreeing tag, wherever they are,
-    under the decision line "No silent rewrite may change how an entry
-    binds" (migration review round 2 on #238). YAML's own tags (`!!map`,
-    `!!seq`, `!!str`) are not type ids and are written as before.
+    not know) its type is unknown, and the write refuses. Each plain number
+    is checked by writing it through the generator and reading it back, so
+    any other value the generator would change is caught the same way.
   - The entry's own repair still goes ahead: a save that sets the affected
-    field writes over its stored value, and a delete removes the entry.
-    A tag on the entry as a whole cannot be written over, so any write
-    that would rewrite that entry refuses.
-  - An explicit tag that disagrees with its value's plain text cannot be
-    kept. `environment: !!float 2` does not bind (a float is no enum index),
-    but its rewrite `environment: 2` would bind as `PRODUCTION`. `save` and
-    `delete` refuse while any entry they would write holds such a tag, name
-    each entry by position, key and field, and leave the file unchanged. A
-    save that sets the tagged field itself writes over the tag and goes
-    ahead. The owner chose this on #238 over accepting the loss (option 1)
-    or writing a canonical form such as `1.0` (which changes what a string
-    field binds to). A lossless emitter that keeps each scalar's tag and
-    style is a follow-up issue (option 2).
+    field writes over its stored value, and a delete removes the entry. An
+    entry anchored or tagged as a whole cannot be written over, so any write
+    that would rewrite it refuses. An anchor in one entry and its alias in
+    another block deleting either, since the other entry would be rewritten;
+    only a hand edit clears them.
+  - History on #238: option 3 refused a tag that disagrees with its plain
+    text; migration review round 2 added duplicate keys and type ids; round
+    3 found anchors and aliases, and the owner replaced the blocklist with
+    this allowlist. Accepting the loss (option 1) and taking round 3 as a
+    follow-up were both rejected. A lossless emitter, or a rewrite that
+    splices only the changed entry's bytes, is #239.
 - **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
   for an invalid entry's key, and `findByPayerId` for its payer, throw
   `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`

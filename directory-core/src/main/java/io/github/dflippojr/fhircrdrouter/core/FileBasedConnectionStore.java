@@ -78,14 +78,17 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * that entry survives an older writer's update, and appends a new key at the
  * end. {@code delete} removes every entry with the key, including an unreadable
  * one, which is how the API clears it. YAML comments and formatting are not
- * kept by a rewrite. The YAML writer cannot write a scalar tag, so while an
- * entry to be written holds an explicit tag that disagrees with its plain text
- * ({@code environment: !!float 2}), writes refuse and name the entry rather
- * than change how it binds. A number with a leading zero, which YAML reads as
+ * kept by a rewrite. A rewrite writes an entry back only while its tree is
+ * plain: mappings, sequences and scalars, with no anchor, alias, explicit tag
+ * or duplicate key (#231, owner decision). The YAML writer cannot keep any of
+ * those, and losing one can change how the entry binds
+ * ({@code environment: !!float 2} would become the readable {@code 2}) or
+ * break a newer reader (a {@code @JsonIdentityInfo} alias would become a
+ * string). While an entry to be written holds one, writes refuse and name the
+ * entry and field; a tag on the list itself, or a second YAML document, refuses
+ * them for the whole file. A number with a leading zero, which YAML reads as
  * octal and the writer would quote, is written as its field's bound value in a
- * readable entry, and refused where its type is unknown. A duplicate mapping
- * key and a native YAML type id ({@code !<limit>}) cannot be written back
- * either, and are refused the same way.
+ * readable entry, and refused where its type is unknown.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -202,10 +205,11 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     public void save(ConnectionRecord record) {
         lock.writeLock().lock();
         try {
-            List<Entry> entries = readAll().entries;
+            Snapshot snapshot = readAll();
+            List<Entry> entries = snapshot.entries;
             ObjectNode known = mapper.valueToTree(record);
             List<JsonNode> nodes = new ArrayList<>();
-            List<String> refusals = new ArrayList<>();
+            List<String> refusals = snapshot.refusals();
             boolean placed = false;
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
@@ -240,9 +244,10 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     public void delete(String payerId, Environment environment) {
         lock.writeLock().lock();
         try {
-            List<Entry> entries = readAll().entries;
+            Snapshot snapshot = readAll();
+            List<Entry> entries = snapshot.entries;
             List<JsonNode> kept = new ArrayList<>();
-            List<String> refusals = new ArrayList<>();
+            List<String> refusals = snapshot.refusals();
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
                 if (!entry.hasKey(payerId, environment)) {
@@ -261,18 +266,17 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     }
 
     /**
-     * The node to write for one entry. The YAML generator cannot write every scalar back as it was read
+     * The node to write for one entry. The YAML generator cannot write every value back as it was read
      * (#231), so a value it would change is handled before anything is written:
      * <ul>
-     *   <li>an explicit tag that disagrees with its plain text ({@code environment: !!float 2}, which would
-     *   come back as the readable {@code 2}) is refused (owner decision on #238);</li>
+     *   <li>a value outside the plain tree (an anchor, an alias, an explicit tag such as
+     *   {@code environment: !!float 2} or a type id such as {@code futurePolicy: !<limit>}, or a duplicate key,
+     *   which a tree keeps once, so {@code status: INACTIVE} then {@code status: ACTIVE} would become a routable
+     *   ACTIVE entry) is refused (owner decisions on #231: option 3, then the allowlist);</li>
      *   <li>a number with a leading zero ({@code environment: 02}, octal 2; {@code lastVerifiedAt: 010},
      *   octal 8), which would come back quoted, as a string, is written as the field's bound value when it is
      *   a known field of a readable entry, the same value the store wrote before #231, so it binds as before;
-     *   anywhere else its type is unknown and it is refused;</li>
-     *   <li>a duplicate mapping key (a tree keeps one value, so {@code status: INACTIVE} then
-     *   {@code status: ACTIVE} would become a routable ACTIVE entry) and a native YAML type id
-     *   ({@code futurePolicy: !<limit>}, which a newer reader needs) are refused (migration review on #238).</li>
+     *   anywhere else its type is unknown and it is refused.</li>
      * </ul>
      * A save that sets the field writes over its stored value, so the entry's own repair goes ahead; deleting
      * the entry rewrites nothing of it.
@@ -306,9 +310,10 @@ public final class FileBasedConnectionStore implements ConnectionStore {
     /** Refuses the write, before anything is written, when an entry holds a value it cannot write back. */
     private void refuseUnwritable(List<String> refusals) {
         if (!refusals.isEmpty()) {
-            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite cannot write"
-                    + " these values back as they were read, and would change how the entry binds: "
-                    + String.join("; ", refusals) + ". Edit them in the file by hand first.");
+            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite writes back"
+                    + " only plain YAML (no anchor, alias, explicit tag or duplicate key) and cannot write these"
+                    + " values back as they were read: " + String.join("; ", refusals)
+                    + ". Edit them in the file by hand first.");
         }
     }
 
@@ -371,14 +376,15 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         // A null document (null, ~) never reaches the deserializer: readValue answers it as null.
         JsonNode root = document == null ? null : document.root();
         if (root == null) {
-            return bind(bytes, List.of());
+            return bind(bytes, List.of(), null);
         }
         if (!root.isArray()) {
             throw new IOException("expected a YAML list of connection records, found " + root.getNodeType());
         }
+        String unwritable = StoredYaml.allowlist((ArrayNode) root, bytes);
         List<JsonNode> nodes = new ArrayList<>();
         root.forEach(nodes::add);
-        return bind(bytes, nodes);
+        return bind(bytes, nodes, unwritable);
     }
 
     /**
@@ -387,9 +393,9 @@ public final class FileBasedConnectionStore implements ConnectionStore {
      * scalar (an unquoted {@code 1.10}, {@code +2}, a tagged or decimal value) binds as it did before. An
      * item that does not bind is kept as an invalid entry; its key is read the same way, field by field.
      */
-    private Snapshot bind(byte[] bytes, List<JsonNode> nodes) throws IOException {
+    private Snapshot bind(byte[] bytes, List<JsonNode> nodes, String unwritable) throws IOException {
         if (nodes.isEmpty()) {
-            return new Snapshot(bytes, List.of(), List.of(), List.of());
+            return new Snapshot(bytes, List.of(), List.of(), List.of(), unwritable);
         }
         List<Bound<ConnectionRecord>> bound = bindEach(bytes, mapper.readerFor(ConnectionRecord.class), nodes.size());
         List<Bound<PayerIdField>> payerIds = null;
@@ -417,7 +423,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             invalid.add(entry);
             entries.add(new Entry(node, entry.payerId(), entry.environment(), null));
         }
-        return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid));
+        return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid), unwritable);
     }
 
     private ObjectReader keyReader(Class<?> type) {
@@ -502,7 +508,8 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             mapper.writeValue(buffer, list);
             byte[] bytes = buffer.toByteArray();
             // Bound before the replace, so a binding failure cannot report a write that already happened.
-            Snapshot written = bind(bytes, nodes);
+            // What was written is a plain tree, so the written file has nothing a later write must refuse.
+            Snapshot written = bind(bytes, nodes, null);
             AtomicFiles.writeDurably(tmp, bytes);
             try {
                 AtomicFiles.replace(tmp, path, mover);
@@ -548,20 +555,35 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /** What the file held, together with the exact file bytes it came from. */
+    /**
+     * What the file held, together with the exact file bytes it came from, and what keeps the document as a
+     * whole from being written back (null where nothing does).
+     */
     private static final class Snapshot {
-        static final Snapshot EMPTY = new Snapshot(new byte[0], List.of(), List.of(), List.of());
+        static final Snapshot EMPTY = new Snapshot(new byte[0], List.of(), List.of(), List.of(), null);
 
         private final byte[] bytes;
         private final List<Entry> entries;
         private final List<ConnectionRecord> records;
         private final List<InvalidEntry> invalid;
+        private final String unwritable;
 
-        private Snapshot(byte[] bytes, List<Entry> entries, List<ConnectionRecord> records, List<InvalidEntry> invalid) {
+        private Snapshot(byte[] bytes, List<Entry> entries, List<ConnectionRecord> records, List<InvalidEntry> invalid,
+                         String unwritable) {
             this.bytes = bytes;
             this.entries = entries;
             this.records = records;
             this.invalid = invalid;
+            this.unwritable = unwritable;
+        }
+
+        /** The refusals a write starts from: the document's own, if any. */
+        List<String> refusals() {
+            List<String> refusals = new ArrayList<>();
+            if (unwritable != null) {
+                refusals.add("the document itself (" + unwritable + ")");
+            }
+            return refusals;
         }
     }
 
