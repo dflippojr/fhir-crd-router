@@ -131,6 +131,38 @@ class InvalidEntryIsolationTest {
         assertNoSentinel(e);
     }
 
+    /**
+     * Automated review at dd5c066: a key field written twice with the same value ({@code payerId: "PAYER-BAD"}
+     * twice) is still the entry's key. Its error names payer, environment and problem class, and a delete by
+     * that key removes it, rather than the entry reading as absent and the delete doing nothing.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"payerId: \"PAYER-BAD\"", "environment: \"PRODUCTION\""})
+    void aKeyFieldWrittenTwiceWithTheSameValueStillNamesTheEntry(String repeated, @TempDir Path dir)
+            throws Exception {
+        Path file = dir.resolve("connections.yaml");
+        Files.writeString(file, Bad.OAUTH2_MISSING_CLIENT_ID.yaml + "  " + repeated + "\n" + OK_ENTRY);
+        FileBasedConnectionStore store = new FileBasedConnectionStore(file);
+
+        RouterException e = assertThrows(RouterException.class,
+                () -> new PayerRouter(store).resolve("PAYER-BAD", Environment.PRODUCTION));
+        String message = e.getMessage();
+        assertTrue(message.contains("payerId=PAYER-BAD"), message);
+        assertTrue(message.contains("environment=PRODUCTION"), message);
+        assertTrue(message.contains(Bad.OAUTH2_MISSING_CLIENT_ID.problem), message);
+        assertFalse(message.startsWith("No active connection"), message);
+        assertNoSentinel(e);
+        assertEquals(List.of("PAYER-BAD"), store.invalidEntries().stream().map(FileBasedConnectionStore.InvalidEntry::payerId).toList());
+        assertEquals(List.of(Environment.PRODUCTION),
+                store.invalidEntries().stream().map(FileBasedConnectionStore.InvalidEntry::environment).toList());
+
+        store.delete("PAYER-BAD", Environment.PRODUCTION);
+
+        FileBasedConnectionStore reread = new FileBasedConnectionStore(file);
+        assertEquals(List.of(), reread.invalidEntries());
+        assertEquals("https://ok.example/r4", new PayerRouter(reread).resolve("PAYER-OK", Environment.PRODUCTION).baseUrl());
+    }
+
     @ParameterizedTest
     @EnumSource(Bad.class)
     void findByPayerIdOfTheInvalidPayerThrows(Bad bad, @TempDir Path dir) throws Exception {
