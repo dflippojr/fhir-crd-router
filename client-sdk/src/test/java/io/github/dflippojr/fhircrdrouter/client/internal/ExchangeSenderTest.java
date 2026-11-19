@@ -86,16 +86,16 @@ class ExchangeSenderTest {
     void hookBodyWithoutAccessTokenPassesThroughUnchanged() {
         for (String body : List.of("{\"hook\":\"x\",\"n\":1.10}", "[]", "null", "{\"fhirAuthorization\":\"s\"}",
                 "{\"fhirAuthorization\":{\"scope\":\"s\"}}")) {
-            assertEquals(new ExchangeSender.HookBody(body, null), ExchangeSender.redactFhirAuthorization(body));
+            assertEquals(new SecretScrubber.HookBody(body, null), SecretScrubber.redactFhirAuthorization(body));
         }
-        assertEquals(new ExchangeSender.HookBody(null, null), ExchangeSender.redactFhirAuthorization(null));
+        assertEquals(new SecretScrubber.HookBody(null, null), SecretScrubber.redactFhirAuthorization(null));
     }
 
     @Test
     void unparseableHookBodyIsOmitted() {
-        assertEquals(ExchangeSender.HookBody.UNREADABLE,
-                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"tok-164\""));
-        assertEquals(new ExchangeSender.HookBody("", null), ExchangeSender.redactFhirAuthorization(""));
+        assertEquals(SecretScrubber.HookBody.UNREADABLE,
+                SecretScrubber.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"tok-164\""));
+        assertEquals(new SecretScrubber.HookBody("", null), SecretScrubber.redactFhirAuthorization(""));
     }
 
     @Test
@@ -125,7 +125,7 @@ class ExchangeSenderTest {
         String body = "{\"fhirAuthorization\":{\"access_token\":\"tok-164\",\"expires_in\":300},"
                 + "\"context\":{\"copy\":\"tok-164\",\"price\":1.10,\"big\":1E+2,\"n\":12345678901234567890}}";
 
-        ExchangeSender.HookBody safe = ExchangeSender.redactFhirAuthorization(body);
+        SecretScrubber.HookBody safe = SecretScrubber.redactFhirAuthorization(body);
 
         assertEquals("tok-164", safe.accessToken());
         assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\",\"expires_in\":300},"
@@ -135,10 +135,10 @@ class ExchangeSenderTest {
 
     @Test
     void nonTextOrEmptyTokenIsStillReplaced() {
-        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", null),
-                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":{\"k\":\"tok-164\"}}}"));
-        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"x\":\"\"}", null),
-                ExchangeSender.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"\"},\"x\":\"\"}"));
+        assertEquals(new SecretScrubber.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", null),
+                SecretScrubber.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":{\"k\":\"tok-164\"}}}"));
+        assertEquals(new SecretScrubber.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"x\":\"\"}", null),
+                SecretScrubber.redactFhirAuthorization("{\"fhirAuthorization\":{\"access_token\":\"\"},\"x\":\"\"}"));
     }
 
     @Test
@@ -182,7 +182,7 @@ class ExchangeSenderTest {
 
         assertEquals("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},"
                         + "\"context\":{\"[REDACTED]\":[\"x [REDACTED]\",1,{\"[REDACTED]\":2}]}}",
-                ExchangeSender.redactFhirAuthorization(body).body());
+                SecretScrubber.redactFhirAuthorization(body).body());
     }
 
     @Test
@@ -214,7 +214,7 @@ class ExchangeSenderTest {
     void tokenInAnOverwrittenDuplicateKeyIsRedacted() throws Exception {
         hookWithResponse("t/k", 400, "{\"error\":\"t\\/k\",\"error\":\"ok\"}");
 
-        assertFalse(ExchangeSender.looselyDecoded(String.valueOf(exchanges.get(0).responseBody())).contains("t/k"),
+        assertFalse(SecretScrubber.looselyDecoded(String.valueOf(exchanges.get(0).responseBody())).contains("t/k"),
                 exchanges.get(0).responseBody());
     }
 
@@ -252,9 +252,9 @@ class ExchangeSenderTest {
     @Test
     void safeErrorKeepsTheKindAndDropsTheToken() {
         IOException clean = new IOException("connection reset");
-        assertSame(clean, ExchangeSender.safeError(clean, "t/k", false));
-        assertSame(clean, ExchangeSender.safeError(clean, null, false));
-        assertNull(ExchangeSender.safeError(null, "t/k", true));
+        assertSame(clean, SecretScrubber.safeError(clean, "t/k", false));
+        assertSame(clean, SecretScrubber.safeError(clean, null, false));
+        assertNull(SecretScrubber.safeError(null, "t/k", true));
 
         assertSafe(new java.net.http.HttpConnectTimeoutException("t/k"), java.net.http.HttpConnectTimeoutException.class);
         assertSafe(new java.net.http.HttpTimeoutException("x t/k"), java.net.http.HttpTimeoutException.class);
@@ -266,7 +266,7 @@ class ExchangeSenderTest {
         suppressed.addSuppressed(suppressed.getSuppressed()[0]);
         assertSafe(suppressed, IOException.class);
 
-        Exception unreadable = ExchangeSender.safeError(new java.net.http.HttpTimeoutException("anything"), null, true);
+        Exception unreadable = SecretScrubber.safeError(new java.net.http.HttpTimeoutException("anything"), null, true);
         assertEquals("java.net.http.HttpTimeoutException: [message omitted]", unreadable.getMessage());
         assertEquals(java.net.http.HttpTimeoutException.class, unreadable.getClass());
     }
@@ -274,16 +274,16 @@ class ExchangeSenderTest {
     @Test
     void safeErrorFindsARawTokenThatDecodingWouldHide() {
         // A backslash right before the token turns its first character into an escape when decoded.
-        Exception safe = ExchangeSender.safeError(new IOException("status \\tok-164"), "tok-164", false);
+        Exception safe = SecretScrubber.safeError(new IOException("status \\tok-164"), "tok-164", false);
 
         assertFalse(chain(safe).contains("tok-164"), chain(safe));
     }
 
     private static void assertSafe(Exception error, Class<?> kind) {
-        Exception safe = ExchangeSender.safeError(error, "t/k", false);
+        Exception safe = SecretScrubber.safeError(error, "t/k", false);
         assertEquals(kind, safe.getClass());
         assertNull(safe.getCause());
-        assertFalse(ExchangeSender.looselyDecoded(chain(safe)).contains("t/k"), chain(safe));
+        assertFalse(SecretScrubber.looselyDecoded(chain(safe)).contains("t/k"), chain(safe));
         assertTrue(safe.getMessage().startsWith(error.getClass().getName() + ": "), safe.getMessage());
     }
 
@@ -297,16 +297,16 @@ class ExchangeSenderTest {
                 HttpRequest.newBuilder(URI.create(base + "/fail")).GET().build(),
                 java.net.http.HttpResponse.BodyHandlers.ofString());
 
-        ExchangeSender.SafeFailure none = ExchangeSender.safeHookFailure(response, "t/k", "{\"hook\":\"x\"}");
+        SecretScrubber.SafeFailure none = SecretScrubber.safeHookFailure(response, "t/k", "{\"hook\":\"x\"}");
         assertSame(response, none.response());
         assertEquals("t/k", none.body());
 
-        ExchangeSender.SafeFailure known = ExchangeSender.safeHookFailure(response, "t/k",
+        SecretScrubber.SafeFailure known = SecretScrubber.safeHookFailure(response, "t/k",
                 "{\"fhirAuthorization\":{\"access_token\":\"t/k\"}}");
         assertEquals(List.of("[REDACTED]"), known.response().headers().allValues("X-Echo"));
         assertEquals("[REDACTED]", known.body());
 
-        ExchangeSender.SafeFailure unreadable = ExchangeSender.safeHookFailure(response, "t/k", "{");
+        SecretScrubber.SafeFailure unreadable = SecretScrubber.safeHookFailure(response, "t/k", "{");
         java.net.http.HttpResponse<String> kept = unreadable.response();
         assertNull(unreadable.body());
         assertTrue(kept.headers().map().isEmpty());
@@ -337,7 +337,7 @@ class ExchangeSenderTest {
     void serialisedRequestThatWouldStillContainTheTokenIsOmitted() {
         String body = "{\"fhirAuthorization\":{\"access_token\":\"tab164\"},\"context\":{\"x\":\"\\tab164\"}}";
 
-        ExchangeSender.HookBody safe = ExchangeSender.redactFhirAuthorization(body);
+        SecretScrubber.HookBody safe = SecretScrubber.redactFhirAuthorization(body);
 
         assertEquals("tab164", safe.accessToken());
         assertTrue(safe.readable());
@@ -378,11 +378,11 @@ class ExchangeSenderTest {
 
     @Test
     void aKnownTokenStillRedactsAnUnreadableHookBody() {
-        assertEquals(new ExchangeSender.HookBody(null, "t/k"), ExchangeSender.redactRequest("{", "t/k"));
-        assertEquals(new ExchangeSender.HookBody(null, "t/k"), ExchangeSender.redactRequest(null, "t/k"));
-        assertEquals(new ExchangeSender.HookBody("{\"x\":1}", "t/k"), ExchangeSender.redactRequest("{\"x\":1}", "t/k"));
-        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"y\":\"[REDACTED] [REDACTED]\"}", "t/k"),
-                ExchangeSender.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"},\"y\":\"own t/k\"}", "t/k"));
+        assertEquals(new SecretScrubber.HookBody(null, "t/k"), SecretScrubber.redactRequest("{", "t/k"));
+        assertEquals(new SecretScrubber.HookBody(null, "t/k"), SecretScrubber.redactRequest(null, "t/k"));
+        assertEquals(new SecretScrubber.HookBody("{\"x\":1}", "t/k"), SecretScrubber.redactRequest("{\"x\":1}", "t/k"));
+        assertEquals(new SecretScrubber.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"},\"y\":\"[REDACTED] [REDACTED]\"}", "t/k"),
+                SecretScrubber.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"},\"y\":\"own t/k\"}", "t/k"));
     }
 
     @Test
@@ -427,24 +427,24 @@ class ExchangeSenderTest {
     @Test
     void headerNamesThatRedactToTheSameNameMerge() {
         java.util.Map<String, List<String>> headers = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        ExchangeSender.putRedacted(headers, "X-[REDACTED]", List.of("a"), "tok164");
-        ExchangeSender.putRedacted(headers, "X-tok164", List.of("b"), "tok164");
+        SecretScrubber.putRedacted(headers, "X-[REDACTED]", List.of("a"), "tok164");
+        SecretScrubber.putRedacted(headers, "X-tok164", List.of("b"), "tok164");
 
         assertEquals(java.util.Map.of("X-[REDACTED]", List.of("a", "b")), java.util.Map.copyOf(headers));
     }
 
     @Test
     void theBodysOwnTokenIsRedactedAlongsideTheCallsToken() {
-        assertEquals(new ExchangeSender.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", "t/k"),
-                ExchangeSender.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"}}", "t/k"));
-        assertEquals(new ExchangeSender.HookBody(null, "zz"), ExchangeSender.redactRequest(
+        assertEquals(new SecretScrubber.HookBody("{\"fhirAuthorization\":{\"access_token\":\"[REDACTED]\"}}", "t/k"),
+                SecretScrubber.redactRequest("{\"fhirAuthorization\":{\"access_token\":\"own\"}}", "t/k"));
+        assertEquals(new SecretScrubber.HookBody(null, "zz"), SecretScrubber.redactRequest(
                 "{\"fhirAuthorization\":{\"access_token\":\"tab164\"},\"x\":\"\\tab164\"}", "zz"));
     }
 
     @Test
     void looseDecodingHandlesEveryEscape() {
-        assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", ExchangeSender.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
-        assertEquals("end\\", ExchangeSender.looselyDecoded("end\\"));
+        assertEquals("\"\\/\b\f\n\r\tA\\x\\u12", SecretScrubber.looselyDecoded("\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\x\\u12"));
+        assertEquals("end\\", SecretScrubber.looselyDecoded("end\\"));
     }
 
     private void hookWithResponse(String token, int status, String reply) throws Exception {

@@ -7,10 +7,10 @@ import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
-import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
 import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
+import io.github.dflippojr.fhircrdrouter.client.internal.SecretScrubber;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
@@ -329,7 +329,7 @@ public final class CdsHooksClient {
 
     /** {@code error}, or a copy of it without {@code ehrToken} in its diagnostics if any of them shows it. */
     private static Exception withoutToken(Exception error, String ehrToken) {
-        return ehrToken == null ? error : ExchangeSender.safeError(error, ehrToken, false);
+        return ehrToken == null ? error : SecretScrubber.safeError(error, ehrToken, false);
     }
 
     private static String ehrToken(CdsHookRequest request) {
@@ -467,10 +467,11 @@ public final class CdsHooksClient {
                 }
                 // A payer may echo the bearer it rejected; keep it out of the exception callers log (#195).
                 // On a HOOK call it may also echo the EHR's fhirAuthorization token; remove that too (#164).
-                String failed = EchoedCredentials.redact(response.body(), sent.credential());
+                String failed = SecretScrubber.redact(response.body(), sent.credential());
                 HttpResponse<String> kept = response;
                 if (phase == PayerCallPhase.HOOK) {
-                    ExchangeSender.SafeFailure safe = ExchangeSender.safeHookFailure(response, failed, body);
+                    SecretScrubber.SafeFailure safe = SecretScrubber.safeHookFailure(response, failed, body,
+                            EhrRedaction.current().token());
                     kept = safe.response();
                     failed = safe.body();
                 }
@@ -515,7 +516,7 @@ public final class CdsHooksClient {
         URI uri = builder.copy().build().uri();
         applyAuth(client, builder, uri, record, attempt, freshToken);
         HttpRequest request = builder.build();
-        String credential = EchoedCredentials.fromAuthorization(request.headers().firstValue("Authorization").orElse(null));
+        String credential = SecretScrubber.fromAuthorization(request.headers().firstValue("Authorization").orElse(null));
         return new Attempt(ExchangeSender.send(client, request, body, record, phase, attempt, exchangeListener),
                 credential);
     }
