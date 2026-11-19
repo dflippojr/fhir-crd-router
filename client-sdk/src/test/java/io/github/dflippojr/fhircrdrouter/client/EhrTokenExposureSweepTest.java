@@ -1,21 +1,17 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.time.Duration;
@@ -42,8 +38,7 @@ class EhrTokenExposureSweepTest {
     private static final String OK = "{\"cards\":[]}";
 
     private final List<PayerExchange> exchanges = new CopyOnWriteArrayList<>();
-    private HttpServer server;
-    private String base;
+    private final LoopbackPayer payer = new LoopbackPayer();
 
     enum Path {
         HOOK_ERROR_BODY, HOOK_RESPONSE_HEADERS, HOOK_UNPARSEABLE_2XX, HOOK_UNMAPPABLE_2XX,
@@ -53,56 +48,48 @@ class EhrTokenExposureSweepTest {
 
     @AfterEach
     void stop() {
-        if (server != null) {
-            server.stop(0);
-        }
+        payer.close();
     }
 
     @ParameterizedTest
     @EnumSource(Path.class)
     void tokenAppearsNowhere(Path path) throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
         AtomicInteger tokens = new AtomicInteger();
         AtomicInteger hooks = new AtomicInteger();
         boolean oauth = switch (path) {
             case FIRST_TOKEN_FAILURE, REFRESH_AFTER_401_FAILS, REFRESH_AFTER_401_ECHOES -> true;
             default -> false;
         };
-        server.createContext("/token", e -> {
-            e.getRequestBody().readAllBytes();
+        payer.on("/token", request -> {
             int n = tokens.incrementAndGet();
             boolean fail = path == Path.FIRST_TOKEN_FAILURE || path == Path.REFRESH_AFTER_401_FAILS && n == 2;
             boolean echo = path != Path.REFRESH_AFTER_401_FAILS || n == 2;
-            if (echo && n > 1 || path == Path.FIRST_TOKEN_FAILURE) {
-                e.getResponseHeaders().add("X-Request-Id", TOKEN);
-                e.getResponseHeaders().add("WWW-Authenticate", "Bearer error=\"" + TOKEN + "\"");
-            }
+            Reply reply;
             if (fail) {
-                TestResponses.respond(e, 400, "{\"error\":\"invalid_client\",\"error_description\":\"saw " + TOKEN + "\"}");
+                reply = plain(400, "{\"error\":\"invalid_client\",\"error_description\":\"saw " + TOKEN + "\"}");
             } else {
                 String scope = n > 1 ? TOKEN : "crd";
-                TestResponses.respond(e, 200, "{\"access_token\":\"payer-" + n + "\",\"token_type\":\"Bearer\","
+                reply = plain(200, "{\"access_token\":\"payer-" + n + "\",\"token_type\":\"Bearer\","
                         + "\"expires_in\":300,\"scope\":\"" + scope + "\"}");
             }
-        });
-        server.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
-            int n = hooks.incrementAndGet();
-            switch (path) {
-                case HOOK_ERROR_BODY -> respond(e, 400, "{\"error\":\"bad " + TOKEN + "\"}", false);
-                case HOOK_RESPONSE_HEADERS -> respond(e, 200, OK, true);
-                case HOOK_UNPARSEABLE_2XX -> respond(e, 200, "{\"cards\":" + TOKEN + "}", false);
-                case HOOK_UNMAPPABLE_2XX -> respond(e, 200, "{\"cards\":[{\"suggestions\":[\"" + TOKEN + "\"]}]}", false);
-                case REFRESH_AFTER_401_FAILS, REFRESH_AFTER_401_ECHOES -> respond(e, n == 1 ? 401 : 200, OK, false);
-                default -> respond(e, 200, OK, false);
+            if (echo && n > 1 || path == Path.FIRST_TOKEN_FAILURE) {
+                reply = reply.withHeader("X-Request-Id", TOKEN)
+                        .withHeader("WWW-Authenticate", "Bearer error=\"" + TOKEN + "\"");
             }
+            return reply;
         });
-        server.createContext("/cds-services/" + TOKEN, e -> {
-            e.getRequestBody().readAllBytes();
-            respond(e, 400, "{\"error\":\"no\"}", false);
+        payer.on("/cds-services/x", request -> {
+            int n = hooks.incrementAndGet();
+            return switch (path) {
+                case HOOK_ERROR_BODY -> respond(400, "{\"error\":\"bad " + TOKEN + "\"}", false);
+                case HOOK_RESPONSE_HEADERS -> respond(200, OK, true);
+                case HOOK_UNPARSEABLE_2XX -> respond(200, "{\"cards\":" + TOKEN + "}", false);
+                case HOOK_UNMAPPABLE_2XX -> respond(200, "{\"cards\":[{\"suggestions\":[\"" + TOKEN + "\"]}]}", false);
+                case REFRESH_AFTER_401_FAILS, REFRESH_AFTER_401_ECHOES -> respond(n == 1 ? 401 : 200, OK, false);
+                default -> respond(200, OK, false);
+            };
         });
-        server.start();
+        payer.on("/cds-services/" + TOKEN, respond(400, "{\"error\":\"no\"}", false));
         Map<String, Object> context = path == Path.REQUEST_SERIALIZATION
                 ? Map.of("patientId", "pat-1", TOKEN, new Object()) : Map.of("patientId", "pat-1");
         CdsHookRequest request = new CdsHookRequest("order-sign", "instance", context, Map.of())
@@ -198,20 +185,18 @@ class EhrTokenExposureSweepTest {
         assertFalse(text.contains(TOKEN), () -> where + ": " + text);
     }
 
-    private static void respond(HttpExchange e, int status, String body, boolean echoHeaders) throws IOException {
-        if (echoHeaders) {
-            e.getResponseHeaders().add("X-Request-Id", TOKEN);
-        }
-        TestResponses.respond(e, status, body);
+    private static Reply respond(int status, String body, boolean echoHeaders) {
+        Reply reply = plain(status, body);
+        return echoHeaders ? reply.withHeader("X-Request-Id", TOKEN) : reply;
+    }
+
+    /** {@code body} with no Content-Type, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 
     private ConnectionRecord record(boolean oauth) {
-        ConnectionRecord.Builder builder = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base);
-        return oauth
-                ? builder.authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential").clientId("client")
-                        .tokenEndpoint(base + "/token").build()
-                : builder.authType(AuthType.NONE).build();
+        return (oauth ? TestRecords.oauth2(payer) : TestRecords.none(payer)).payerId("payer").build();
     }
 
     private static CredentialProvider secrets() {

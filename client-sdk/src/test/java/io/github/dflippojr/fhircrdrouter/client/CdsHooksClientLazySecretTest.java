@@ -1,13 +1,12 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditSink;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditedCredentialProvider;
@@ -17,8 +16,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,8 +41,7 @@ class CdsHooksClientLazySecretTest {
     private static final CdsHookRequest REQUEST =
             new CdsHookRequest("order-sign", "instance-1", Map.of(), Map.of());
 
-    private HttpServer server;
-    private ExecutorService serverThreads;
+    private LoopbackPayer payer;
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final AtomicReference<String> revokedToken = new AtomicReference<>();
     private volatile long tokenDelayMillis;
@@ -53,11 +49,9 @@ class CdsHooksClientLazySecretTest {
     private final AtomicInteger resolves = new AtomicInteger();
 
     @BeforeEach
-    void startServer() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        serverThreads = Executors.newCachedThreadPool();
-        server.setExecutor(serverThreads);
-        server.createContext("/token", exchange -> {
+    void startServer() {
+        payer = new LoopbackPayer();
+        payer.on("/token", request -> {
             int n = tokenRequests.incrementAndGet();
             if (tokenDelayMillis > 0) {
                 try {
@@ -66,20 +60,18 @@ class CdsHooksClientLazySecretTest {
                     Thread.currentThread().interrupt();
                 }
             }
-            respond(exchange, 200, "{\"access_token\":\"token-" + n + "\",\"expires_in\":300}");
+            return new Reply(200, "{\"access_token\":\"token-" + n + "\",\"expires_in\":300}");
         });
-        server.createContext("/cds-services/order-sign-crd", exchange -> {
-            String auth = exchange.getRequestHeaders().getFirst("Authorization");
+        payer.on("/cds-services/order-sign-crd", request -> {
+            String auth = request.authorization();
             boolean revoked = auth == null || auth.equals("Bearer " + revokedToken.get());
-            respond(exchange, revoked ? 401 : 200, "{\"cards\":[]}");
+            return new Reply(revoked ? 401 : 200, "{\"cards\":[]}");
         });
-        server.start();
     }
 
     @AfterEach
     void stopServer() {
-        server.stop(0);
-        serverThreads.shutdownNow();
+        payer.close();
     }
 
     @ParameterizedTest
@@ -178,11 +170,8 @@ class CdsHooksClientLazySecretTest {
     }
 
     private ConnectionRecord record(AuthType authType, String credentialRef) {
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder()
-                .payerId("PAYER-LAZY").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(authType).tokenEndpoint(base + "/token")
-                .clientId("synthetic-client").keyId("key-1").credentialRef(credentialRef).build();
+        return TestRecords.forAuth(authType, payer)
+                .payerId("PAYER-LAZY").keyId(TestRecords.KEY_ID).credentialRef(credentialRef).build();
     }
 
     private static String secretFor(AuthType authType) throws Exception {
@@ -200,10 +189,5 @@ class CdsHooksClientLazySecretTest {
             @Override public void put(String ref, String value) { secrets.put(ref, value); }
             @Override public void remove(String ref) { secrets.remove(ref); }
         };
-    }
-
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        TestResponses.respond(exchange, status, body);
     }
 }
