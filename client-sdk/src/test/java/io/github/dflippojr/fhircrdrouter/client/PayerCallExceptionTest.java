@@ -1,18 +1,17 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -53,21 +52,20 @@ class PayerCallExceptionTest {
         @Override public void put(String ref, String value) { }
         @Override public void remove(String ref) { }
     };
-    private HttpServer server;
+    private LoopbackPayer payer;
     private String base;
     private final CountDownLatch release = new CountDownLatch(1);
 
     @BeforeEach
-    void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.start();
+    void start() {
+        payer = new LoopbackPayer();
+        base = payer.origin();
     }
 
     @AfterEach
     void stop() {
         release.countDown();
-        server.stop(0);
+        payer.close();
     }
 
     @Test
@@ -152,14 +150,14 @@ class PayerCallExceptionTest {
     void tokenTimeoutHasNoStatus() { assertTimeoutPhase(true, false, PayerCallPhase.TOKEN); }
 
     private void assertTimeoutPhase(boolean oauth, boolean hook, PayerCallPhase phase) {
-        server.createContext(oauth ? "/token" : "/cds-services", exchange -> {
+        payer.on(oauth ? "/token" : "/cds-services", request -> {
             try {
                 release.await();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-            } finally {
-                exchange.close();
             }
+            // The client timed out long before this reply, so it never reads it.
+            return plain(200, "{}");
         });
         CdsHooksClient client = shortTimeoutClient();
         PayerCallException error = assertTimeoutPreemptively(Duration.ofSeconds(2),
@@ -231,8 +229,8 @@ class PayerCallExceptionTest {
 
     @Test
     void discovery401RedactsEchoedApiKey() {
-        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 401,
-                "{\"error\":\"bad key in header: " + exchange.getRequestHeaders().getFirst("Authorization") + "\"}"));
+        payer.on("/cds-services", request -> plain(401,
+                "{\"error\":\"bad key in header: " + request.authorization() + "\"}"));
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> keyedClient().discoverServices(keyedRecord(AuthType.API_KEY)));
         assertEquals(PayerCallPhase.DISCOVERY, error.phase());
@@ -243,13 +241,13 @@ class PayerCallExceptionTest {
     @Test
     void hook401RedactsEchoedAccessToken() {
         List<String> issued = new CopyOnWriteArrayList<>();
-        server.createContext("/token", exchange -> {
+        payer.on("/token", request -> {
             String token = "synthetic-access-token-" + issued.size();
             issued.add(token);
-            TestResponses.respond(exchange, 200, "{\"access_token\":\"" + token + "\"}");
+            return plain(200, "{\"access_token\":\"" + token + "\"}");
         });
-        server.createContext("/cds-services/hook", exchange -> TestResponses.respond(exchange, 401,
-                "rejected " + bearer(exchange.getRequestHeaders().getFirst("Authorization"))));
+        payer.on("/cds-services/hook", request -> plain(401,
+                "rejected " + bearer(request.authorization())));
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> keyedClient().callHookRaw(keyedRecord(AuthType.OAUTH2_CLIENT_CREDENTIALS), "hook", REQUEST));
         assertEquals(PayerCallPhase.HOOK, error.phase());
@@ -261,9 +259,9 @@ class PayerCallExceptionTest {
     @Test
     void hook401RedactsEchoedCdsHooksJwt() {
         AtomicReference<String> received = new AtomicReference<>();
-        server.createContext("/cds-services/hook", exchange -> {
-            received.set(bearer(exchange.getRequestHeaders().getFirst("Authorization")));
-            TestResponses.respond(exchange, 401, "rejected " + received.get());
+        payer.on("/cds-services/hook", request -> {
+            received.set(bearer(request.authorization()));
+            return plain(401, "rejected " + received.get());
         });
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> keyedClient().callHookRaw(keyedRecord(AuthType.CDS_HOOKS_JWT), "hook", REQUEST));
@@ -276,10 +274,9 @@ class PayerCallExceptionTest {
     @Test
     void token400RedactsEchoedClientAssertion() {
         AtomicReference<String> received = new AtomicReference<>();
-        server.createContext("/token", exchange -> {
-            received.set(formField(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8),
-                    "client_assertion"));
-            TestResponses.respond(exchange, 400, "{\"error\":\"invalid_client\",\"error_description\":"
+        payer.on("/token", request -> {
+            received.set(formField(request.body(), "client_assertion"));
+            return plain(400, "{\"error\":\"invalid_client\",\"error_description\":"
                     + "\"rejected assertion " + received.get() + "\"}");
         });
         PayerCallException error = assertThrows(PayerCallException.class,
@@ -294,8 +291,8 @@ class PayerCallExceptionTest {
     @Test
     void echoedKeyAtTruncationBoundaryLeavesNoPrefix() {
         // Ten characters of the key fall before the 4096-byte limit and the rest after it.
-        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 401,
-                "a".repeat(4096 - 10) + bearer(exchange.getRequestHeaders().getFirst("Authorization")) + " tail"));
+        payer.on("/cds-services", request -> plain(401,
+                "a".repeat(4096 - 10) + bearer(request.authorization()) + " tail"));
         PayerCallException error = assertThrows(PayerCallException.class,
                 () -> keyedClient().discoverServices(keyedRecord(AuthType.API_KEY)));
         for (int i = 0; i + 8 <= API_KEY.length(); i++) {
@@ -332,15 +329,13 @@ class PayerCallExceptionTest {
     }
 
     private ConnectionRecord keyedRecord(AuthType authType) {
-        var builder = ConnectionRecord.builder().payerId("PAYER-TEST").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(authType);
+        var builder = TestRecords.forAuth(authType, base);
+        // The credential refs pick the secret KEYED_CREDENTIALS resolves.
         switch (authType) {
             case API_KEY -> builder.credentialRef("api-key");
-            case OAUTH2_CLIENT_CREDENTIALS -> builder.tokenEndpoint(base + "/token").clientId("synthetic-client")
-                    .credentialRef("secret-ref");
-            case OAUTH2_PRIVATE_KEY_JWT -> builder.tokenEndpoint(base + "/token").clientId("synthetic-client")
-                    .keyId("key-1").credentialRef("signing-key");
-            case CDS_HOOKS_JWT -> builder.clientId("synthetic-client").keyId("key-1").credentialRef("signing-key");
+            case OAUTH2_CLIENT_CREDENTIALS -> builder.clientId("synthetic-client").credentialRef("secret-ref");
+            case OAUTH2_PRIVATE_KEY_JWT, CDS_HOOKS_JWT -> builder.clientId("synthetic-client")
+                    .credentialRef("signing-key");
             case NONE -> { }
         }
         return builder.build();
@@ -358,19 +353,26 @@ class PayerCallExceptionTest {
     }
 
     private ConnectionRecord record(boolean oauth) {
-        var builder = ConnectionRecord.builder().payerId("PAYER-TEST").environment(Environment.SANDBOX).baseUrl(base);
         if (oauth) {
-            builder.authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
-                    .clientId("synthetic-client").credentialRef("secret-ref");
-        } else { builder.authType(AuthType.NONE); }
-        return builder.build();
+            return TestRecords.forAuth(AuthType.OAUTH2_CLIENT_CREDENTIALS, base).clientId("synthetic-client")
+                    .credentialRef("secret-ref").build();
+        }
+        return TestRecords.forAuth(AuthType.NONE, base).build();
     }
 
     private void respond(String path, int status, String body, Map<String, String> headers, AtomicInteger calls) {
-        server.createContext(path, exchange -> {
+        payer.on(path, request -> {
             calls.incrementAndGet();
-            headers.forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
-            TestResponses.respond(exchange, status, body);
+            Reply reply = plain(status, body);
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                reply = reply.withHeader(header.getKey(), header.getValue());
+            }
+            return reply;
         });
+    }
+
+    /** {@code body} with no {@code Content-Type} unless a test adds one, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 }
