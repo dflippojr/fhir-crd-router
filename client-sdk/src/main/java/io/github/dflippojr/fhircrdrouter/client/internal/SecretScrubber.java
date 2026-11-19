@@ -44,8 +44,8 @@ import javax.net.ssl.SSLSession;
  *
  * <p>Every function is pure: the secret to remove is a parameter. Nothing here reads the call's
  * {@link EhrRedaction} context, sends a request or keeps state. The classes that do read the context or send
- * ({@link ExchangeSender}, {@link EhrRedaction}, {@code CdsHooksClient} and {@code OAuth2TokenClient}) call
- * this class, and it calls none of them (#233).
+ * ({@link ExchangeSender}, {@link EhrRedaction}, {@code CdsHooksClient}, {@code PayerCallLoop} and
+ * {@code OAuth2TokenClient}) call this class, and it calls none of them (#233).
  */
 public final class SecretScrubber {
     /** What a removed secret is replaced with. */

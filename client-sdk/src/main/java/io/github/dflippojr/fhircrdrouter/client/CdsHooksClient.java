@@ -2,15 +2,12 @@ package io.github.dflippojr.fhircrdrouter.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.dflippojr.fhircrdrouter.client.CredentialLookup.CredentialReadException;
-import io.github.dflippojr.fhircrdrouter.client.CredentialLookup.MissingCredentialException;
 import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
 import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.SecretScrubber;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
 
@@ -21,12 +18,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Objects;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.OptionalInt;
 
 /**
  * Given a resolved {@link ConnectionRecord}, talks to that payer's CDS
@@ -173,74 +168,8 @@ public final class CdsHooksClient {
      */
     public ConnectionVerification verify(ConnectionRecord record) {
         Objects.requireNonNull(record, "record");
-        String payerId = record.payerId();
-        Environment environment = record.environment();
-        Instant checkedAt = Instant.now();
-        long started = System.nanoTime();
-        try {
-            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record), payerCalls.freshToken());
-            JsonNode catalog;
-            try {
-                catalog = mapper.readTree(response.body());
-            } catch (IOException e) {
-                return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                        PayerCallPhase.DISCOVERY, OptionalInt.of(response.statusCode()),
-                        "discovery response is not valid JSON");
-            }
-            JsonNode services = catalog == null ? null : catalog.get("services");
-            List<String> hooks = new ArrayList<>();
-            int serviceCount = 0;
-            if (services != null && services.isArray()) {
-                serviceCount = services.size();
-                for (JsonNode service : services) {
-                    JsonNode hook = service.get("hook");
-                    if (hook != null && hook.isTextual() && !hook.textValue().isBlank()) {
-                        hooks.add(hook.textValue());
-                    }
-                }
-            }
-            return ConnectionVerification.catalog(payerId, environment, checkedAt, since(started),
-                    hooks, serviceCount, CdsDiscoveryValidator.validate(catalog));
-        } catch (PayerCallException e) {
-            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                    e.phase(), e.statusCode(), payerCallReason(e));
-        } catch (MissingCredentialException e) {
-            PayerCallPhase phase = e.phaseOrDiscovery();
-            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                    phase, OptionalInt.empty(), "missing credential for " + describe(phase));
-        } catch (CredentialReadException e) {
-            PayerCallPhase phase = e.phaseOrDiscovery();
-            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                    phase, OptionalInt.empty(), "credential could not be read: "
-                            + e.getCause().getClass().getSimpleName());
-        } catch (EndpointUrlException e) {
-            // No exchange was attempted, so no phase; the problem text never includes the URL.
-            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                    null, OptionalInt.empty(), e.field() + " " + e.problem());
-        } catch (RouterException | IllegalArgumentException e) {
-            return ConnectionVerification.failure(payerId, environment, checkedAt, since(started),
-                    null, OptionalInt.empty(), "connection could not be verified: " + e.getClass().getSimpleName());
-        }
-    }
-
-    private static String payerCallReason(PayerCallException e) {
-        String request = describe(e.phase());
-        if (e.statusCode().isPresent()) {
-            return request + " returned HTTP " + e.statusCode().getAsInt();
-        }
-        return request + (e.timedOut() ? " timed out" : " transport failure");
-    }
-
-    private static String describe(PayerCallPhase phase) {
-        return switch (phase) {
-            case DISCOVERY -> "discovery request";
-            case TOKEN -> "token request";
-            case HOOK -> "hook request";
-        };
-    }
-
-    private static Duration since(long startedNanos) {
-        return Duration.ofNanos(Math.max(0, System.nanoTime() - startedNanos));
+        return ConnectionVerifier.verify(record, mapper,
+                () -> sendDiscovery(record, discoveryContext(record), payerCalls.freshToken()));
     }
 
     private static String discoveryContext(ConnectionRecord record) {

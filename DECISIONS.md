@@ -200,7 +200,7 @@ host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
   cache lookup, since `jwksUrl` is not in the cache key, and before the
   secret supplier runs, so a failing credential provider cannot hide the
   refusal. `EndpointUrls.requireTokenUrls` is the shared check, also used by
-  `CdsHooksClient`'s preflight.
+  the preflight of every `CdsHooksClient` call (in `PayerCallLoop.send`).
 
 ## Writes sweep killed writers' temporary files (2026-11-03, #120)
 
@@ -329,16 +329,18 @@ depended on each other. Stage 1 of the #233 plan moves them, unchanged, into
   secret to remove as a parameter. None reads the per-call `EhrRedaction`
   context, sends a request or keeps state. Code that reads the context reads
   it at the boundary and passes the token in: `ExchangeSender` for listener
-  exchanges, `EhrRedaction.exception` for exceptions, `CdsHooksClient` for a
+  exchanges, `EhrRedaction.exception` for exceptions, `PayerCallLoop` for a
   failed HOOK response, and `OAuth2TokenClient` for its error body. So
-  `EhrRedaction`, `ExchangeSender`, `CdsHooksClient` and `OAuth2TokenClient`
-  call `SecretScrubber`, and it calls none of them. A reviewer checking the
-  #164 guarantee reads `SecretScrubber`, `EhrRedaction` and those call sites.
+  `EhrRedaction`, `ExchangeSender`, `PayerCallLoop`, `CdsHooksClient` and
+  `OAuth2TokenClient` call `SecretScrubber`, and it calls none of them. A
+  reviewer checking the #164 guarantee reads `SecretScrubber`, `EhrRedaction`
+  and those call sites.
 - **`safeHookFailure` takes the token.** It was the one helper that read the
-  context itself. `CdsHooksClient` now passes `EhrRedaction.current().token()`,
-  on the same thread at the same point in the call. A package-private overload
-  without the token serves the existing unit test, as
-  `redactFhirAuthorization` already did for `redactRequest`.
+  context itself. The payer call loop (`PayerCallLoop` since stage 3) now
+  passes `EhrRedaction.current().token()`, on the same thread at the same
+  point in the call. A package-private overload without the token serves the
+  existing unit test, as `redactFhirAuthorization` already did for
+  `redactRequest`.
 - **Duplicates folded only where identical.** The two loops that removed the
   token from every header name and value are now `redactHeaders`. The
   listener's header loop stays separate, because it applies another policy:
@@ -354,6 +356,17 @@ depended on each other. Stage 1 of the #233 plan moves them, unchanged, into
   `ExchangeSender`. It depends only on the JDK: it reads no `EhrRedaction`
   context and sees no listener. `ExchangeSender.send` wraps it with the
   listener reporting.
+- **Stage 3: `CdsHooksClient` is a facade.** It keeps its constructors and
+  methods, discovery, and the hook calls with their response parsing. The
+  rest moved unchanged into package-private classes in `client`:
+  `PayerCallLoop` (the auth header, the 401 re-authentication, the throttle
+  retries and the redaction of a failed HOOK response), `MtlsClients` (the
+  fingerprinted mutual TLS client cache), `CredentialLookup` (credential
+  reads and the exceptions for a missing or unreadable credential) and
+  `ConnectionVerifier` (how `verify` reports a catalog or a failure). The
+  plan named the first three. The verify mapping moved too, because without
+  it `CdsHooksClient.java` stayed at 397 lines, over the issue's limit of
+  350. None of the four depends on `CdsHooksClient`.
 
 ## Not yet done
 
@@ -493,16 +506,17 @@ request, and it is one of `gate`'s needs.
 `AuthType` has two public predicates: `usesOAuth2Token()`, true for the two
 OAuth2 client-credentials types, and `signsJwt()`, true for
 `OAUTH2_PRIVATE_KEY_JWT` and `CDS_HOOKS_JWT`. `ConnectionRecord`,
-`EndpointUrls` and `CdsHooksClient` ask them, not compare constants, so a new
-auth type is decided in one place. The predicates are a small addition to the
+`EndpointUrls` and the client (`PayerCallLoop` and `CredentialLookup` since
+#233) ask them, not compare constants, so a new auth type is decided in one
+place. The predicates are a small addition to the
 `directory-core` API, chosen over a `core.internal` helper so the downstream
 workbench can use them too.
 
 Both are exhaustive switches with no `default`. Adding a constant is a compile
 error until its author says which predicate it satisfies. The `||` chains they
 replace would have let a new constant fall through silently. The `switch` in
-`CdsHooksClient.applyAuth` and `OAuth2TokenClient`'s single-constant check stay
-as they are.
+`PayerCallLoop.applyAuth` (in `CdsHooksClient` until #233) and
+`OAuth2TokenClient`'s single-constant check stay as they are.
 
 Behaviour is unchanged. `ConnectionRecordTest` and `EndpointUrlsTest` pin, for
 all five types, which fields each requires and which URLs each checks.
