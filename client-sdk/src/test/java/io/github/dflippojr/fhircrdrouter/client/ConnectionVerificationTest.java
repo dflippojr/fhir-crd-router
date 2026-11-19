@@ -1,7 +1,8 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionStatus;
@@ -20,12 +21,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -41,7 +42,7 @@ class ConnectionVerificationTest {
               {"id":"sign-check","hook":"order-sign","description":"Synthetic order-sign service"},
               {"id":"select-check","hook":"order-select","description":"Synthetic order-select service"}]}""";
 
-    private HttpServer server;
+    private LoopbackPayer payer;
     private final AtomicInteger discoveryCalls = new AtomicInteger();
     private final AtomicInteger otherCalls = new AtomicInteger();
     private final List<PayerExchange> exchanges = new ArrayList<>();
@@ -52,13 +53,12 @@ class ConnectionVerificationTest {
     private String secret = "synthetic-secret";
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/cds-services", e -> {
-            if (!e.getRequestURI().getPath().equals("/cds-services")) {
+    void start() {
+        payer = new LoopbackPayer();
+        payer.on("/cds-services", request -> {
+            if (!request.rawPath().equals("/cds-services")) {
                 otherCalls.incrementAndGet();
-                TestResponses.respond(e, 404, "{}");
-                return;
+                return plain(404, "{}");
             }
             discoveryCalls.incrementAndGet();
             if (block) {
@@ -67,20 +67,17 @@ class ConnectionVerificationTest {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
-                e.close();
-                return;
+                // The client timed out long before this reply, so it never reads it.
+                return plain(200, "{}");
             }
-            e.getResponseHeaders().add("Retry-After", "0");
-            e.getResponseHeaders().add("X-Request-Id", "HEADER-MARKER");
-            TestResponses.respond(e, status, body);
+            return plain(status, body).withHeader("Retry-After", "0").withHeader("X-Request-Id", "HEADER-MARKER");
         });
-        server.start();
     }
 
     @AfterEach
     void stop() {
         release.countDown();
-        server.stop(0);
+        payer.close();
     }
 
     @Test
@@ -202,7 +199,7 @@ class ConnectionVerificationTest {
 
     @Test
     void tokenEndpoint400IsReportedAsTokenFailure() {
-        server.createContext("/token", e -> TestResponses.respond(e, 400, "{\"error\":\"invalid_client\"}"));
+        payer.on("/token", plain(400, "{\"error\":\"invalid_client\"}"));
         ConnectionVerification report = client().verify(connection(AuthType.OAUTH2_CLIENT_CREDENTIALS));
 
         assertFailure(report, PayerCallPhase.TOKEN, 400, "token request returned HTTP 400");
@@ -389,9 +386,8 @@ class ConnectionVerificationTest {
     }
 
     private ConnectionRecord keyed(AuthType auth) {
-        return ConnectionRecord.builder().payerId("PAYER-SYNTHETIC").environment(Environment.SANDBOX)
-                .baseUrl(baseUrl()).authType(auth).credentialRef("synthetic-ref").clientId("synthetic-client")
-                .keyId("k1").tokenEndpoint(baseUrl() + "/token").build();
+        return TestRecords.forAuth(auth, payer).payerId("PAYER-SYNTHETIC").credentialRef("synthetic-ref")
+                .clientId("synthetic-client").keyId("k1").tokenEndpoint(payer.url(TestRecords.TOKEN_PATH)).build();
     }
 
     private static void assertCredentialFailure(ConnectionVerification report, PayerCallPhase phase, String type) {
@@ -408,7 +404,7 @@ class ConnectionVerificationTest {
     }
 
     private String baseUrl() {
-        return "http://127.0.0.1:" + server.getAddress().getPort();
+        return payer.origin();
     }
 
     private ConnectionRecord connection(AuthType auth) {
@@ -416,10 +412,15 @@ class ConnectionVerificationTest {
     }
 
     private ConnectionRecord connection(AuthType auth, ConnectionStatus connectionStatus) {
-        return ConnectionRecord.builder().payerId("PAYER-SYNTHETIC").environment(Environment.SANDBOX)
-                .baseUrl(baseUrl() + "/").authType(auth).credentialRef("synthetic-ref")
-                .clientId("synthetic-client").tokenEndpoint(baseUrl() + "/token")
+        // The synthetic-* values are what reportNeverContainsResponseBodyHeadersOrCredential checks stay out.
+        return TestRecords.forAuth(auth, payer.url("/")).payerId("PAYER-SYNTHETIC").credentialRef("synthetic-ref")
+                .clientId("synthetic-client").tokenEndpoint(payer.url(TestRecords.TOKEN_PATH))
                 .status(connectionStatus).build();
+    }
+
+    /** {@code body} with no {@code Content-Type}, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String reply) {
+        return new Reply(status, reply, Map.of());
     }
 
     private CredentialProvider credentials() {
