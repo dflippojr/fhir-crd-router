@@ -18,8 +18,8 @@ import java.util.Set;
  *
  * <p>A hook call opens one when it starts, from the request it was given, and it stays current on the
  * calling thread until the call returns. Every exposure boundary reads it: {@link ExchangeSender} for each
- * listener exchange of every phase (HOOK, and TOKEN including a re-authentication after a 401), the hook
- * call for the body and headers a failed HOOK response leaves in its exception, the
+ * listener exchange of every phase (HOOK, and TOKEN including a re-authentication after a 401), the payer
+ * call loop ({@code PayerCallLoop}) for the body and headers a failed HOOK response leaves in its exception, the
  * token client for error bodies, and {@link #exception} for each exception that leaves the SDK. All of an
  * SDK call's sends and listener callbacks run on the calling thread, so a thread-local context reaches
  * the token client without changing its API. The redaction itself is {@link SecretScrubber}'s, which
