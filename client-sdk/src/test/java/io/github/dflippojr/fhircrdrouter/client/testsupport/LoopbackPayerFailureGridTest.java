@@ -53,7 +53,14 @@ class LoopbackPayerFailureGridTest {
     enum Kind {
         THROWING_RESPONDER, EXHAUSTED_SEQUENCE;
 
-        /** Makes the next POST to {@code path} fail in the fake payer. */
+        /**
+         * Makes the next POST to {@code path} fail in the fake payer, and returns with no handler running.
+         *
+         * <p>The client has the scripted reply before the payer's handler for it stops counting as in
+         * flight, so the exhausted sequence waits for that handler to finish (#245). Otherwise a caller's
+         * "the next request reached the payer" ({@code inFlight() == 1}) can pass on the arming request,
+         * and a reset or close then settles before the next request arrives.
+         */
         void arm(LoopbackPayer payer, String path, HttpClient http) throws Exception {
             if (this == THROWING_RESPONDER) {
                 payer.on(path, THROWS);
@@ -61,6 +68,7 @@ class LoopbackPayerFailureGridTest {
                 payer.onSequence(path, Reply.empty(204));
                 assertEquals(204, http.send(post(payer.url(path)), HttpResponse.BodyHandlers.ofString())
                         .statusCode(), "the one scripted reply");
+                assertEquals(0, payer.settle(), "the scripted reply's handler finished");
             }
         }
     }

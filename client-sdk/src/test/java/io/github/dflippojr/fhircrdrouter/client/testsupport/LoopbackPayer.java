@@ -310,6 +310,14 @@ public final class LoopbackPayer implements AutoCloseable {
         }
     }
 
+    /**
+     * Test seam: waits, up to the settle bound, for no handler to be running, as {@link #reset(Function)}
+     * does first. Returns 0 when none is, otherwise how many still were at the bound.
+     */
+    int settle() {
+        return awaitSettled();
+    }
+
     /** Test seam: handlers running now, from reading the request to sending the reply. */
     int inFlight() {
         return inFlight.get();
