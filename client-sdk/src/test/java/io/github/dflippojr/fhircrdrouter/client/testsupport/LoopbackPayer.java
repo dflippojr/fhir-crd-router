@@ -9,7 +9,6 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -19,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -71,13 +71,12 @@ public final class LoopbackPayer implements AutoCloseable {
     /**
      * A canned reply. A {@code null} body sends no body at all (length {@code -1}); any other body is
      * sent as UTF-8 with {@link TestResponses#respond}, so an empty body goes out chunked, as it does
-     * from a hand-rolled server. Header names keep their order and repeated values are all sent.
+     * from a hand-rolled server. Header names are case-insensitive, as in HTTP: names that differ only
+     * in case are one header, and all of its values are sent.
      */
     public record Reply(int status, String body, Map<String, List<String>> headers) {
         public Reply {
-            Map<String, List<String>> copy = new LinkedHashMap<>();
-            headers.forEach((name, values) -> copy.put(name, List.copyOf(values)));
-            headers = Collections.unmodifiableMap(copy);
+            headers = Collections.unmodifiableMap(caseInsensitive(headers));
         }
 
         /** {@code body} with {@code Content-Type: application/json}. */
@@ -92,7 +91,7 @@ public final class LoopbackPayer implements AutoCloseable {
 
         /** This reply with {@code value} added to header {@code name}. */
         public Reply withHeader(String name, String value) {
-            Map<String, List<String>> next = new LinkedHashMap<>(headers);
+            Map<String, List<String>> next = caseInsensitive(headers);
             List<String> values = new ArrayList<>(next.getOrDefault(name, List.of()));
             values.add(value);
             next.put(name, values);
@@ -101,9 +100,20 @@ public final class LoopbackPayer implements AutoCloseable {
 
         /** This reply without header {@code name}, for example to send a body with no Content-Type. */
         public Reply withoutHeader(String name) {
-            Map<String, List<String>> next = new LinkedHashMap<>(headers);
+            Map<String, List<String>> next = caseInsensitive(headers);
             next.remove(name);
             return new Reply(status, body, next);
+        }
+
+        /** A mutable copy keyed case-insensitively, merging the values of names that differ only in case. */
+        private static Map<String, List<String>> caseInsensitive(Map<String, List<String>> headers) {
+            Map<String, List<String>> copy = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            headers.forEach((name, values) -> copy.merge(name, List.copyOf(values), (earlier, later) -> {
+                List<String> merged = new ArrayList<>(earlier);
+                merged.addAll(later);
+                return List.copyOf(merged);
+            }));
+            return copy;
         }
     }
 
@@ -116,6 +126,7 @@ public final class LoopbackPayer implements AutoCloseable {
     private final List<Received> received = new CopyOnWriteArrayList<>();
     private final List<Throwable> failures = new CopyOnWriteArrayList<>();
     private final Set<String> routes = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
 
     public LoopbackPayer() {
@@ -219,12 +230,14 @@ public final class LoopbackPayer implements AutoCloseable {
 
     /**
      * Stops the server, then fails with any responder failure or exhausted sequence recorded since the
-     * last reset.
+     * last reset. A second call does not stop anything again; it reports only failures recorded since.
      */
     @Override
     public void close() {
-        server.stop(0);
-        threads.shutdownNow();
+        if (closed.compareAndSet(false, true)) {
+            server.stop(0);
+            threads.shutdownNow();
+        }
         throwRecordedFailures();
     }
 

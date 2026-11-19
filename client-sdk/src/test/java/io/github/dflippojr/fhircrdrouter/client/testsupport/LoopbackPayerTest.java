@@ -119,31 +119,35 @@ class LoopbackPayerTest {
 
     @Test
     void aRequestAfterTheLastScriptedReplyDropsTheConnectionAndFailsClose() throws Exception {
-        LoopbackPayer payer = new LoopbackPayer();
-        payer.onSequence("/token", new Reply(200, "{}"));
-        get(payer.url("/token"));
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.onSequence("/token", new Reply(200, "{}"));
+            get(payer.url("/token"));
 
-        assertThrows(IOException.class, () -> post(payer.url("/token")));
+            assertThrows(IOException.class, () -> post(payer.url("/token")));
 
-        AssertionError failure = assertThrows(AssertionError.class, payer::close);
-        assertTrue(failure.getMessage().contains("request 2 under /token"), failure.getMessage());
-        assertTrue(failure.getMessage().contains("only 1 replies were scripted"), failure.getMessage());
+            AssertionError failure = assertThrows(AssertionError.class, payer::close);
+            assertTrue(failure.getMessage().contains("request 2 under /token"), failure.getMessage());
+            assertTrue(failure.getMessage().contains("only 1 replies were scripted"), failure.getMessage());
+        }
     }
 
     @Test
     void aResponderThatThrowsFailsCloseWithEveryFailure() throws Exception {
-        LoopbackPayer payer = new LoopbackPayer();
-        payer.on("/check", r -> {
-            throw new AssertionError("unexpected body " + r.body());
-        });
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.on("/check", r -> {
+                throw new AssertionError("unexpected body " + r.body());
+            });
 
-        assertThrows(IOException.class, () -> post(payer.url("/check")));
-        assertThrows(IOException.class, () -> post(payer.url("/check")));
+            assertThrows(IOException.class, () -> post(payer.url("/check")));
+            assertThrows(IOException.class, () -> post(payer.url("/check")));
 
-        AssertionError failure = assertThrows(AssertionError.class, payer::close);
-        assertTrue(failure.getMessage().startsWith("LoopbackPayer: 2 request(s) failed"), failure.getMessage());
-        assertEquals("unexpected body ", failure.getCause().getMessage());
-        assertEquals(1, failure.getSuppressed().length);
+            AssertionError failure = assertThrows(AssertionError.class, payer::close);
+            assertTrue(failure.getMessage().startsWith("LoopbackPayer: 2 request(s) failed"),
+                    failure.getMessage());
+            assertEquals("unexpected body ", failure.getCause().getMessage());
+            assertEquals(1, failure.getSuppressed().length);
+            payer.close();
+        }
     }
 
     @Test
