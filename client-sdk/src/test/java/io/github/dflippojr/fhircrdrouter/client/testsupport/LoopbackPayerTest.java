@@ -42,11 +42,12 @@ class LoopbackPayerTest {
     void aRequestIsRecordedWithItsRawPathQueryHeadersAndBody() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
             payer.on("/a", new Reply(200, "{}"));
-            http.send(HttpRequest.newBuilder(URI.create(payer.url("/a%2Fb/c?x=%20y&z")))
+            HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(payer.url("/a%2Fb/c?x=%20y&z")))
                     .header("Authorization", "Bearer synthetic")
                     .header("X-Custom", "one")
                     .POST(HttpRequest.BodyPublishers.ofString("{\"k\":\"v\"}"))
                     .build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode(), "the route answered");
 
             Received request = payer.received().get(0);
             assertEquals("POST", request.method());
@@ -64,7 +65,7 @@ class LoopbackPayerTest {
     void aRequestWithoutAuthorizationRecordsNull() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
             payer.on("/x", new Reply(200, "{}"));
-            get(payer.url("/x"));
+            assertEquals(200, get(payer.url("/x")).statusCode(), "the route answered");
 
             assertNull(payer.received().get(0).authorization());
         }
@@ -266,10 +267,10 @@ class LoopbackPayerTest {
     @Test
     void receivedByPathMatchesTheRawPathExactly() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
-            payer.on("/token", new Reply(200, "{}"));
-            get(payer.url("/token"));
-            get(payer.url("/token-other"));
-            get(payer.url("/token?x=1"));
+            payer.on("/token", new Reply(200, "{}")).on("/token-other", new Reply(200, "{}"));
+            assertEquals(200, get(payer.url("/token")).statusCode(), "the route answered");
+            assertEquals(200, get(payer.url("/token-other")).statusCode(), "the route answered");
+            assertEquals(200, get(payer.url("/token?x=1")).statusCode(), "the route answered");
 
             assertEquals(2, payer.received("/token").size());
             assertEquals(1, payer.received("/token-other").size());
