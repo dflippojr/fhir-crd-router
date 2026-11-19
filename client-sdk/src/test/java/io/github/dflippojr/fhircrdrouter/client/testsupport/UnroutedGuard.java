@@ -9,8 +9,9 @@ import java.time.Duration;
 
 /**
  * Checks that a {@link LoopbackPayer} answers a path no route matches with 404, as a hand-rolled
- * {@code HttpServer} did for a path with no context. A test class that sets a 404 fallback calls
- * this in {@code @AfterEach}, before closing the payer, so deleting the fallback fails the suite.
+ * {@code HttpServer} did for a path with no context. A test class calls this in {@code @AfterEach},
+ * before closing the payer, so a class whose fallback answers an unrouted path with anything else fails
+ * the suite. {@code LoopbackPayerTest} pins the payer's own 404 default, {@link LoopbackPayer#NOT_FOUND}.
  */
 public final class UnroutedGuard {
 
@@ -37,7 +38,8 @@ public final class UnroutedGuard {
         }
         if (status != 404) {
             throw new AssertionError("an unrouted path got HTTP " + status
-                    + " instead of the hand-rolled server's 404: the class's NOT_FOUND fallback is missing");
+                    + " instead of the hand-rolled server's 404: the payer's fallback no longer answers"
+                    + " unrouted paths with NOT_FOUND");
         }
     }
 }

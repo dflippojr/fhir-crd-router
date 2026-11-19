@@ -34,8 +34,10 @@ import java.util.function.Function;
  *
  * <p>Routing uses the JDK server's own contexts: {@link #on(String, Function)} registers a path, and
  * the longest registered prefix of the request path wins, exactly as {@code createContext} does in a
- * hand-rolled server. A request no route matches goes to the fallback, which answers {@code 200 {}}
- * until {@link #otherwise(Function)} or {@link #reset(Function)} changes it.
+ * hand-rolled server. A request no route matches goes to the fallback, which answers {@link #NOT_FOUND},
+ * the JDK server's own 404 for a path with no context, until {@link #otherwise(Function)} or
+ * {@link #reset(Function)} changes it. A test that expects a request therefore routes its path, and a
+ * request it did not expect fails as it did against a hand-rolled server (#245).
  *
  * <p>A responder that throws, or a scripted sequence that runs out, drops that connection (as a
  * throwing handler does in the JDK server) and is recorded; the next {@link #reset(Function)} or
@@ -122,6 +124,13 @@ public final class LoopbackPayer implements AutoCloseable {
         }
     }
 
+    /**
+     * The JDK server's reply to a path no context matches, and the fallback until a test changes it:
+     * {@code 404}, {@code Content-Type: text/html}, body {@code <h1>404 Not Found</h1>No context found for request}.
+     */
+    public static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
     private final HttpServer server;
     private final ExecutorService threads = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "loopback-payer");
@@ -135,7 +144,7 @@ public final class LoopbackPayer implements AutoCloseable {
     private final AtomicInteger inFlight = new AtomicInteger();
     private final Object settledLock = new Object();
     private final Duration settleBound;
-    private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
+    private volatile Function<Received, Reply> fallback = r -> NOT_FOUND;
     /** Test seam: runs inside the failure drain, after the drain has taken its snapshot. */
     volatile Runnable duringDrain = () -> { };
     /** Test seam: runs inside {@link #close()}, after the settle and before the server stops. */
