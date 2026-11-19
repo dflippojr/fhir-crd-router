@@ -1,18 +1,15 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -39,34 +36,32 @@ class SharedRegistrationCredentialTest {
 
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final AtomicInteger goodResolves = new AtomicInteger();
-    private HttpServer server;
+    private LoopbackPayer payer;
     private CdsHooksClient client;
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/token", exchange -> {
+    void start() {
+        payer = new LoopbackPayer();
+        payer.on("/token", request -> {
             tokenRequests.incrementAndGet();
-            if (GOOD_BASIC.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
-                TestResponses.respond(exchange, 200, "{\"access_token\":\"good-token\",\"expires_in\":300}");
-            } else {
-                TestResponses.respond(exchange, 401, "{\"error\":\"invalid_client\"}");
+            if (GOOD_BASIC.equals(request.authorization())) {
+                return plain(200, "{\"access_token\":\"good-token\",\"expires_in\":300}");
             }
+            return plain(401, "{\"error\":\"invalid_client\"}");
         });
-        server.createContext("/cds-services", exchange -> {
-            boolean authorized = "Bearer good-token".equals(exchange.getRequestHeaders().getFirst("Authorization"));
-            String body = exchange.getRequestURI().getPath().equals("/cds-services")
+        payer.on("/cds-services", request -> {
+            boolean authorized = "Bearer good-token".equals(request.authorization());
+            String body = request.rawPath().equals("/cds-services")
                     ? "{\"services\":[{\"id\":\"order-sign-crd\",\"hook\":\"order-sign\",\"description\":\"Synthetic\"}]}"
                     : "{\"cards\":[]}";
-            TestResponses.respond(exchange, authorized ? 200 : 401, body);
+            return plain(authorized ? 200 : 401, body);
         });
-        server.start();
         client = new CdsHooksClient(HttpClient.newHttpClient(), provider());
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
+        payer.close();
     }
 
     @Test
@@ -130,11 +125,13 @@ class SharedRegistrationCredentialTest {
     }
 
     private ConnectionRecord record(String credentialRef) {
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder()
-                .payerId("PAYER-SHARED").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
-                .clientId("synthetic-client").credentialRef(credentialRef).build();
+        return TestRecords.oauth2(payer)
+                .payerId("PAYER-SHARED").clientId("synthetic-client").credentialRef(credentialRef).build();
+    }
+
+    /** {@code body} with no Content-Type, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 
     private CredentialProvider provider() {
