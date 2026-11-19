@@ -137,6 +137,8 @@ public final class LoopbackPayer implements AutoCloseable {
     private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
     /** Test seam: runs inside the failure drain, after the drain has taken its snapshot. */
     volatile Runnable duringDrain = () -> { };
+    /** Test seam: runs inside {@link #close()}, after the settle and before the server stops. */
+    volatile Runnable beforeStop = () -> { };
 
     public LoopbackPayer() {
         this(Duration.ofSeconds(5));
@@ -263,6 +265,7 @@ public final class LoopbackPayer implements AutoCloseable {
         int stillRunning = 0;
         if (closed.compareAndSet(false, true)) {
             stillRunning = awaitSettled();
+            beforeStop.run();
             server.stop(0);
             threads.shutdownNow();
             try {

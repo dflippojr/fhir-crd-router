@@ -35,8 +35,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * by {@link LoopbackPayer#reset(Function)} or {@link LoopbackPayer#close()}.
  *
  * <p>Rows: before a reset; concurrently with the drain; still in flight at a reset; still in flight at a
- * close; after a client timeout but before a close; still running at the bound of a close or a reset; and
- * a stress loop of resets racing failing requests.
+ * close; after a client timeout but before a close; still running at the bound of a close or a reset;
+ * started after close's settle and still running when its termination wait ends; and a stress loop of
+ * resets racing failing requests.
  */
 class LoopbackPayerFailureGridTest {
 
@@ -185,6 +186,31 @@ class LoopbackPayerFailureGridTest {
                     failure.getMessage());
         } finally {
             gate.countDown();
+        }
+    }
+
+    /**
+     * A request dispatched after close's settle but before the server stops, whose responder ignores the
+     * interrupt, is still running when the termination wait ends; close must report it, not drain early.
+     */
+    @Test
+    void aResponderStartedAfterTheSettleAndStillRunningAtTerminationFailsClose() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        try (LoopbackPayer payer = new LoopbackPayer(Duration.ofMillis(200))) {
+            payer.on("/stuck", r -> {
+                awaitIgnoringInterrupts(release);
+                throw new AssertionError("failed after close drained");
+            });
+            payer.beforeStop = () -> {
+                http.sendAsync(post(payer.url("/stuck")), HttpResponse.BodyHandlers.ofString());
+                awaitTrue(() -> payer.inFlight() == 1, "the request reached the payer before it stopped");
+            };
+
+            AssertionError failure = assertThrows(AssertionError.class, payer::close);
+            assertTrue(failure.getMessage().contains("1 responder(s) still running after PT0.2S"),
+                    failure.getMessage());
+        } finally {
+            release.countDown();
         }
     }
 
@@ -337,7 +363,12 @@ class LoopbackPayerFailureGridTest {
     private static void awaitTrue(BooleanSupplier condition, String what) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
         }
         assertTrue(condition.getAsBoolean(), "timed out waiting: " + what);
     }
