@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -127,9 +128,22 @@ public final class LoopbackPayer implements AutoCloseable {
     private final List<Throwable> failures = new CopyOnWriteArrayList<>();
     private final Set<String> routes = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private final Duration settleBound;
     private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
+    /** Test seam: runs inside the failure drain, after the drain has taken its snapshot. */
+    volatile Runnable duringDrain = () -> { };
 
     public LoopbackPayer() {
+        this(Duration.ofSeconds(5));
+    }
+
+    /**
+     * A payer whose {@link #reset(Function)} and {@link #close()} wait up to {@code settleBound} for
+     * running responders.
+     */
+    public LoopbackPayer(Duration settleBound) {
+        this.settleBound = Objects.requireNonNull(settleBound, "settleBound");
         try {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         } catch (IOException e) {
@@ -241,9 +255,20 @@ public final class LoopbackPayer implements AutoCloseable {
         throwRecordedFailures();
     }
 
+    /** Test seam: handlers running now, from reading the request to sending the reply. */
+    int inFlight() {
+        return inFlight.get();
+    }
+
+    /** Test seam: failures recorded and not yet reported. */
+    int pendingFailures() {
+        return failures.size();
+    }
+
     /** Clears the recorded failures and, if there were any, throws them as one error. */
     private void throwRecordedFailures() {
         List<Throwable> pending = List.copyOf(failures);
+        duringDrain.run();
         failures.clear();
         if (!pending.isEmpty()) {
             AssertionError error = new AssertionError("LoopbackPayer: " + pending.size()
@@ -255,6 +280,7 @@ public final class LoopbackPayer implements AutoCloseable {
 
     private HttpHandler handler(Function<Received, Reply> responder) {
         return exchange -> {
+            inFlight.incrementAndGet();
             try {
                 Received request = new Received(exchange.getRequestMethod(), exchange.getRequestURI().getRawPath(),
                         exchange.getRequestURI().getRawQuery(), exchange.getRequestHeaders(),
@@ -272,6 +298,8 @@ public final class LoopbackPayer implements AutoCloseable {
                 failures.add(e);
                 exchange.close();
                 throw e;
+            } finally {
+                inFlight.decrementAndGet();
             }
         };
     }
