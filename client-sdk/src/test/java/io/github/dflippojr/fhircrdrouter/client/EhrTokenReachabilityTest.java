@@ -10,6 +10,9 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -33,6 +36,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -316,16 +320,18 @@ class EhrTokenReachabilityTest {
         }
     }
 
-    /** A loopback server that answers each connection, in order, with the next raw response. */
+    /**
+     * A loopback server that answers each connection, in order, with the next raw response. It reads the
+     * whole request before it answers, so no request byte is unread when it closes the connection: a close
+     * with unread bytes is a TCP reset, which on Windows drops the response the client has not read (#230).
+     */
     private int rawServer(List<String> responses) throws IOException {
         ServerSocket socket = new ServerSocket(0, 4, InetAddress.getLoopbackAddress());
         closers.add(socket);
         Thread server = new Thread(() -> {
             for (String response : responses) {
                 try (Socket client = socket.accept()) {
-                    InputStream in = client.getInputStream();
-                    byte[] buffer = new byte[16384];
-                    in.read(buffer);
+                    readRequest(client.getInputStream());
                     OutputStream out = client.getOutputStream();
                     out.write(response.getBytes(StandardCharsets.US_ASCII));
                     out.flush();
@@ -337,6 +343,39 @@ class EhrTokenReachabilityTest {
         server.setDaemon(true);
         server.start();
         return socket.getLocalPort();
+    }
+
+    /**
+     * Reads one HTTP/1.1 request: the head up to its blank line, then the {@code Content-Length} bytes of
+     * its body (none without the header). The JDK client sends a known-length body, never chunked.
+     */
+    private static void readRequest(InputStream raw) throws IOException {
+        InputStream in = new BufferedInputStream(raw);
+        ByteArrayOutputStream head = new ByteArrayOutputStream();
+        while (!endsWithBlankLine(head)) {
+            int b = in.read();
+            if (b < 0) {
+                throw new EOFException("request head ended early");
+            }
+            head.write(b);
+        }
+        long length = 0;
+        for (String line : head.toString(StandardCharsets.US_ASCII).split("\r\n")) {
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("transfer-encoding:")) {
+                throw new IllegalStateException("rawServer reads Content-Length bodies only: " + line);
+            }
+            if (lower.startsWith("content-length:")) {
+                length = Long.parseLong(line.substring("content-length:".length()).trim());
+            }
+        }
+        in.skipNBytes(length);
+    }
+
+    private static boolean endsWithBlankLine(ByteArrayOutputStream head) {
+        byte[] bytes = head.toByteArray();
+        int n = bytes.length;
+        return n >= 4 && bytes[n - 4] == '\r' && bytes[n - 3] == '\n' && bytes[n - 2] == '\r' && bytes[n - 1] == '\n';
     }
 
     private static CdsHookRequest request(Map<String, Object> context) {
