@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.client.testsupport.FailingHttpClient;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -61,9 +62,13 @@ class CdsHooksClientRedirectTest {
     @AfterEach
     void stopServers() {
         try {
-            redirecting.close();
+            UnroutedGuard.assertUnroutedIsNotFound(target);
         } finally {
-            target.close();
+            try {
+                redirecting.close();
+            } finally {
+                target.close();
+            }
         }
     }
 
