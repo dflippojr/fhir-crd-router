@@ -3,14 +3,12 @@ package io.github.dflippojr.fhircrdrouter.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jwt.SignedJWT;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,7 +18,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.security.KeyPair;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +35,7 @@ class CdsHooksClientInputGuardsTest {
 
     private static final CdsHookRequest REQUEST = new CdsHookRequest("order-sign", "i", Map.of("patientId", "p"), null);
 
-    private HttpServer server;
+    private LoopbackPayer payer;
     private ConnectionRecord record;
     private String base;
     private final List<String> rawRequests = new CopyOnWriteArrayList<>();
@@ -46,23 +43,21 @@ class CdsHooksClientInputGuardsTest {
     private final AtomicReference<String> authorization = new AtomicReference<>();
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/", exchange -> {
-            String query = exchange.getRequestURI().getRawQuery();
-            rawRequests.add(exchange.getRequestURI().getRawPath() + (query == null ? "" : "?" + query));
-            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            respond(exchange, responseBody.get());
+    void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> {
+            String query = request.rawQuery();
+            rawRequests.add(request.rawPath() + (query == null ? "" : "?" + query));
+            authorization.set(request.authorization());
+            return new Reply(200, responseBody.get());
         });
-        server.start();
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
-        record = ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.NONE).build();
+        base = payer.origin();
+        record = TestRecords.none(payer).payerId("P").build();
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
+        payer.close();
     }
 
     @ParameterizedTest
@@ -104,9 +99,7 @@ class CdsHooksClientInputGuardsTest {
     void cdsHooksJwtAudienceEqualsTheEncodedRequestUri() throws Exception {
         KeyPair keys = TestKeys.ec("secp384r1");
         String pem = TestKeys.privateKeyPem(keys);
-        ConnectionRecord signed = ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(AuthType.CDS_HOOKS_JWT).clientId("ehr-client").keyId("key-1")
-                .credentialRef("signing-key").build();
+        ConnectionRecord signed = TestRecords.cdsHooksJwt(payer).payerId("P").build();
         CredentialProvider credentials = new CredentialProvider() {
             @Override public Optional<String> resolve(String credentialRef) { return Optional.of(pem); }
             @Override public void put(String credentialRef, String secretValue) { }
@@ -221,8 +214,7 @@ class CdsHooksClientInputGuardsTest {
     }
 
     private ConnectionRecord apiKeyRecord() {
-        return ConnectionRecord.builder().payerId("P").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.API_KEY).credentialRef("api-key").build();
+        return TestRecords.apiKey(payer).payerId("P").credentialRef("api-key").build();
     }
 
     private static CredentialProvider credentials(String secret) {
@@ -239,10 +231,5 @@ class CdsHooksClientInputGuardsTest {
             @Override public void put(String credentialRef, String secretValue) { }
             @Override public void remove(String credentialRef) { }
         };
-    }
-
-    private static void respond(HttpExchange exchange, String body) throws IOException {
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        TestResponses.respond(exchange, 200, body);
     }
 }
