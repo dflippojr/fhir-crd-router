@@ -1,13 +1,15 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedInputStream;
@@ -20,7 +22,6 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -57,11 +58,28 @@ class EhrTokenReachabilityTest {
     private static final String EHR = "https://ehr.example.org/fhir";
     private final List<PayerExchange> exchanges = new CopyOnWriteArrayList<>();
     private final List<AutoCloseable> closers = new ArrayList<>();
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+    private final LoopbackPayer payer = new LoopbackPayer();
+
+    @BeforeEach
+    void routesOnly() {
+        payer.otherwise(request -> NOT_FOUND);
+    }
 
     @AfterEach
     void stop() throws Exception {
-        for (AutoCloseable closer : closers) {
-            closer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            try {
+                payer.close();
+            } finally {
+                for (AutoCloseable closer : closers) {
+                    closer.close();
+                }
+            }
         }
     }
 
@@ -97,15 +115,11 @@ class EhrTokenReachabilityTest {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
                         + token.length() + "\r\n\r\n" + token,
                 "HTTP/1.1 2x0 broken\r\n\r\n"));
-        HttpServer hooks = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger calls = new AtomicInteger();
-        hooks.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
-            TestResponses.respond(e, calls.incrementAndGet() == 1 ? 401 : 200, "{\"cards\":[]}");
-        });
-        hooks.start();
-        closers.add(() -> hooks.stop(0));
-        String base = "http://127.0.0.1:" + hooks.getAddress().getPort();
+        // No Content-Type, as the hand-rolled server sent it.
+        payer.on("/cds-services/x", request ->
+                new Reply(calls.incrementAndGet() == 1 ? 401 : 200, "{\"cards\":[]}", Map.of()));
+        String base = payer.origin();
 
         PayerCallException e = assertThrows(PayerCallException.class,
                 () -> client().callHook(record(base, AuthType.OAUTH2_CLIENT_CREDENTIALS,
