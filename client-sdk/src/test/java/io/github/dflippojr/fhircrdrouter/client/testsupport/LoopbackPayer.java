@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -38,7 +39,9 @@ import java.util.function.Function;
  * <p>A responder that throws, or a scripted sequence that runs out, drops that connection (as a
  * throwing handler does in the JDK server) and is recorded; the next {@link #reset(Function)} or
  * {@link #close()} then fails the test with it, so a check inside a responder cannot fail silently,
- * even in a property-test try whose client expected the call to fail.
+ * even in a property-test try whose client expected the call to fail. Both first wait, up to a settle
+ * bound (5 seconds unless given), for requests still running, and fail if one still is at the bound;
+ * {@code LoopbackPayerFailureGridTest} checks each point at which a responder can fail.
  *
  * <p>Tests with deliberate transport behaviour (slow or oversized bodies, dropped connections, TLS)
  * keep their own server.
@@ -125,10 +128,11 @@ public final class LoopbackPayer implements AutoCloseable {
         return thread;
     });
     private final List<Received> received = new CopyOnWriteArrayList<>();
-    private final List<Throwable> failures = new CopyOnWriteArrayList<>();
+    private final FailureLedger failures = new FailureLedger();
     private final Set<String> routes = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicInteger inFlight = new AtomicInteger();
+    private final Object settledLock = new Object();
     private final Duration settleBound;
     private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
     /** Test seam: runs inside the failure drain, after the drain has taken its snapshot. */
@@ -217,19 +221,25 @@ public final class LoopbackPayer implements AutoCloseable {
 
     /**
      * Removes every route, clears the recorded requests and answers every request with
-     * {@code responder}: one server serves many property-test tries this way. If a responder failed
-     * since the last reset, the payer is still reset, and then this throws that failure as
-     * {@link #close()} does.
+     * {@code responder}: one server serves many property-test tries this way.
+     *
+     * <p>It first waits, up to the settle bound, for requests still running from the previous try, so
+     * their failures belong to that try. Then it resets, and then it throws, as {@link #close()} does,
+     * any responder failure since the last reset, and a responder still running at the bound. A
+     * responder that fails after the bound is reported by the next reset or close.
      */
-    public synchronized void reset(Function<Received, Reply> responder) {
+    public void reset(Function<Received, Reply> responder) {
         Objects.requireNonNull(responder, "responder");
-        for (String path : routes) {
-            server.removeContext(path);
+        int stillRunning = awaitSettled();
+        synchronized (this) {
+            for (String path : routes) {
+                server.removeContext(path);
+            }
+            routes.clear();
+            received.clear();
+            this.fallback = responder;
         }
-        routes.clear();
-        received.clear();
-        this.fallback = responder;
-        throwRecordedFailures();
+        throwRecordedFailures(stillRunning);
     }
 
     /** Every recorded request, in arrival order. */
@@ -243,16 +253,48 @@ public final class LoopbackPayer implements AutoCloseable {
     }
 
     /**
-     * Stops the server, then fails with any responder failure or exhausted sequence recorded since the
-     * last reset. A second call does not stop anything again; it reports only failures recorded since.
+     * Waits, up to the settle bound, for running requests to finish; then stops the server, interrupts
+     * what is still running and waits up to the bound again for it to end. Then it fails with any
+     * responder failure or exhausted sequence since the last reset, and with a responder still running
+     * at the first bound. A second call stops nothing again; it reports only failures recorded since.
      */
     @Override
     public void close() {
+        int stillRunning = 0;
         if (closed.compareAndSet(false, true)) {
+            stillRunning = awaitSettled();
             server.stop(0);
             threads.shutdownNow();
+            try {
+                threads.awaitTermination(settleBound.toNanos(), TimeUnit.NANOSECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
-        throwRecordedFailures();
+        throwRecordedFailures(stillRunning);
+    }
+
+    /**
+     * Waits up to the settle bound for no handler to be running. Returns 0 when none is, otherwise how
+     * many still were at the bound.
+     */
+    private int awaitSettled() {
+        long deadline = System.nanoTime() + settleBound.toNanos();
+        synchronized (settledLock) {
+            while (inFlight.get() > 0) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    return inFlight.get();
+                }
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(settledLock, left);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return inFlight.get();
+                }
+            }
+            return 0;
+        }
     }
 
     /** Test seam: handlers running now, from reading the request to sending the reply. */
@@ -265,16 +307,49 @@ public final class LoopbackPayer implements AutoCloseable {
         return failures.size();
     }
 
-    /** Clears the recorded failures and, if there were any, throws them as one error. */
-    private void throwRecordedFailures() {
-        List<Throwable> pending = List.copyOf(failures);
+    /**
+     * Drains the recorded failures in one step and, if there were any or a responder was still
+     * running, throws them as one error.
+     */
+    private void throwRecordedFailures(int stillRunning) {
+        List<Throwable> pending = failures.drain();
         duringDrain.run();
-        failures.clear();
+        if (pending.isEmpty() && stillRunning == 0) {
+            return;
+        }
+        StringBuilder message = new StringBuilder("LoopbackPayer: ");
+        if (stillRunning > 0) {
+            message.append(stillRunning).append(" responder(s) still running after ").append(settleBound)
+                    .append("; ");
+        }
+        message.append(pending.size()).append(" request(s) failed in the fake payer");
         if (!pending.isEmpty()) {
-            AssertionError error = new AssertionError("LoopbackPayer: " + pending.size()
-                    + " request(s) failed in the fake payer; first: " + pending.get(0), pending.get(0));
-            pending.stream().skip(1).forEach(error::addSuppressed);
-            throw error;
+            message.append("; first: ").append(pending.get(0));
+        }
+        AssertionError error = new AssertionError(message.toString(), pending.isEmpty() ? null : pending.get(0));
+        pending.stream().skip(1).forEach(error::addSuppressed);
+        throw error;
+    }
+
+    /**
+     * Responder failures not yet reported. Recording and draining share one lock, so a drain takes
+     * exactly what was recorded before it and nothing recorded later is lost.
+     */
+    private static final class FailureLedger {
+        private final List<Throwable> pending = new ArrayList<>();
+
+        synchronized void record(Throwable failure) {
+            pending.add(failure);
+        }
+
+        synchronized List<Throwable> drain() {
+            List<Throwable> drained = List.copyOf(pending);
+            pending.clear();
+            return drained;
+        }
+
+        synchronized int size() {
+            return pending.size();
         }
     }
 
@@ -295,11 +370,15 @@ public final class LoopbackPayer implements AutoCloseable {
                     TestResponses.respond(exchange, reply.status(), reply.body());
                 }
             } catch (RuntimeException | Error e) {
-                failures.add(e);
+                failures.record(e);
                 exchange.close();
                 throw e;
             } finally {
-                inFlight.decrementAndGet();
+                if (inFlight.decrementAndGet() == 0) {
+                    synchronized (settledLock) {
+                        settledLock.notifyAll();
+                    }
+                }
             }
         };
     }
