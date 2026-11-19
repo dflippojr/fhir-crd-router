@@ -20,6 +20,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -195,6 +196,33 @@ class EhrTokenReachabilityTest {
         assertSame(request, e.getPath().get(0).getFrom(), "the path still references the request");
 
         assertThrows(org.opentest4j.AssertionFailedError.class, () -> assertUnreachable(e));
+    }
+
+    /**
+     * The raw server answers a connection only once the whole request, head and body, has arrived (#230).
+     * Answering after a partial read and closing with request bytes unread makes the close a TCP reset,
+     * and on Windows a reset discards a response the client has not read yet, so a good token response
+     * became a transport failure.
+     */
+    @Test
+    void theRawServerReadsTheWholeRequestBeforeItAnswers() throws Exception {
+        String response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        int port = rawServer(List.of(response));
+        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+            socket.setSoTimeout(300);
+            out.write("POST /token HTTP/1.1\r\nHost: 127.0.0.1\r\n".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            assertThrows(SocketTimeoutException.class, in::read, "answered before the request head ended");
+            out.write("Content-Length: 5\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            assertThrows(SocketTimeoutException.class, in::read, "answered before the request body arrived");
+            out.write("abcde".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            socket.setSoTimeout(5000);
+            assertEquals(response, new String(in.readAllBytes(), StandardCharsets.US_ASCII));
+        }
     }
 
     /** No cause, no suppressed, and the token unreachable from the exception or any exchange. */
