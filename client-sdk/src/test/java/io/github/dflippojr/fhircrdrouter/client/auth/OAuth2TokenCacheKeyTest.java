@@ -1,8 +1,9 @@
 package io.github.dflippojr.fhircrdrouter.client.auth;
 
-import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionStatus;
@@ -14,9 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import java.io.IOException;
 import java.lang.reflect.RecordComponent;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -24,10 +23,10 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -71,9 +70,7 @@ class OAuth2TokenCacheKeyTest {
     }
 
     private final AtomicInteger tokenRequests = new AtomicInteger();
-    private final List<String> authorizations = new CopyOnWriteArrayList<>();
-    private HttpServer server;
-    private ExecutorService serverThreads;
+    private LoopbackPayer payer;
     private OAuth2TokenClient tokenClient;
     private static String pem;
 
@@ -124,24 +121,16 @@ class OAuth2TokenCacheKeyTest {
     }
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        serverThreads = Executors.newCachedThreadPool();
-        server.setExecutor(serverThreads);
-        server.createContext("/token", exchange -> {
-            int n = tokenRequests.incrementAndGet();
-            authorizations.add(String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
-            exchange.getResponseHeaders().add("Content-Type", "application/json");
-            TestResponses.respond(exchange, 200, "{\"access_token\":\"token-" + n + "\",\"expires_in\":300}");
-        });
-        server.start();
+    void start() {
+        payer = new LoopbackPayer();
+        payer.on("/token", request -> new Reply(200,
+                "{\"access_token\":\"token-" + tokenRequests.incrementAndGet() + "\",\"expires_in\":300}"));
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient());
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
-        serverThreads.shutdownNow();
+        payer.close();
     }
 
     @Test
@@ -181,10 +170,8 @@ class OAuth2TokenCacheKeyTest {
     void aKeyedFieldGetsItsOwnTokenRequest(Variation variation) {
         ConnectionRecord base = baseline().build();
         ConnectionRecord varied = variation.vary().apply(baseline()).build();
-        server.createContext("/token-other", exchange -> {
-            int n = tokenRequests.incrementAndGet();
-            TestResponses.respond(exchange, 200, "{\"access_token\":\"token-" + n + "\",\"expires_in\":300}");
-        });
+        payer.on("/token-other", request -> new Reply(200,
+                "{\"access_token\":\"token-" + tokenRequests.incrementAndGet() + "\",\"expires_in\":300}", Map.of()));
 
         String baseToken = fetch(base);
         String variedToken = fetch(varied);
@@ -246,6 +233,8 @@ class OAuth2TokenCacheKeyTest {
             pool.shutdownNow();
         }
         assertEquals(2, tokenRequests.get());
+        List<String> authorizations = payer.received("/token").stream()
+                .map(request -> String.valueOf(request.authorization())).toList();
         assertEquals(Set.of(basic(SECRET_A), basic(SECRET_B)), Set.copyOf(authorizations));
     }
 
@@ -274,15 +263,9 @@ class OAuth2TokenCacheKeyTest {
     }
 
     private ConnectionRecord.Builder baseline() {
-        String origin = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder()
+        return TestRecords.oauth2(payer)
                 .payerId("PAYER-KEY")
-                .environment(Environment.SANDBOX)
-                .baseUrl(origin)
-                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
-                .tokenEndpoint(origin + "/token")
-                .clientId("client")
-                .keyId("key-1")
+                .keyId(TestRecords.KEY_ID)
                 .scopes(List.of("crd"))
                 .credentialRef("ref-a");
     }
