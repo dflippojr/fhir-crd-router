@@ -131,6 +131,49 @@ class LoopbackPayerFailureGridTest {
         }
     }
 
+    /**
+     * The row above under the schedule that failed it on Windows (#245): the arming request's handler is
+     * still counted in flight after its client has the reply, and the gated request's handler is counted
+     * only later. "The request reached the payer" must then wait for the gated request, not pass on the
+     * arming one, or the reset settles before the gated request arrives and reports nothing.
+     */
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void aRequestStillInFlightAtAResetIsAwaitedEvenWhenTheArmingRequestLeavesLate(Kind kind) throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.beforeUncounted = path -> spinFor(Duration.ofMillis(50));
+            kind.arm(payer, "/p", http);
+            payer.beforeCounted = path -> spinFor(Duration.ofMillis(300));
+            CountDownLatch gate = new CountDownLatch(1);
+            CompletableFuture<?> pending = gatedSend(payer.url("/p"), gate);
+            awaitTrue(() -> payer.inFlight() == 1, "the request reached the payer");
+
+            releaseLater(gate);
+            assertEquals(1, reported(() -> payer.reset(r -> new Reply(200, "{}"))));
+
+            assertTrue(pending.handle((r, e) -> e != null).get(10, TimeUnit.SECONDS));
+            assertEquals(0, reported(payer::close));
+        }
+    }
+
+    /** The close row under the same schedule as the reset row above. */
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void aRequestStillInFlightAtCloseIsAwaitedEvenWhenTheArmingRequestLeavesLate(Kind kind) throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.beforeUncounted = path -> spinFor(Duration.ofMillis(50));
+            kind.arm(payer, "/p", http);
+            payer.beforeCounted = path -> spinFor(Duration.ofMillis(300));
+            CountDownLatch gate = new CountDownLatch(1);
+            gatedSend(payer.url("/p"), gate);
+            awaitTrue(() -> payer.inFlight() == 1, "the request reached the payer");
+
+            releaseLater(gate);
+            assertEquals(1, reported(payer::close));
+            assertEquals(0, reported(payer::close));
+        }
+    }
+
     @ParameterizedTest
     @EnumSource(Kind.class)
     void aRequestStillInFlightAtCloseIsAwaitedAndReportedOnce(Kind kind) throws Exception {

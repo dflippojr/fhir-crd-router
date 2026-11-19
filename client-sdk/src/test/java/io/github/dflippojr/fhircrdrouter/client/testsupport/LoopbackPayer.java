@@ -22,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -139,6 +140,10 @@ public final class LoopbackPayer implements AutoCloseable {
     volatile Runnable duringDrain = () -> { };
     /** Test seam: runs inside {@link #close()}, after the settle and before the server stops. */
     volatile Runnable beforeStop = () -> { };
+    /** Test seam: runs in a handler with the raw request path, before the handler counts as in flight. */
+    volatile Consumer<String> beforeCounted = rawPath -> { };
+    /** Test seam: runs in a handler with the raw request path, after the reply and before it stops counting. */
+    volatile Consumer<String> beforeUncounted = rawPath -> { };
 
     public LoopbackPayer() {
         this(Duration.ofSeconds(5));
@@ -363,9 +368,11 @@ public final class LoopbackPayer implements AutoCloseable {
 
     private HttpHandler handler(Function<Received, Reply> responder) {
         return exchange -> {
+            String rawPath = exchange.getRequestURI().getRawPath();
+            beforeCounted.accept(rawPath);
             inFlight.incrementAndGet();
             try {
-                Received request = new Received(exchange.getRequestMethod(), exchange.getRequestURI().getRawPath(),
+                Received request = new Received(exchange.getRequestMethod(), rawPath,
                         exchange.getRequestURI().getRawQuery(), exchange.getRequestHeaders(),
                         new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 received.add(request);
@@ -382,6 +389,7 @@ public final class LoopbackPayer implements AutoCloseable {
                 exchange.close();
                 throw e;
             } finally {
+                beforeUncounted.accept(rawPath);
                 if (inFlight.decrementAndGet() == 0) {
                     synchronized (settledLock) {
                         settledLock.notifyAll();
