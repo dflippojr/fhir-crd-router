@@ -1,8 +1,9 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.FailingHttpClient;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -13,8 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpClient.Redirect;
 import java.util.List;
@@ -42,26 +41,25 @@ class CdsHooksClientRedirectTest {
     private final List<String> resolved = new CopyOnWriteArrayList<>();
     private final AtomicInteger redirects = new AtomicInteger();
     private LoopbackPayer target;
-    private HttpServer redirecting;
+    private LoopbackPayer redirecting;
 
     @BeforeEach
-    void startServers() throws IOException {
+    void startServers() {
         target = new LoopbackPayer();
-        redirecting = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        redirecting.createContext("/", exchange -> {
+        redirecting = new LoopbackPayer();
+        redirecting.otherwise(request -> {
             redirects.incrementAndGet();
-            exchange.getRequestBody().readAllBytes();
-            exchange.getResponseHeaders().set("Location", target.origin() + exchange.getRequestURI().getRawPath());
-            exchange.sendResponseHeaders(307, -1);
-            exchange.close();
+            return Reply.empty(307).withHeader("Location", target.origin() + request.rawPath());
         });
-        redirecting.start();
     }
 
     @AfterEach
     void stopServers() {
-        redirecting.stop(0);
-        target.close();
+        try {
+            redirecting.close();
+        } finally {
+            target.close();
+        }
     }
 
     @ParameterizedTest
@@ -100,9 +98,8 @@ class CdsHooksClientRedirectTest {
     }
 
     private ConnectionRecord record() {
-        return ConnectionRecord.builder().payerId("PAYER-REDIRECT").environment(Environment.PRODUCTION)
-                .baseUrl("http://127.0.0.1:" + redirecting.getAddress().getPort() + "/r4")
-                .authType(AuthType.API_KEY).credentialRef("api").build();
+        return TestRecords.forAuth(AuthType.API_KEY, redirecting.url("/r4")).payerId("PAYER-REDIRECT")
+                .environment(Environment.PRODUCTION).build();
     }
 
     private CredentialProvider recordingCredentials() {
