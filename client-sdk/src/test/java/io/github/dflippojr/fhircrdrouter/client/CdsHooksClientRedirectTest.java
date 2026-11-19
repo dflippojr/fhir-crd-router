@@ -40,12 +40,17 @@ class CdsHooksClientRedirectTest {
 
     private final List<String> resolved = new CopyOnWriteArrayList<>();
     private final AtomicInteger redirects = new AtomicInteger();
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
     private LoopbackPayer target;
     private LoopbackPayer redirecting;
 
     @BeforeEach
     void startServers() {
         target = new LoopbackPayer();
+        target.otherwise(request -> NOT_FOUND);
         redirecting = new LoopbackPayer();
         redirecting.otherwise(request -> {
             redirects.incrementAndGet();
