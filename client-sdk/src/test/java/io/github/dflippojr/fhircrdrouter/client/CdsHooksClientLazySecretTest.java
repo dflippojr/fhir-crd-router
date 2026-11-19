@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -41,6 +42,10 @@ class CdsHooksClientLazySecretTest {
     private static final CdsHookRequest REQUEST =
             new CdsHookRequest("order-sign", "instance-1", Map.of(), Map.of());
 
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
     private LoopbackPayer payer;
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final AtomicReference<String> revokedToken = new AtomicReference<>();
@@ -51,6 +56,7 @@ class CdsHooksClientLazySecretTest {
     @BeforeEach
     void startServer() {
         payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
         payer.on("/token", request -> {
             int n = tokenRequests.incrementAndGet();
             if (tokenDelayMillis > 0) {
@@ -71,7 +77,11 @@ class CdsHooksClientLazySecretTest {
 
     @AfterEach
     void stopServer() {
-        payer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @ParameterizedTest

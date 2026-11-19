@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionStatus;
@@ -70,6 +71,10 @@ class OAuth2TokenCacheKeyTest {
     }
 
     private final AtomicInteger tokenRequests = new AtomicInteger();
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
     private LoopbackPayer payer;
     private OAuth2TokenClient tokenClient;
     private static String pem;
@@ -123,6 +128,7 @@ class OAuth2TokenCacheKeyTest {
     @BeforeEach
     void start() {
         payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
         payer.on("/token", request -> new Reply(200,
                 "{\"access_token\":\"token-" + tokenRequests.incrementAndGet() + "\",\"expires_in\":300}"));
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient());
@@ -130,7 +136,11 @@ class OAuth2TokenCacheKeyTest {
 
     @AfterEach
     void stop() {
-        payer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @Test
