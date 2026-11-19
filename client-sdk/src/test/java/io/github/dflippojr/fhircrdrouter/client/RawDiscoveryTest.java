@@ -1,13 +1,12 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,8 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,7 +29,7 @@ class RawDiscoveryTest {
             + "{\"hook\":\"order-sign\",\"id\":\"good\",\"description\":\"ok\"},"
             + "{\"hook\":\"order-sign\",\"id\":\"bad\",\"description\":\"x\",\"prefetch\":{\"k\":null}}]}";
 
-    private HttpServer server;
+    private LoopbackPayer payer;
     private ConnectionRecord record;
     private final AtomicInteger calls = new AtomicInteger();
     private final List<PayerExchange> exchanges = new ArrayList<>();
@@ -42,30 +39,26 @@ class RawDiscoveryTest {
     private final CountDownLatch releaseResponse = new CountDownLatch(1);
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/cds-services", e -> {
+    void start() {
+        payer = new LoopbackPayer();
+        payer.on("/cds-services", request -> {
             calls.incrementAndGet();
             if (blockResponse) {
                 try {
                     releaseResponse.await();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    e.close();
-                    return;
                 }
             }
-            e.getResponseHeaders().add("Retry-After", "0");
-            respond(e, status, body);
+            return respond(request, status, body);
         });
-        server.start();
         record = connection(AuthType.NONE);
     }
 
     @AfterEach
     void stop() {
         releaseResponse.countDown();
-        server.stop(0);
+        payer.close();
     }
 
     @Test
@@ -185,10 +178,9 @@ class RawDiscoveryTest {
     }
 
     private ConnectionRecord connection(AuthType auth) {
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder().payerId("PAYER-SYNTHETIC").environment(Environment.SANDBOX)
-                .baseUrl(base + "/").authType(auth).credentialRef("synthetic")
-                .clientId("synthetic-client").tokenEndpoint(base + "/token").build();
+        return TestRecords.forAuth(auth, payer.url("/")).payerId("PAYER-SYNTHETIC")
+                .credentialRef(TestRecords.CREDENTIAL_REF).clientId(TestRecords.CLIENT_ID)
+                .tokenEndpoint(payer.url(TestRecords.TOKEN_PATH)).build();
     }
 
     private CdsHooksClient client() {
@@ -200,10 +192,11 @@ class RawDiscoveryTest {
         return new CdsHooksClient(credentials, Duration.ofSeconds(2), Duration.ofSeconds(2), exchanges::add);
     }
 
-    private void respond(HttpExchange exchange, int code, String json) throws IOException {
-        if (exchange.getRequestURI().getPath().equals("/cds-services")) {
-            serverAuth.add(exchange.getRequestHeaders().getFirst("Authorization"));
+    /** {@code json} with {@code Retry-After: 0} and no Content-Type, as the hand-rolled server sent it. */
+    private Reply respond(LoopbackPayer.Received request, int code, String json) {
+        if (request.rawPath().equals("/cds-services")) {
+            serverAuth.add(request.authorization());
         }
-        TestResponses.respond(exchange, code, json);
+        return new Reply(code, json, Map.of("Retry-After", List.of("0")));
     }
 }
