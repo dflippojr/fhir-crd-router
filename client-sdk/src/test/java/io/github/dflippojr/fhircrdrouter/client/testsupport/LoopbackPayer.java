@@ -258,7 +258,7 @@ public final class LoopbackPayer implements AutoCloseable {
      * Waits, up to the settle bound, for running requests to finish; then stops the server, interrupts
      * what is still running and waits up to the bound again for it to end. Then it fails with any
      * responder failure or exhausted sequence since the last reset, and with a responder still running
-     * at the first bound. A second call stops nothing again; it reports only failures recorded since.
+     * at either bound. A second call stops nothing again; it reports only failures recorded since.
      */
     @Override
     public void close() {
@@ -268,10 +268,15 @@ public final class LoopbackPayer implements AutoCloseable {
             beforeStop.run();
             server.stop(0);
             threads.shutdownNow();
+            boolean terminated;
             try {
-                threads.awaitTermination(settleBound.toNanos(), TimeUnit.NANOSECONDS);
+                terminated = threads.awaitTermination(settleBound.toNanos(), TimeUnit.NANOSECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                terminated = false;
+            }
+            if (!terminated) {
+                stillRunning = Math.max(stillRunning, Math.max(1, inFlight.get()));
             }
         }
         throwRecordedFailures(stillRunning);
