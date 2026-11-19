@@ -2,14 +2,11 @@ package io.github.dflippojr.fhircrdrouter.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.dflippojr.fhircrdrouter.client.auth.JwtSigner;
+import io.github.dflippojr.fhircrdrouter.client.CredentialLookup.CredentialReadException;
+import io.github.dflippojr.fhircrdrouter.client.CredentialLookup.MissingCredentialException;
 import io.github.dflippojr.fhircrdrouter.client.auth.MutualTls;
-import io.github.dflippojr.fhircrdrouter.client.auth.OAuth2TokenClient;
-import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
-import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
 import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
-import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
 import io.github.dflippojr.fhircrdrouter.client.internal.SecretScrubber;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -23,21 +20,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
-import java.util.Optional;
 import java.security.KeyStore;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.OptionalInt;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
 
 /**
  * Given a resolved {@link ConnectionRecord}, talks to that payer's CDS
@@ -65,60 +54,9 @@ public final class CdsHooksClient {
     /** Largest response body, in bytes, read from a payer or token endpoint; a longer one fails the call. */
     public static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
-    private final PayerExchangeListener exchangeListener;
-    private final Duration requestTimeout;
-    private final Duration connectTimeout;
-    private final HttpClient httpClient;
-    private final KeyStore mtlsTrustStore;
     private final ObjectMapper mapper = new ObjectMapper();
-    private final CredentialProvider credentialProvider;
-    private final OAuth2TokenClient oauth2TokenClient;
-    private final JwtSigner jwtSigner = new JwtSigner();
-    private volatile RetryPolicy retryPolicy = RetryPolicy.NONE;
-    private final Map<String, MtlsClient> mtlsClients = new ConcurrentHashMap<>();
-
-    private record MtlsClient(String fingerprint, HttpClient client) { }
-
-    /**
-     * A credential that could not be used. {@code phase} is the call the credential belongs to, or
-     * null when it belongs to the request being sent.
-     */
-    private abstract static class CredentialFailure extends RouterException {
-        private final transient PayerCallPhase phase;
-
-        CredentialFailure(String message, PayerCallPhase phase) {
-            super(message);
-            this.phase = phase;
-        }
-
-        CredentialFailure(String message, PayerCallPhase phase, RuntimeException cause) {
-            super(message, cause);
-            this.phase = phase;
-        }
-
-        /** The phase a verify report names: the credential's own call, or discovery when it is null. */
-        PayerCallPhase phaseOrDiscovery() {
-            return phase == null ? PayerCallPhase.DISCOVERY : phase;
-        }
-    }
-
-    /** A credential reference that is unset or does not resolve; keeps the existing message. */
-    private static final class MissingCredentialException extends CredentialFailure {
-        MissingCredentialException(String message, PayerCallPhase phase) {
-            super(message, phase);
-        }
-    }
-
-    /**
-     * The credential provider threw while resolving a reference, for example a key mismatch or an
-     * unreadable secrets file. The provider's exception is kept as the cause; its message is not
-     * copied, since it may describe secret material.
-     */
-    private static final class CredentialReadException extends CredentialFailure {
-        CredentialReadException(String message, PayerCallPhase phase, RuntimeException cause) {
-            super(message, phase, cause);
-        }
-    }
+    private final MtlsClients mtlsClients;
+    private final PayerCallLoop payerCalls;
 
     public CdsHooksClient(CredentialProvider credentialProvider) {
         this(credentialProvider, DEFAULT_REQUEST_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
@@ -158,14 +96,14 @@ public final class CdsHooksClient {
     /** Same timeout semantics, with a listener invoked after each HTTP attempt. */
     public CdsHooksClient(HttpClient httpClient, CredentialProvider credentialProvider, KeyStore mtlsTrustStore,
                           Duration requestTimeout, Duration connectTimeout, PayerExchangeListener exchangeListener) {
-        this.exchangeListener = Objects.requireNonNull(exchangeListener, "exchangeListener");
-        this.requestTimeout = positiveTimeout(requestTimeout);
-        this.connectTimeout = positiveTimeout(connectTimeout);
+        Objects.requireNonNull(exchangeListener, "exchangeListener");
+        positiveTimeout(requestTimeout);
+        positiveTimeout(connectTimeout);
         // A followed redirect would bypass the https check on the record's URLs (#156).
-        this.httpClient = EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient));
-        this.credentialProvider = credentialProvider;
-        this.mtlsTrustStore = mtlsTrustStore;
-        this.oauth2TokenClient = new OAuth2TokenClient(httpClient, requestTimeout, exchangeListener);
+        EndpointUrls.requireNoRedirects(Objects.requireNonNull(httpClient));
+        CredentialLookup credentials = new CredentialLookup(credentialProvider);
+        this.mtlsClients = new MtlsClients(httpClient, credentials, mtlsTrustStore, connectTimeout);
+        this.payerCalls = new PayerCallLoop(httpClient, requestTimeout, exchangeListener, mtlsClients, credentials);
     }
 
     /**
@@ -174,7 +112,7 @@ public final class CdsHooksClient {
      * so keep the limits small. Returns this client.
      */
     public CdsHooksClient retryPolicy(RetryPolicy policy) {
-        this.retryPolicy = Objects.requireNonNull(policy, "policy");
+        payerCalls.retryPolicy(Objects.requireNonNull(policy, "policy"));
         return this;
     }
 
@@ -240,7 +178,7 @@ public final class CdsHooksClient {
         Instant checkedAt = Instant.now();
         long started = System.nanoTime();
         try {
-            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record), new FreshToken());
+            HttpResponse<String> response = sendDiscovery(record, discoveryContext(record), payerCalls.freshToken());
             JsonNode catalog;
             try {
                 catalog = mapper.readTree(response.body());
@@ -336,8 +274,9 @@ public final class CdsHooksClient {
         return request.fhirAuthorization() == null ? null : request.fhirAuthorization().accessToken();
     }
 
-    private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context, FreshToken freshToken) {
-        return send(record, PayerCallPhase.DISCOVERY, context, null, freshToken, () -> HttpRequest.newBuilder()
+    private HttpResponse<String> sendDiscovery(ConnectionRecord record, String context,
+                                               PayerCallLoop.FreshToken freshToken) {
+        return payerCalls.send(record, PayerCallPhase.DISCOVERY, context, null, freshToken, () -> HttpRequest.newBuilder()
                 .uri(URI.create(servicesUrl(record)))
                 .GET());
     }
@@ -357,7 +296,8 @@ public final class CdsHooksClient {
             } catch (IOException e) {
                 throw new RouterException(context + " could not serialize request", withoutToken(e, ehrToken(request)));
             }
-            HttpResponse<String> response = send(record, PayerCallPhase.HOOK, context, body, null, () -> HttpRequest.newBuilder()
+            HttpResponse<String> response = payerCalls.send(record, PayerCallPhase.HOOK, context, body, null,
+                    () -> HttpRequest.newBuilder()
                     .uri(URI.create(servicesUrl(record) + "/" + segment))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body)));
@@ -433,193 +373,14 @@ public final class CdsHooksClient {
         return encoded.toString();
     }
 
-    /**
-     * Sends a request with auth applied. For OAuth2 connections a 401 drops the
-     * cached token and retries once with a fresh one, since payers can revoke
-     * tokens before their advertised expiry. With a {@code freshToken} the call bypasses the cache: a 401 on
-     * the token just issued is the result, so nothing is dropped and nothing is retried.
-     */
-    private HttpResponse<String> send(ConnectionRecord record, PayerCallPhase phase, String context, String body,
-                                      FreshToken freshToken, Supplier<HttpRequest.Builder> requestFactory) {
-        // CDS Hooks 2.0, Security and Safety (https://cds-hooks.hl7.org/2.0/#security-and-safety) requires TLS
-        // for every exchange: refuse the record's URLs before any credential read, token fetch or request (#156).
-        EndpointUrls.requireUsable(record);
-        URI uri = requestFactory.get().build().uri();
-        try {
-            HttpClient client = httpClientFor(record);
-            RetryPolicy policy = retryPolicy;
-            int attempt = 1;
-            int throttleRetries = 0;
-            boolean reauthenticated = false;
-            Duration waited = Duration.ZERO;
-            while (true) {
-                Attempt sent = sendOnce(client, record, phase, body, attempt, freshToken, requestFactory);
-                HttpResponse<String> response = sent.response();
-                int status = response.statusCode();
-                if (status / 100 == 2) {
-                    return response;
-                }
-                if (status == 401 && record.authType().usesOAuth2Token() && freshToken == null && !reauthenticated) {
-                    reauthenticated = true;
-                    oauth2TokenClient.invalidate(record);
-                    attempt++;
-                    continue;
-                }
-                // A payer may echo the bearer it rejected; keep it out of the exception callers log (#195).
-                // On a HOOK call it may also echo the EHR's fhirAuthorization token; remove that too (#164).
-                String failed = SecretScrubber.redact(response.body(), sent.credential());
-                HttpResponse<String> kept = response;
-                if (phase == PayerCallPhase.HOOK) {
-                    SecretScrubber.SafeFailure safe = SecretScrubber.safeHookFailure(response, failed, body,
-                            EhrRedaction.current().token());
-                    kept = safe.response();
-                    failed = safe.body();
-                }
-                PayerCallException failure = new PayerCallException(context + " failed: payer returned HTTP "
-                        + status + ": ", phase, record.payerId(), uri, kept, failed);
-                // Retry timing comes from the payer's own response: the exception's headers may be sanitised.
-                Duration wait = policy.enabled() && RetryPolicy.retryable(status)
-                        && throttleRetries + 1 < policy.maxAttempts()
-                        ? response.headers().firstValue("Retry-After")
-                                .flatMap(v -> PayerCallException.parseRetryAfter(v, Clock.systemUTC())).orElse(null)
-                        : null;
-                if (wait == null || wait.compareTo(policy.maxTotalWait().minus(waited)) > 0) {
-                    throw failure;
-                }
-                sleep(wait);
-                waited = waited.plus(wait);
-                throttleRetries++;
-                attempt++;
-            }
-        } catch (IOException e) {
-            throw PayerCallException.transport(context + " failed", phase, record.payerId(), uri, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw PayerCallException.transport(context + " interrupted", phase, record.payerId(), uri, e);
-        }
-    }
-
-    private static void sleep(Duration wait) throws InterruptedException {
-        if (!wait.isZero()) {
-            Thread.sleep(wait.toMillis() + (wait.toNanosPart() % 1_000_000 == 0 ? 0 : 1));
-        }
-    }
-
-    /** One attempt's response, and the credential its {@code Authorization} header carried (null for none). */
-    private record Attempt(HttpResponse<String> response, String credential) { }
-
-    private Attempt sendOnce(HttpClient client, ConnectionRecord record,
-                             PayerCallPhase phase, String body, int attempt, FreshToken freshToken,
-                             Supplier<HttpRequest.Builder> requestFactory)
-            throws IOException, InterruptedException {
-        HttpRequest.Builder builder = requestFactory.get().timeout(requestTimeout);
-        URI uri = builder.copy().build().uri();
-        applyAuth(client, builder, uri, record, attempt, freshToken);
-        HttpRequest request = builder.build();
-        String credential = SecretScrubber.fromAuthorization(request.headers().firstValue("Authorization").orElse(null));
-        return new Attempt(ExchangeSender.send(client, request, body, record, phase, attempt, exchangeListener),
-                credential);
-    }
-
-    /** The one token of a call that bypasses the cache: exchanged on first use, then reused by its retries. */
-    private final class FreshToken {
-        private String token;
-
-        String get(HttpClient client, ConnectionRecord record, int attempt) {
-            if (token == null) {
-                token = oauth2TokenClient.exchangeFreshToken(client, record, () -> requireSecret(record), attempt);
-            }
-            return token;
-        }
-    }
-
-    private void applyAuth(HttpClient client, HttpRequest.Builder builder, URI uri, ConnectionRecord record, int attempt,
-                           FreshToken freshToken) {
-        switch (record.authType()) {
-            case NONE -> { /* no-op */ }
-            case API_KEY -> builder.header("Authorization", "Bearer " + requireApiKey(record));
-            case OAUTH2_CLIENT_CREDENTIALS, OAUTH2_PRIVATE_KEY_JWT -> builder.header("Authorization",
-                    "Bearer " + (freshToken != null ? freshToken.get(client, record, attempt)
-                            : oauth2TokenClient.fetchAccessToken(client, record, () -> requireSecret(record), attempt)));
-            case CDS_HOOKS_JWT -> builder.header("Authorization",
-                    "Bearer " + jwtSigner.cdsHooksJwt(record, PemKeys.readPrivateKey(requireSecret(record)), uri));
-        }
-    }
-
-    /** The shared client, or one bound to this record's client certificate when mutual TLS is configured. */
+    /** {@link MtlsClients#httpClientFor}, exposed within the package for the mTLS rotation tests. */
     HttpClient httpClientFor(ConnectionRecord record) {
-        if (record.mtlsCredentialRef() == null) {
-            return httpClient;
-        }
-        String pemBundle = resolveCredential(record, record.mtlsCredentialRef(), null)
-                .orElseThrow(() -> new MissingCredentialException("No mTLS credential found for ref="
-                        + record.mtlsCredentialRef() + " (payerId=" + record.payerId() + ")", null));
-        String fingerprint = sha256(pemBundle);
-        // Build before publishing: a failure leaves the previous entry intact.
-        // Replacing the entry releases our old reference; in-flight calls keep theirs.
-        return mtlsClients.compute(record.mtlsCredentialRef(), (ref, current) -> {
-            if (current != null && current.fingerprint().equals(fingerprint)) {
-                return current;
-            }
-            HttpClient replacement = HttpClient.newBuilder()
-                    .connectTimeout(connectTimeout)
-                    .sslContext(MutualTls.sslContext(pemBundle, mtlsTrustStore))
-                    .sslParameters(MutualTls.sslParameters())
-                    .build();
-            return new MtlsClient(fingerprint, replacement);
-        }).client();
+        return mtlsClients.httpClientFor(record);
     }
 
     /** Number of retained mTLS clients, exposed within the package for retention tests. */
     int mtlsClientCount() {
-        return mtlsClients.size();
-    }
-
-    private static String sha256(String value) {
-        try {
-            return HexFormat.of().formatHex(
-                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    /** The stored key, which must be a b64token: anything else, e.g. a trailing newline, is not a legal header value. */
-    private String requireApiKey(ConnectionRecord record) {
-        String key = requireSecret(record);
-        if (!BearerTokens.isB64Token(key)) {
-            // Never echo the key: it is the credential.
-            throw new RouterException("Credential for ref=" + record.credentialRef() + " (payerId="
-                    + record.payerId() + ") is not a usable bearer token");
-        }
-        return key;
-    }
-
-    private String requireSecret(ConnectionRecord record) {
-        // An OAuth2 secret authenticates the token exchange; any other secret, the request itself.
-        PayerCallPhase phase = record.authType().usesOAuth2Token() ? PayerCallPhase.TOKEN : null;
-        if (record.credentialRef() == null) {
-            throw new MissingCredentialException("authType=" + record.authType()
-                    + " but no credentialRef set for payerId=" + record.payerId(), phase);
-        }
-        return resolveCredential(record, record.credentialRef(), phase)
-                .orElseThrow(() -> new MissingCredentialException(
-                        "No credential found for ref=" + record.credentialRef() + " (payerId=" + record.payerId() + ")", phase));
-    }
-
-    /**
-     * Resolves a reference, wrapping a provider failure in a {@link RouterException} that keeps the
-     * original as its cause. An {@link AuditPersistenceException} is not wrapped: callers must see it.
-     */
-    private Optional<String> resolveCredential(ConnectionRecord record, String ref, PayerCallPhase phase) {
-        try {
-            return credentialProvider.resolve(ref);
-        } catch (AuditPersistenceException e) {
-            throw e;
-        } catch (RuntimeException e) {
-            throw new CredentialReadException("Failed to read credential for ref=" + ref
-                    + " (payerId=" + record.payerId() + ")", phase, e);
-        }
+        return mtlsClients.mtlsClientCount();
     }
 
     private static Duration positiveTimeout(Duration timeout) {
