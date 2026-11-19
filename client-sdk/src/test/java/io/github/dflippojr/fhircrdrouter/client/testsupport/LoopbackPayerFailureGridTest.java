@@ -53,7 +53,14 @@ class LoopbackPayerFailureGridTest {
     enum Kind {
         THROWING_RESPONDER, EXHAUSTED_SEQUENCE;
 
-        /** Makes the next POST to {@code path} fail in the fake payer. */
+        /**
+         * Makes the next POST to {@code path} fail in the fake payer, and returns with no handler running.
+         *
+         * <p>The client has the scripted reply before the payer's handler for it stops counting as in
+         * flight, so the exhausted sequence waits for that handler to finish (#245). Otherwise a caller's
+         * "the next request reached the payer" ({@code inFlight() == 1}) can pass on the arming request,
+         * and a reset or close then settles before the next request arrives.
+         */
         void arm(LoopbackPayer payer, String path, HttpClient http) throws Exception {
             if (this == THROWING_RESPONDER) {
                 payer.on(path, THROWS);
@@ -61,6 +68,7 @@ class LoopbackPayerFailureGridTest {
                 payer.onSequence(path, Reply.empty(204));
                 assertEquals(204, http.send(post(payer.url(path)), HttpResponse.BodyHandlers.ofString())
                         .statusCode(), "the one scripted reply");
+                assertEquals(0, payer.settle(), "the scripted reply's handler finished");
             }
         }
     }
@@ -127,6 +135,49 @@ class LoopbackPayerFailureGridTest {
             assertEquals(1, reported(() -> payer.reset(r -> new Reply(200, "{}"))));
 
             assertTrue(pending.handle((r, e) -> e != null).get(10, TimeUnit.SECONDS));
+            assertEquals(0, reported(payer::close));
+        }
+    }
+
+    /**
+     * The row above under the schedule that failed it on Windows (#245): the arming request's handler is
+     * still counted in flight after its client has the reply, and the gated request's handler is counted
+     * only later. "The request reached the payer" must then wait for the gated request, not pass on the
+     * arming one, or the reset settles before the gated request arrives and reports nothing.
+     */
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void aRequestStillInFlightAtAResetIsAwaitedEvenWhenTheArmingRequestLeavesLate(Kind kind) throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.beforeUncounted = path -> spinFor(Duration.ofMillis(50));
+            kind.arm(payer, "/p", http);
+            payer.beforeCounted = path -> spinFor(Duration.ofMillis(300));
+            CountDownLatch gate = new CountDownLatch(1);
+            CompletableFuture<?> pending = gatedSend(payer.url("/p"), gate);
+            awaitTrue(() -> payer.inFlight() == 1, "the request reached the payer");
+
+            releaseLater(gate);
+            assertEquals(1, reported(() -> payer.reset(r -> new Reply(200, "{}"))));
+
+            assertTrue(pending.handle((r, e) -> e != null).get(10, TimeUnit.SECONDS));
+            assertEquals(0, reported(payer::close));
+        }
+    }
+
+    /** The close row under the same schedule as the reset row above. */
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void aRequestStillInFlightAtCloseIsAwaitedEvenWhenTheArmingRequestLeavesLate(Kind kind) throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.beforeUncounted = path -> spinFor(Duration.ofMillis(50));
+            kind.arm(payer, "/p", http);
+            payer.beforeCounted = path -> spinFor(Duration.ofMillis(300));
+            CountDownLatch gate = new CountDownLatch(1);
+            gatedSend(payer.url("/p"), gate);
+            awaitTrue(() -> payer.inFlight() == 1, "the request reached the payer");
+
+            releaseLater(gate);
+            assertEquals(1, reported(payer::close));
             assertEquals(0, reported(payer::close));
         }
     }

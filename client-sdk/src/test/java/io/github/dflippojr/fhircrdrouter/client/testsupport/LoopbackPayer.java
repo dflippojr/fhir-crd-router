@@ -22,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -33,8 +34,10 @@ import java.util.function.Function;
  *
  * <p>Routing uses the JDK server's own contexts: {@link #on(String, Function)} registers a path, and
  * the longest registered prefix of the request path wins, exactly as {@code createContext} does in a
- * hand-rolled server. A request no route matches goes to the fallback, which answers {@code 200 {}}
- * until {@link #otherwise(Function)} or {@link #reset(Function)} changes it.
+ * hand-rolled server. A request no route matches goes to the fallback, which answers {@link #NOT_FOUND},
+ * the JDK server's own 404 for a path with no context, until {@link #otherwise(Function)} or
+ * {@link #reset(Function)} changes it. A test that expects a request therefore routes its path, and a
+ * request it did not expect fails as it did against a hand-rolled server (#245).
  *
  * <p>A responder that throws, or a scripted sequence that runs out, drops that connection (as a
  * throwing handler does in the JDK server) and is recorded; the next {@link #reset(Function)} or
@@ -121,6 +124,13 @@ public final class LoopbackPayer implements AutoCloseable {
         }
     }
 
+    /**
+     * The JDK server's reply to a path no context matches, and the fallback until a test changes it:
+     * {@code 404}, {@code Content-Type: text/html}, body {@code <h1>404 Not Found</h1>No context found for request}.
+     */
+    public static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
     private final HttpServer server;
     private final ExecutorService threads = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "loopback-payer");
@@ -134,11 +144,15 @@ public final class LoopbackPayer implements AutoCloseable {
     private final AtomicInteger inFlight = new AtomicInteger();
     private final Object settledLock = new Object();
     private final Duration settleBound;
-    private volatile Function<Received, Reply> fallback = r -> new Reply(200, "{}");
+    private volatile Function<Received, Reply> fallback = r -> NOT_FOUND;
     /** Test seam: runs inside the failure drain, after the drain has taken its snapshot. */
     volatile Runnable duringDrain = () -> { };
     /** Test seam: runs inside {@link #close()}, after the settle and before the server stops. */
     volatile Runnable beforeStop = () -> { };
+    /** Test seam: runs in a handler with the raw request path, before the handler counts as in flight. */
+    volatile Consumer<String> beforeCounted = rawPath -> { };
+    /** Test seam: runs in a handler with the raw request path, after the reply and before it stops counting. */
+    volatile Consumer<String> beforeUncounted = rawPath -> { };
 
     public LoopbackPayer() {
         this(Duration.ofSeconds(5));
@@ -254,6 +268,11 @@ public final class LoopbackPayer implements AutoCloseable {
         return received.stream().filter(r -> r.rawPath().equals(rawPath)).toList();
     }
 
+    /** Whether {@link #close()} has been called, for a teardown that must not probe a stopped payer. */
+    public boolean isClosed() {
+        return closed.get();
+    }
+
     /**
      * Waits, up to the settle bound, for running requests to finish; then stops the server, interrupts
      * what is still running and waits up to the bound again for it to end. Then it fails with any
@@ -303,6 +322,14 @@ public final class LoopbackPayer implements AutoCloseable {
             }
             return 0;
         }
+    }
+
+    /**
+     * Test seam: waits, up to the settle bound, for no handler to be running, as {@link #reset(Function)}
+     * does first. Returns 0 when none is, otherwise how many still were at the bound.
+     */
+    int settle() {
+        return awaitSettled();
     }
 
     /** Test seam: handlers running now, from reading the request to sending the reply. */
@@ -363,9 +390,11 @@ public final class LoopbackPayer implements AutoCloseable {
 
     private HttpHandler handler(Function<Received, Reply> responder) {
         return exchange -> {
+            String rawPath = exchange.getRequestURI().getRawPath();
+            beforeCounted.accept(rawPath);
             inFlight.incrementAndGet();
             try {
-                Received request = new Received(exchange.getRequestMethod(), exchange.getRequestURI().getRawPath(),
+                Received request = new Received(exchange.getRequestMethod(), rawPath,
                         exchange.getRequestURI().getRawQuery(), exchange.getRequestHeaders(),
                         new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 received.add(request);
@@ -382,6 +411,7 @@ public final class LoopbackPayer implements AutoCloseable {
                 exchange.close();
                 throw e;
             } finally {
+                beforeUncounted.accept(rawPath);
                 if (inFlight.decrementAndGet() == 0) {
                     synchronized (settledLock) {
                         settledLock.notifyAll();

@@ -11,6 +11,7 @@ import com.sun.net.httpserver.HttpsServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Received;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
@@ -77,7 +78,11 @@ class CdsHooksClientAuthTest {
             server.stop(0);
         }
         if (payer != null) {
-            payer.close();
+            try {
+                UnroutedGuard.assertUnroutedIsNotFound(payer);
+            } finally {
+                payer.close();
+            }
         }
     }
 

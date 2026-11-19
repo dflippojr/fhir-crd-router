@@ -27,24 +27,27 @@ class LoopbackPayerTest {
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
     @Test
-    void theDefaultFallbackAnswersEveryPathWithAnEmptyJsonObject() throws Exception {
+    void theDefaultFallbackAnswersAnUnroutedPathWithTheJdkServers404() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
             HttpResponse<String> response = get(payer.url("/anything"));
 
-            assertEquals(200, response.statusCode());
-            assertEquals("{}", response.body());
-            assertEquals(Optional.of("application/json"), response.headers().firstValue("Content-Type"));
+            assertEquals(404, response.statusCode());
+            assertEquals("<h1>404 Not Found</h1>No context found for request", response.body());
+            assertEquals(Optional.of("text/html"), response.headers().firstValue("Content-Type"));
+            assertEquals(1, payer.received("/anything").size(), "an unrouted request is still recorded");
         }
     }
 
     @Test
     void aRequestIsRecordedWithItsRawPathQueryHeadersAndBody() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
-            http.send(HttpRequest.newBuilder(URI.create(payer.url("/a%2Fb/c?x=%20y&z")))
+            payer.on("/a", new Reply(200, "{}"));
+            HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(payer.url("/a%2Fb/c?x=%20y&z")))
                     .header("Authorization", "Bearer synthetic")
                     .header("X-Custom", "one")
                     .POST(HttpRequest.BodyPublishers.ofString("{\"k\":\"v\"}"))
                     .build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode(), "the route answered");
 
             Received request = payer.received().get(0);
             assertEquals("POST", request.method());
@@ -61,7 +64,8 @@ class LoopbackPayerTest {
     @Test
     void aRequestWithoutAuthorizationRecordsNull() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
-            get(payer.url("/x"));
+            payer.on("/x", new Reply(200, "{}"));
+            assertEquals(200, get(payer.url("/x")).statusCode(), "the route answered");
 
             assertNull(payer.received().get(0).authorization());
         }
@@ -263,9 +267,10 @@ class LoopbackPayerTest {
     @Test
     void receivedByPathMatchesTheRawPathExactly() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
-            get(payer.url("/token"));
-            get(payer.url("/token-other"));
-            get(payer.url("/token?x=1"));
+            payer.on("/token", new Reply(200, "{}")).on("/token-other", new Reply(200, "{}"));
+            assertEquals(200, get(payer.url("/token")).statusCode(), "the route answered");
+            assertEquals(200, get(payer.url("/token-other")).statusCode(), "the route answered");
+            assertEquals(200, get(payer.url("/token?x=1")).statusCode(), "the route answered");
 
             assertEquals(2, payer.received("/token").size());
             assertEquals(1, payer.received("/token-other").size());

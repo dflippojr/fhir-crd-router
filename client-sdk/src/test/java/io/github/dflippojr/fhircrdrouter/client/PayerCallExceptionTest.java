@@ -2,6 +2,7 @@ package io.github.dflippojr.fhircrdrouter.client;
 
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -69,7 +70,11 @@ class PayerCallExceptionTest {
     @AfterEach
     void stop() {
         release.countDown();
-        payer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @Test

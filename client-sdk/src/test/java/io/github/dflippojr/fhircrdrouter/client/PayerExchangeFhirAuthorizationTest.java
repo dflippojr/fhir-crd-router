@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -49,18 +50,21 @@ class PayerExchangeFhirAuthorizationTest {
 
     @BeforeEach
     void routesOnly() {
-        // The tests that call reset() replace this with their own responder, as on master.
         payer.otherwise(request -> NOT_FOUND);
     }
 
     @AfterEach
     void stop() {
-        payer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @Test
     void hookRequestBodyRedactsOnlyTheAccessToken() throws Exception {
-        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":[]}"));
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(200, "{\"cards\":[]}"));
 
         client().callHook(record(), "x", REQUEST);
 
@@ -80,7 +84,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void tokenEchoedInHookResponseBodyIsRedacted() throws Exception {
-        payer.reset(r -> new LoopbackPayer.Reply(200,
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(200,
                 "{\"cards\":[{\"summary\":\"saw " + TOKEN + "\",\"indicator\":\"info\",\"source\":{\"label\":\"p\"}}]}"));
 
         client().callHook(record(), "x", REQUEST);
@@ -92,7 +96,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void tokenEchoedInHookErrorBodyIsRedacted() {
-        payer.reset(r -> new LoopbackPayer.Reply(400, "{\"error\":\"bad token " + TOKEN + "\"}"));
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(400, "{\"error\":\"bad token " + TOKEN + "\"}"));
 
         assertThrows(PayerCallException.class, () -> client().callHook(record(), "x", REQUEST));
 
@@ -128,7 +132,7 @@ class PayerExchangeFhirAuthorizationTest {
         CdsHookRequest request = REQUEST.withFhirServer(EHR,
                 new FhirAuthorization(token, "Bearer", 300, "patient/Patient.read", "payer-client"));
         // Each spelling decodes to the token; only one slash of the first is escaped.
-        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":[],\"extension\":{\"detail\":{\"nested\":["
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(200, "{\"cards\":[],\"extension\":{\"detail\":{\"nested\":["
                 + "\"a tok\\/164/secret/x b\",\"tok/164\\/secret\\/x\",\"\\u0074ok/164/secret/x\"]}}}"));
 
         client().callHook(record(), "x", request);
@@ -189,7 +193,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void unparseableHookResponseExceptionCarriesNoToken() {
-        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":" + PLAIN + "}"));
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(200, "{\"cards\":" + PLAIN + "}"));
 
         RouterException e = assertThrows(RouterException.class, () -> client().callHookRaw(record(), "x", PLAIN_REQUEST));
 
@@ -200,7 +204,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void unmappableHookResponseExceptionCarriesNoToken() {
-        payer.reset(r -> new LoopbackPayer.Reply(200, "{\"cards\":[{\"suggestions\":[\"" + PLAIN + "\"]}]}"));
+        payer.on("/cds-services/x", r -> new LoopbackPayer.Reply(200, "{\"cards\":[{\"suggestions\":[\"" + PLAIN + "\"]}]}"));
 
         RouterException e = assertThrows(RouterException.class, () -> client().callHook(record(), "x", PLAIN_REQUEST));
 
