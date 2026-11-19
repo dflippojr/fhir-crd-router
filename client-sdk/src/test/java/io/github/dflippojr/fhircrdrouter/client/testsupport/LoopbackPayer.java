@@ -35,8 +35,9 @@ import java.util.function.Function;
  * until {@link #otherwise(Function)} or {@link #reset(Function)} changes it.
  *
  * <p>A responder that throws, or a scripted sequence that runs out, drops that connection (as a
- * throwing handler does in the JDK server) and is recorded; {@link #close()} then fails the test with
- * it, so a check inside a responder cannot fail silently.
+ * throwing handler does in the JDK server) and is recorded; the next {@link #reset(Function)} or
+ * {@link #close()} then fails the test with it, so a check inside a responder cannot fail silently,
+ * even in a property-test try whose client expected the call to fail.
  *
  * <p>Tests with deliberate transport behaviour (slow or oversized bodies, dropped connections, TLS)
  * keep their own server.
@@ -164,7 +165,7 @@ public final class LoopbackPayer implements AutoCloseable {
     /**
      * Answers successive requests under {@code path} with {@code replies}, in order, for example a 401
      * and then a 200. A request after the last reply is a test failure: its connection is dropped and
-     * {@link #close()} reports it.
+     * the next {@link #reset(Function)} or {@link #close()} reports it.
      */
     public LoopbackPayer onSequence(String path, Reply... replies) {
         List<Reply> script = List.of(replies);
@@ -190,8 +191,10 @@ public final class LoopbackPayer implements AutoCloseable {
     }
 
     /**
-     * Removes every route, clears the recorded requests and failures, and answers every request with
-     * {@code responder}: one server serves many property-test tries this way.
+     * Removes every route, clears the recorded requests and answers every request with
+     * {@code responder}: one server serves many property-test tries this way. If a responder failed
+     * since the last reset, the payer is still reset, and then this throws that failure as
+     * {@link #close()} does.
      */
     public synchronized void reset(Function<Received, Reply> responder) {
         Objects.requireNonNull(responder, "responder");
@@ -200,8 +203,8 @@ public final class LoopbackPayer implements AutoCloseable {
         }
         routes.clear();
         received.clear();
-        failures.clear();
         this.fallback = responder;
+        throwRecordedFailures();
     }
 
     /** Every recorded request, in arrival order. */
@@ -214,15 +217,25 @@ public final class LoopbackPayer implements AutoCloseable {
         return received.stream().filter(r -> r.rawPath().equals(rawPath)).toList();
     }
 
-    /** Stops the server, then fails with any responder failure or exhausted sequence it recorded. */
+    /**
+     * Stops the server, then fails with any responder failure or exhausted sequence recorded since the
+     * last reset.
+     */
     @Override
     public void close() {
         server.stop(0);
         threads.shutdownNow();
-        if (!failures.isEmpty()) {
-            AssertionError error = new AssertionError("LoopbackPayer: " + failures.size()
-                    + " request(s) failed in the fake payer; first: " + failures.get(0), failures.get(0));
-            failures.stream().skip(1).forEach(error::addSuppressed);
+        throwRecordedFailures();
+    }
+
+    /** Clears the recorded failures and, if there were any, throws them as one error. */
+    private void throwRecordedFailures() {
+        List<Throwable> pending = List.copyOf(failures);
+        failures.clear();
+        if (!pending.isEmpty()) {
+            AssertionError error = new AssertionError("LoopbackPayer: " + pending.size()
+                    + " request(s) failed in the fake payer; first: " + pending.get(0), pending.get(0));
+            pending.stream().skip(1).forEach(error::addSuppressed);
             throw error;
         }
     }

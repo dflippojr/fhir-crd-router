@@ -257,21 +257,38 @@ class LoopbackPayerTest {
     }
 
     @Test
-    void resetRemovesRoutesAndClearsRequestsAndFailures() throws Exception {
-        LoopbackPayer payer = new LoopbackPayer();
-        payer.on("/token", r -> {
-            throw new AssertionError("a failure reset forgets");
-        });
-        assertThrows(IOException.class, () -> post(payer.url("/token")));
+    void resetRemovesRoutesAndClearsRecordedRequests() throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.on("/token", new Reply(200, "\"route\""));
+            get(payer.url("/token"));
 
-        payer.reset(r -> new Reply(202, "\"after\""));
+            payer.reset(r -> new Reply(202, "\"after\""));
 
-        assertEquals(List.of(), payer.received());
-        HttpResponse<String> response = get(payer.url("/token"));
-        assertEquals(202, response.statusCode());
-        assertEquals("\"after\"", response.body());
-        assertEquals(1, payer.received().size());
-        payer.close();
+            assertEquals(List.of(), payer.received());
+            HttpResponse<String> response = get(payer.url("/token"));
+            assertEquals(202, response.statusCode());
+            assertEquals("\"after\"", response.body());
+            assertEquals(1, payer.received().size());
+        }
+    }
+
+    /** A property test resets once per try, so a try's responder failure must not be erased by the next. */
+    @Test
+    void resetThrowsAResponderFailureFromThePreviousTryAndStillResets() throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.on("/token", r -> {
+                throw new AssertionError("failed in the previous try");
+            });
+            assertThrows(IOException.class, () -> post(payer.url("/token")));
+
+            AssertionError failure = assertThrows(AssertionError.class,
+                    () -> payer.reset(r -> new Reply(202, "\"after\"")));
+            assertEquals("failed in the previous try", failure.getCause().getMessage());
+
+            assertEquals(List.of(), payer.received());
+            assertEquals(202, get(payer.url("/token")).statusCode(), "the reset still took effect");
+            payer.reset(r -> new Reply(200, "{}"));
+        }
     }
 
     @Test
