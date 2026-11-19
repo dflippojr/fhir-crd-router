@@ -1,21 +1,21 @@
 package io.github.dflippojr.fhircrdrouter.client.auth;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -28,36 +28,28 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class SharedFlightRedactionTest {
     private static final String TOKEN_A = "SharedFlightEhrTokenA164";
-    private HttpServer server;
+    private final LoopbackPayer payer = new LoopbackPayer();
 
     @AfterEach
     void stop() {
-        if (server != null) {
-            server.stop(0);
-        }
+        payer.close();
     }
 
     @Test
     void aWaiterNeverSeesTheInitiatorsToken() throws Exception {
         CountDownLatch received = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/token", e -> {
-            e.getRequestBody().readAllBytes();
+        payer.on("/token", request -> {
             received.countDown();
             try {
                 release.await(10, TimeUnit.SECONDS);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
-            e.getResponseHeaders().add("X-Request-Id", TOKEN_A);
-            TestResponses.respond(e, 400, "{\"error\":\"invalid_client\",\"error_description\":\"saw " + TOKEN_A + "\"}");
+            return new Reply(400, "{\"error\":\"invalid_client\",\"error_description\":\"saw " + TOKEN_A + "\"}",
+                    Map.of("X-Request-Id", List.of(TOKEN_A)));
         });
-        server.start();
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        ConnectionRecord record = ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential")
-                .clientId("client").tokenEndpoint(base + "/token").build();
+        ConnectionRecord record = TestRecords.oauth2(payer).payerId("payer").build();
         OAuth2TokenClient tokens = new OAuth2TokenClient(HttpClient.newHttpClient(), Duration.ofSeconds(10),
                 PayerExchangeListener.NOOP);
         AtomicReference<Throwable> seenByA = new AtomicReference<>();

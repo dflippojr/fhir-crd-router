@@ -1,8 +1,9 @@
 package io.github.dflippojr.fhircrdrouter.client.auth;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.FailingHttpClient;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.client.EndpointUrlException;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -17,8 +18,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpClient.Redirect;
 import java.nio.charset.StandardCharsets;
@@ -51,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 class OAuth2TokenClientTest {
 
-    private HttpServer server;
+    private LoopbackPayer payer;
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final AtomicInteger redirects = new AtomicInteger();
     private final AtomicReference<String> expiresInJson = new AtomicReference<>(",\"expires_in\":300");
@@ -64,10 +63,9 @@ class OAuth2TokenClientTest {
     private OAuth2TokenClient tokenClient;
 
     @BeforeEach
-    void startServer() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.createContext("/token", exchange -> {
+    void startServer() {
+        payer = new LoopbackPayer();
+        payer.on("/token", request -> {
             int n = tokenRequests.incrementAndGet();
             if (tokenDelayMillis > 0) {
                 try {
@@ -77,35 +75,26 @@ class OAuth2TokenClientTest {
                 }
             }
             if (tokenEndpointFails.get()) {
-                exchange.sendResponseHeaders(500, -1);
-                exchange.close();
-                return;
+                return Reply.empty(500);
             }
             if (emptyTokenBody.get()) {
-                exchange.sendResponseHeaders(200, -1);
-                exchange.close();
-                return;
+                return Reply.empty(200);
             }
-            lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            exchange.getResponseHeaders().add("Content-Type", "application/json");
-            TestResponses.respond(exchange, 200,
+            lastAuthorization.set(request.authorization());
+            return new Reply(200,
                     "{\"access_token\":" + (accessTokenJson.get() != null ? accessTokenJson.get() : "\"token-" + n + "\"")
                             + ",\"token_type\":\"Bearer\"" + expiresInJson.get() + "}");
         });
-        server.createContext("/moved", exchange -> {
+        payer.on("/moved", request -> {
             redirects.incrementAndGet();
-            exchange.getRequestBody().readAllBytes();
-            exchange.getResponseHeaders().set("Location", "/token");
-            exchange.sendResponseHeaders(307, -1);
-            exchange.close();
+            return Reply.empty(307).withHeader("Location", "/token");
         });
-        server.start();
         tokenClient = new OAuth2TokenClient(HttpClient.newHttpClient(), clock);
     }
 
     @AfterEach
     void stopServer() {
-        server.stop(0);
+        payer.close();
     }
 
     @Test
@@ -142,9 +131,8 @@ class OAuth2TokenClientTest {
     @ParameterizedTest
     @EnumSource(value = Redirect.class, names = {"NORMAL", "ALWAYS"})
     void redirectFollowingClientIsRefusedBeforeTheSecretIsRead(Redirect policy) {
-        ConnectionRecord record = ConnectionRecord.builder().payerId("PAYER-OAUTH").environment(Environment.SANDBOX)
-                .baseUrl(origin()).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
-                .tokenEndpoint(origin() + "/moved").clientId("client").credentialRef("ref").build();
+        ConnectionRecord record = TestRecords.oauth2(payer).payerId("PAYER-OAUTH")
+                .tokenEndpoint(payer.url("/moved")).build();
         HttpClient http = HttpClient.newBuilder().followRedirects(policy).build();
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
@@ -520,16 +508,7 @@ class OAuth2TokenClientTest {
     void concurrentColdCallersShareOneSignedAssertionRequest() throws Exception {
         tokenDelayMillis = 50;
         String pem = TestKeys.privateKeyPem(TestKeys.rsa2048());
-        ConnectionRecord record = ConnectionRecord.builder()
-                .payerId("PAYER-PKJWT")
-                .environment(Environment.SANDBOX)
-                .baseUrl("http://localhost:" + server.getAddress().getPort())
-                .authType(AuthType.OAUTH2_PRIVATE_KEY_JWT)
-                .tokenEndpoint("http://localhost:" + server.getAddress().getPort() + "/token")
-                .clientId("client")
-                .keyId("key-1")
-                .credentialRef("ref")
-                .build();
+        ConnectionRecord record = TestRecords.privateKeyJwt(payer).payerId("PAYER-PKJWT").build();
 
         List<String> tokens = concurrently(8, () -> tokenClient.fetchAccessToken(record, pem));
 
@@ -617,14 +596,8 @@ class OAuth2TokenClientTest {
         }
     }
 
-    private String origin() {
-        return "http://localhost:" + server.getAddress().getPort();
-    }
-
     private ConnectionRecord privateKeyJwtRecord(String jwksUrl) {
-        return ConnectionRecord.builder().payerId("PAYER-PKJWT").environment(Environment.SANDBOX)
-                .baseUrl(origin()).authType(AuthType.OAUTH2_PRIVATE_KEY_JWT).tokenEndpoint(origin() + "/token")
-                .clientId("client").keyId("key-1").credentialRef("ref").jwksUrl(jwksUrl).build();
+        return TestRecords.privateKeyJwt(payer).payerId("PAYER-PKJWT").jwksUrl(jwksUrl).build();
     }
 
     private ConnectionRecord record(List<String> scopes) {
@@ -636,15 +609,10 @@ class OAuth2TokenClientTest {
     }
 
     private ConnectionRecord record(String clientId, List<String> scopes, String mtlsCredentialRef) {
-        return ConnectionRecord.builder()
+        return TestRecords.oauth2(payer)
                 .payerId("PAYER-OAUTH")
-                .environment(Environment.SANDBOX)
-                .baseUrl("http://localhost:" + server.getAddress().getPort())
-                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS)
-                .tokenEndpoint("http://localhost:" + server.getAddress().getPort() + "/token")
                 .clientId(clientId)
                 .scopes(scopes)
-                .credentialRef("ref")
                 .mtlsCredentialRef(mtlsCredentialRef)
                 .build();
     }
