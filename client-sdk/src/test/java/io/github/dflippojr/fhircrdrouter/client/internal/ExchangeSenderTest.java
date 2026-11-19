@@ -1,20 +1,18 @@
 package io.github.dflippojr.fhircrdrouter.client.internal;
 
 import com.fasterxml.jackson.core.StreamReadConstraints;
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
@@ -24,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -36,24 +35,27 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 /** What {@link ExchangeSender} hands a listener: the redaction arms the client-level tests never reach (#201). */
 class ExchangeSenderTest {
     private final List<PayerExchange> exchanges = new ArrayList<>();
-    private HttpServer server;
+    private LoopbackPayer payer;
     private String base;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.start();
+    void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        base = payer.origin();
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
+        payer.close();
     }
 
     @Test
     void authorizationWithoutSchemeIsFullyRedacted() throws Exception {
-        server.createContext("/cds-services/x", e -> TestResponses.respond(e, 200, "{\"cards\":[]}"));
+        payer.on("/cds-services/x", plain(200, "{\"cards\":[]}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
                 .header("Authorization", "opaque-secret-201")
                 .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString("{}")).build();
@@ -67,7 +69,7 @@ class ExchangeSenderTest {
 
     @Test
     void tokenBodyDropsNonScalarAllowedFields() throws Exception {
-        server.createContext("/token", e -> TestResponses.respond(e, 200,
+        payer.on("/token", plain(200,
                 "{\"access_token\":\"access-token-201\",\"token_type\":[\"x\"],"
                         + "\"scope\":{\"nested\":\"synthetic-leak\"},\"expires_in\":3600}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/token")).timeout(Duration.ofSeconds(5))
@@ -104,10 +106,7 @@ class ExchangeSenderTest {
         String token = "tok-164-unreadable";
         String sent = "{\"fhirAuthorization\":{\"access_token\":\"" + token + "\"},\"prefetch\":{\"big\":\""
                 + "x".repeat(StreamReadConstraints.DEFAULT_MAX_STRING_LEN + 1) + "\"}}";
-        server.createContext("/cds-services/x", e -> {
-            e.getRequestBody().transferTo(java.io.OutputStream.nullOutputStream());
-            TestResponses.respond(e, 400, "{\"error\":\"" + token + "\"}");
-        });
+        payer.on("/cds-services/x", plain(400, "{\"error\":\"" + token + "\"}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
                 .timeout(Duration.ofSeconds(30)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
 
@@ -145,7 +144,7 @@ class ExchangeSenderTest {
     void tokenNeedingJsonEscapesIsRedactedFromRequestAndEchoedResponse() throws Exception {
         String token = "tok\"164\\x";
         String sent = "{\"fhirAuthorization\":{\"access_token\":\"tok\\\"164\\\\x\"}}";
-        server.createContext("/cds-services/x", e -> TestResponses.respond(e, 200,
+        payer.on("/cds-services/x", plain(200,
                 "{\"echo\":\"tok\\\"164\\\\x\",\"raw\":\"" + token.replace("\"", "") + "\"}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
                 .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
@@ -164,7 +163,7 @@ class ExchangeSenderTest {
         String token = "a/b\\";
         String sent = "{\"fhirAuthorization\":{\"access_token\":\"a/b\\\\\"}}";
         String echo = "{\"slash\":\"a\\/b\\\\\",\"plain\":\"a/b\\\\\",\"raw\":\"x " + token.replace("\\", "") + "\"}";
-        server.createContext("/cds-services/x", e -> TestResponses.respond(e, 200, echo));
+        payer.on("/cds-services/x", plain(200, echo));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/x"))
                 .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
 
@@ -289,10 +288,7 @@ class ExchangeSenderTest {
 
     @Test
     void safeHookFailureBranches() throws Exception {
-        server.createContext("/fail", e -> {
-            e.getResponseHeaders().add("X-Echo", "t/k");
-            TestResponses.respond(e, 503, "t/k");
-        });
+        payer.on("/fail", plain(503, "t/k").withHeader("X-Echo", "t/k"));
         java.net.http.HttpResponse<String> response = HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(URI.create(base + "/fail")).GET().build(),
                 java.net.http.HttpResponse.BodyHandlers.ofString());
@@ -346,7 +342,7 @@ class ExchangeSenderTest {
 
     @Test
     void anExchangeThatStillShowsTheTokenIsNotDelivered() throws Exception {
-        server.createContext("/cds-services/ctxToken164", e -> TestResponses.respond(e, 200, "{}"));
+        payer.on("/cds-services/ctxToken164", plain(200, "{}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/ctxToken164"))
                 .timeout(Duration.ofSeconds(5)).GET().build();
 
@@ -360,10 +356,8 @@ class ExchangeSenderTest {
 
     @Test
     void theCallContextRedactsEveryPhase() throws Exception {
-        server.createContext("/token", e -> {
-            e.getResponseHeaders().add("X-Echo", "ctxToken164");
-            TestResponses.respond(e, 200, "{\"access_token\":\"a\",\"scope\":\"ctxToken164\",\"expires_in\":5}");
-        });
+        payer.on("/token", plain(200, "{\"access_token\":\"a\",\"scope\":\"ctxToken164\",\"expires_in\":5}")
+                .withHeader("X-Echo", "ctxToken164"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/token")).timeout(Duration.ofSeconds(5))
                 .POST(HttpRequest.BodyPublishers.ofString("grant_type=client_credentials")).build();
 
@@ -387,7 +381,7 @@ class ExchangeSenderTest {
 
     @Test
     void aPercentEncodedTokenInTheUriStopsDelivery() throws Exception {
-        server.createContext("/cds-services/", e -> TestResponses.respond(e, 200, "{}"));
+        payer.on("/cds-services/", plain(200, "{}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services/%63txToken164"))
                 .timeout(Duration.ofSeconds(5)).GET().build();
 
@@ -449,7 +443,7 @@ class ExchangeSenderTest {
 
     private void hookWithResponse(String token, int status, String reply) throws Exception {
         String path = "/cds-services/r" + exchanges.size() + status + reply.length();
-        server.createContext(path, e -> TestResponses.respond(e, status, reply));
+        payer.on(path, plain(status, reply));
         String sent = "{\"fhirAuthorization\":{\"access_token\":\"" + token + "\"}}";
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + path))
                 .timeout(Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString(sent)).build();
@@ -458,7 +452,7 @@ class ExchangeSenderTest {
 
     @Test
     void discoveryBodiesPassThrough() throws Exception {
-        server.createContext("/cds-services", e -> TestResponses.respond(e, 200, "{\"services\":[]}"));
+        payer.on("/cds-services", plain(200, "{\"services\":[]}"));
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + "/cds-services"))
                 .timeout(Duration.ofSeconds(5)).GET().build();
 
@@ -475,8 +469,11 @@ class ExchangeSenderTest {
     }
 
     private ConnectionRecord record() {
-        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).credentialRef("credential")
-                .clientId("client").tokenEndpoint(base + "/token").build();
+        return TestRecords.oauth2(payer).payerId("payer").build();
+    }
+
+    /** {@code body} with no {@code Content-Type}, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 }

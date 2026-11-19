@@ -1,9 +1,10 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeMetadata.Outcome;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -13,13 +14,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpTimeoutException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -38,15 +37,18 @@ class PayerExchangeMetadataTest {
     private static final String SENTINEL = "SENTINEL-SECRET-";
     private static final CdsHookRequest REQUEST = new CdsHookRequest("order-sign", "instance", Map.of("patientId", "pat-1"), Map.of());
     private final List<PayerExchangeMetadata> seen = new ArrayList<>();
-    private HttpServer server;
+    private LoopbackPayer payer;
     private String base;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
     private final CountDownLatch release = new CountDownLatch(1);
 
     @AfterEach
     void stop() {
         release.countDown();
-        if (server != null) {
-            server.stop(0);
+        if (payer != null) {
+            payer.close();
         }
     }
 
@@ -135,10 +137,9 @@ class PayerExchangeMetadataTest {
     void retryAttemptsReport429And503InOrder() throws Exception {
         start();
         AtomicInteger calls = new AtomicInteger();
-        server.createContext("/cds-services", e -> {
-            e.getResponseHeaders().add("Retry-After", "0");
+        payer.on("/cds-services", request -> {
             int n = calls.incrementAndGet();
-            respond(e, n == 1 ? 429 : n == 2 ? 503 : 200, "{\"services\":[]}");
+            return respond(n == 1 ? 429 : n == 2 ? 503 : 200, "{\"services\":[]}").withHeader("Retry-After", "0");
         });
         client(PayerExchangeListener.metadataOnly(seen::add), Duration.ofSeconds(2))
                 .retryPolicy(new RetryPolicy(3, Duration.ofSeconds(1)))
@@ -152,7 +153,7 @@ class PayerExchangeMetadataTest {
     @Test
     void malformedHttp200IsSuccessEvenWhenParsingFails() throws Exception {
         start();
-        server.createContext("/cds-services/x", e -> respond(e, 200, "not json " + SENTINEL));
+        payer.on("/cds-services/x", respond(200, "not json " + SENTINEL));
         CdsHooksClient client = client(PayerExchangeListener.metadataOnly(seen::add), Duration.ofSeconds(2));
         assertThrows(RouterException.class, () -> client.callHook(record(AuthType.NONE), "x", REQUEST));
         assertEquals(1, seen.size());
@@ -162,21 +163,21 @@ class PayerExchangeMetadataTest {
     @Test
     void timeoutAndTransportFailureProduceFixedOutcomes() throws Exception {
         start();
-        server.createContext("/cds-services/x", e -> {
+        payer.on("/cds-services/x", request -> {
             try {
                 release.await();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-            } finally {
-                e.close();
             }
+            // The client timed out long before this reply, so it never reads it.
+            return respond(200, "{\"cards\":[]}");
         });
         CdsHooksClient slow = client(PayerExchangeListener.metadataOnly(seen::add), Duration.ofMillis(50));
         ConnectionRecord record = record(AuthType.NONE);
         assertThrows(PayerCallException.class, () -> slow.callHook(record, "x", REQUEST));
         assertEquals(Outcome.TIMEOUT, seen.get(0).outcome());
         release.countDown();
-        server.stop(0);
+        payer.close();
         seen.clear();
         assertThrows(PayerCallException.class, () -> slow.callHook(record, "x", REQUEST));
         assertEquals(Outcome.TRANSPORT_ERROR, seen.get(0).outcome());
@@ -186,7 +187,7 @@ class PayerExchangeMetadataTest {
     @Test
     void throwingConsumerDoesNotChangeResult() throws Exception {
         start();
-        server.createContext("/cds-services/x", e -> respond(e, 200, "{\"cards\":[]}"));
+        payer.on("/cds-services/x", respond(200, "{\"cards\":[]}"));
         CdsHooksClient client = client(PayerExchangeListener.metadataOnly(m -> {
             seen.add(m);
             throw new IllegalStateException("consumer failure");
@@ -195,16 +196,15 @@ class PayerExchangeMetadataTest {
         assertEquals(1, seen.size());
     }
 
-    private void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.start();
+    private void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        base = payer.origin();
     }
 
     private ConnectionRecord record(AuthType auth) {
-        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(auth).credentialRef("credential").clientId("client")
-                .keyId("key").tokenEndpoint(base + "/token").build();
+        return TestRecords.forAuth(auth, base).payerId("payer").credentialRef(TestRecords.CREDENTIAL_REF)
+                .clientId(TestRecords.CLIENT_ID).keyId("key").tokenEndpoint(base + TestRecords.TOKEN_PATH).build();
     }
 
     private CdsHooksClient client(PayerExchangeListener listener, Duration timeout) {
@@ -220,11 +220,8 @@ class PayerExchangeMetadataTest {
         return new CdsHooksClient(HttpClient.newHttpClient(), credentials, null, timeout, Duration.ofSeconds(1), listener);
     }
 
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (var out = exchange.getResponseBody()) {
-            out.write(bytes);
-        }
+    /** {@code body} with no {@code Content-Type}, as the hand-rolled server sent it. */
+    private static Reply respond(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 }

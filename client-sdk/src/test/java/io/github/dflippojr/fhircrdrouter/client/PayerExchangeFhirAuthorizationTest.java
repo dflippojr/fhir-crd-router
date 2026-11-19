@@ -3,18 +3,18 @@ package io.github.dflippojr.fhircrdrouter.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -43,12 +43,19 @@ class PayerExchangeFhirAuthorizationTest {
     private final List<PayerExchange> exchanges = new ArrayList<>();
     private final LoopbackPayer payer = new LoopbackPayer();
 
-    private final List<HttpServer> servers = new ArrayList<>();
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
+    @BeforeEach
+    void routesOnly() {
+        // The tests that call reset() replace this with their own responder, as on master.
+        payer.otherwise(request -> NOT_FOUND);
+    }
 
     @AfterEach
     void stop() {
         payer.close();
-        servers.forEach(server -> server.stop(0));
     }
 
     @Test
@@ -96,7 +103,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void tokenInResponseHeadersIsRedactedOnSuccess() throws Exception {
-        HttpServer server = headerServer(List.of(200));
+        LoopbackPayer server = headerServer(List.of(200));
 
         client().callHook(record(server), "x", REQUEST);
 
@@ -105,7 +112,7 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void tokenInResponseHeadersIsRedactedOnErrorAndRetry() throws Exception {
-        HttpServer server = headerServer(List.of(429, 400));
+        LoopbackPayer server = headerServer(List.of(429, 400));
 
         assertThrows(PayerCallException.class, () -> client().retryPolicy(new RetryPolicy(2, Duration.ofSeconds(2)))
                 .callHook(record(server), "x", REQUEST));
@@ -141,15 +148,9 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void payerCallExceptionCarriesNoTokenInMessageBodyOrHeaders() throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
-            e.getResponseHeaders().add("X-Request-Id", "id " + TOKEN);
-            e.getResponseHeaders().add("Retry-After", "7");
-            TestResponses.respond(e, 503, "{\"error\":\"bad " + TOKEN.replace("-", "\\u002d") + "\"}");
-        });
-        server.start();
-        servers.add(server);
+        LoopbackPayer server = payer.on("/cds-services/x", new Reply(503,
+                "{\"error\":\"bad " + TOKEN.replace("-", "\\u002d") + "\"}", Map.of())
+                .withHeader("X-Request-Id", "id " + TOKEN).withHeader("Retry-After", "7"));
 
         PayerCallException e = assertThrows(PayerCallException.class,
                 () -> client().callHook(record(server), "x", REQUEST));
@@ -164,18 +165,12 @@ class PayerExchangeFhirAuthorizationTest {
 
     @Test
     void retryTimingStillComesFromThePayerWhenTheRequestCannotBeRead() throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger calls = new AtomicInteger();
-        server.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
+        LoopbackPayer server = payer.on("/cds-services/x", r -> {
             boolean first = calls.getAndIncrement() == 0;
-            if (first) {
-                e.getResponseHeaders().add("Retry-After", "0");
-            }
-            TestResponses.respond(e, first ? 429 : 200, "{\"cards\":[]}");
+            Reply reply = new Reply(first ? 429 : 200, "{\"cards\":[]}", Map.of());
+            return first ? reply.withHeader("Retry-After", "0") : reply;
         });
-        server.start();
-        servers.add(server);
         // A prefetch string past Jackson's read limit: valid to send, but the SDK cannot read it back.
         CdsHookRequest large = new CdsHookRequest("order-sign", "instance", Map.of("patientId", "pat-1"),
                 Map.of("big", "x".repeat(com.fasterxml.jackson.core.StreamReadConstraints.DEFAULT_MAX_STRING_LEN + 1)))
@@ -270,22 +265,14 @@ class PayerExchangeFhirAuthorizationTest {
     }
 
     /** Answers each call with the next status, echoing the token in response header values. */
-    private HttpServer headerServer(List<Integer> statuses) throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    private LoopbackPayer headerServer(List<Integer> statuses) {
         AtomicInteger calls = new AtomicInteger();
-        server.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
+        return payer.on("/cds-services/x", r -> {
             int status = statuses.get(Math.min(calls.getAndIncrement(), statuses.size() - 1));
-            e.getResponseHeaders().add("X-Request-Id", TOKEN);
-            e.getResponseHeaders().add("X-Echo", "seen " + TOKEN + " here");
-            if (status == 429) {
-                e.getResponseHeaders().add("Retry-After", "0");
-            }
-            TestResponses.respond(e, status, "{\"cards\":[]}");
+            Reply reply = new Reply(status, "{\"cards\":[]}", Map.of()).withHeader("X-Request-Id", TOKEN)
+                    .withHeader("X-Echo", "seen " + TOKEN + " here");
+            return status == 429 ? reply.withHeader("Retry-After", "0") : reply;
         });
-        server.start();
-        servers.add(server);
-        return server;
     }
 
     private static void assertHeadersClean(PayerExchange exchange) {
@@ -294,9 +281,8 @@ class PayerExchangeFhirAuthorizationTest {
         assertEquals(List.of("seen [REDACTED] here"), exchange.responseHeaders().allValues("X-Echo"));
     }
 
-    private ConnectionRecord record(HttpServer server) {
-        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).authType(AuthType.NONE).build();
+    private ConnectionRecord record(LoopbackPayer server) {
+        return TestRecords.none(server).payerId("payer").build();
     }
 
     private PayerExchange single() {
@@ -318,8 +304,7 @@ class PayerExchangeFhirAuthorizationTest {
     }
 
     private ConnectionRecord record() {
-        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(payer.origin()).authType(AuthType.NONE).build();
+        return record(payer);
     }
 
     private CdsHooksClient client() {
