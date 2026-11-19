@@ -347,6 +347,13 @@ depended on each other. Stage 1 of the #233 plan moves them, unchanged, into
   It reads the status, request, TLS session, URI and version from the payer's
   response only when one of them is asked for, as the old stub did.
   `PayerCallException` reads only the status and headers.
+- **Stage 2: the transport is its own class.** `client.internal.BoundedHttp`
+  sends one request and reads its body under two bounds: the request
+  timeout covers the body as well as the headers, and a body over the limit
+  fails instead of being buffered. Its code moved unchanged from
+  `ExchangeSender`. It depends only on the JDK: it reads no `EhrRedaction`
+  context and sees no listener. `ExchangeSender.send` wraps it with the
+  listener reporting.
 
 ## Not yet done
 
