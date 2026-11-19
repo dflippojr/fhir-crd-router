@@ -7,18 +7,9 @@ import io.github.dflippojr.fhircrdrouter.core.audit.AuditPersistenceException;
 
 import java.lang.reflect.Modifier;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpHeaders;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
-import java.util.TreeMap;
-import javax.net.ssl.SSLSession;
 
 /**
  * The per-call redaction context for the EHR's {@code fhirAuthorization} token
@@ -27,10 +18,12 @@ import javax.net.ssl.SSLSession;
  *
  * <p>A hook call opens one when it starts, from the request it was given, and it stays current on the
  * calling thread until the call returns. Every exposure boundary reads it: {@link ExchangeSender} for each
- * listener exchange of every phase (HOOK, and TOKEN including a re-authentication after a 401), the
+ * listener exchange of every phase (HOOK, and TOKEN including a re-authentication after a 401), the hook
+ * call for the body and headers a failed HOOK response leaves in its exception, the
  * token client for error bodies, and {@link #exception} for each exception that leaves the SDK. All of an
  * SDK call's sends and listener callbacks run on the calling thread, so a thread-local context reaches
- * the token client without changing its API.
+ * the token client without changing its API. The redaction itself is {@link SecretScrubber}'s, which
+ * takes the token as a parameter and never reads this context.
  */
 public final class EhrRedaction {
     /** No EHR token: nothing to redact. */
@@ -80,7 +73,7 @@ public final class EhrRedaction {
 
     /** {@code text} with the token removed; the whole text becomes the marker if a spelling survives. */
     public String text(String text) {
-        return token == null ? text : ExchangeSender.clean(text, token);
+        return token == null ? text : SecretScrubber.clean(text, token);
     }
 
     /**
@@ -106,15 +99,15 @@ public final class EhrRedaction {
             return error;
         }
         if (error instanceof AuditPersistenceException audit && audit.getCause() == null
-                && audit.getSuppressed().length == 0 && !ExchangeSender.mentions(audit, token)) {
+                && audit.getSuppressed().length == 0 && !SecretScrubber.mentions(audit, token)) {
             // Callers must see this type to stop and report audit failures, and core builds it from an
             // audit event only: a fixed message, an operation state and two ids, never a cause.
             return audit;
         }
         RuntimeException safe = copy(error);
-        safe.setStackTrace(ExchangeSender.safeFrames(error.getStackTrace(), token));
+        safe.setStackTrace(SecretScrubber.safeFrames(error.getStackTrace(), token));
         if (showsAnywhere(safe)) {
-            safe = new RouterException(error.getClass().getName() + ": " + EchoedCredentials.MARKER);
+            safe = new RouterException(error.getClass().getName() + ": " + SecretScrubber.MARKER);
             safe.setStackTrace(new StackTraceElement[0]);
         }
         return safe;
@@ -159,11 +152,12 @@ public final class EhrRedaction {
         // PayerCallException is final and its message is always the prefix followed by its body.
         String body = failure.responseBody();
         String prefix = message.substring(0, message.length() - body.length());
-        String safeBody = ExchangeSender.redactResponse(body, token);
+        String safeBody = SecretScrubber.redactResponse(body, token);
         URI uri = uri(failure.uri());
         return new PayerCallException(text(prefix), failure.phase(), failure.payerId(), uri,
-                status(failure.statusCode().getAsInt(), headers(failure.responseHeaders()), uri),
-                safeBody == null ? EchoedCredentials.MARKER : safeBody);
+                SecretScrubber.status(failure.statusCode().getAsInt(),
+                        SecretScrubber.redactHeaders(failure.responseHeaders(), token), uri),
+                safeBody == null ? SecretScrubber.MARKER : safeBody);
     }
 
     /**
@@ -184,7 +178,7 @@ public final class EhrRedaction {
      * say) or the replacement is not a valid URI.
      */
     private URI uri(URI uri) {
-        if (!ExchangeSender.uriShows(uri, token)) {
+        if (!SecretScrubber.uriShows(uri, token)) {
             return uri;
         }
         URI replaced;
@@ -193,31 +187,11 @@ public final class EhrRedaction {
         } catch (IllegalArgumentException e) {
             return null;
         }
-        return ExchangeSender.uriShows(replaced, token) ? null : replaced;
-    }
-
-    private HttpHeaders headers(HttpHeaders headers) {
-        Map<String, List<String>> safe = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.map().forEach((name, values) -> ExchangeSender.putRedacted(safe, name, values, token));
-        return HttpHeaders.of(safe, (k, v) -> true);
+        return SecretScrubber.uriShows(replaced, token) ? null : replaced;
     }
 
     private boolean showsAnywhere(Throwable error) {
         // Every message, string form, stack frame and PayerCallException field in the cause and suppressed chain.
-        return ExchangeSender.mentions(error, token);
-    }
-
-    /** A response carrying only a status and headers, which is all a {@link PayerCallException} keeps. */
-    static HttpResponse<String> status(int status, HttpHeaders headers, URI uri) {
-        return new HttpResponse<>() {
-            @Override public int statusCode() { return status; }
-            @Override public HttpRequest request() { return null; }
-            @Override public Optional<HttpResponse<String>> previousResponse() { return Optional.empty(); }
-            @Override public HttpHeaders headers() { return headers; }
-            @Override public String body() { return null; }
-            @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
-            @Override public URI uri() { return uri; }
-            @Override public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }
-        };
+        return SecretScrubber.mentions(error, token);
     }
 }

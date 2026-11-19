@@ -314,7 +314,39 @@ response header name and value.
   `RouterException` naming only the original class.
 - **Payer call errors.** A HOOK `PayerCallException` gets the same treatment
   for its body (and so its message) and its kept headers, through
-  `ExchangeSender.safeHookFailure`.
+  `SecretScrubber.safeHookFailure`.
+
+## Token scrubbing in one class (2026-11-19, #233)
+
+The functions that remove a secret from what the SDK hands back used to live
+in `ExchangeSender`, next to its HTTP transport and listener reporting, with
+the echoed-credential helpers in `EchoedCredentials`. `EhrRedaction` called
+six of them, and `ExchangeSender` read `EhrRedaction`'s context, so the two
+depended on each other. Stage 1 of the #233 plan moves them, unchanged, into
+`client.internal.SecretScrubber`.
+
+- **Pure functions, one direction.** Every `SecretScrubber` function takes the
+  secret to remove as a parameter. None reads the per-call `EhrRedaction`
+  context, sends a request or keeps state. Code that reads the context reads
+  it at the boundary and passes the token in: `ExchangeSender` for listener
+  exchanges, `EhrRedaction.exception` for exceptions, `CdsHooksClient` for a
+  failed HOOK response, and `OAuth2TokenClient` for its error body. So
+  `EhrRedaction`, `ExchangeSender`, `CdsHooksClient` and `OAuth2TokenClient`
+  call `SecretScrubber`, and it calls none of them. A reviewer checking the
+  #164 guarantee reads `SecretScrubber`, `EhrRedaction` and those call sites.
+- **`safeHookFailure` takes the token.** It was the one helper that read the
+  context itself. `CdsHooksClient` now passes `EhrRedaction.current().token()`,
+  on the same thread at the same point in the call. A package-private overload
+  without the token serves the existing unit test, as
+  `redactFhirAuthorization` already did for `redactRequest`.
+- **Duplicates folded only where identical.** The two loops that removed the
+  token from every header name and value are now `redactHeaders`. The
+  listener's header loop stays separate, because it applies another policy:
+  it keeps only the scheme of a request `Authorization` header and drops
+  `Set-Cookie`. The two status-and-headers `HttpResponse` stubs are one stub.
+  It reads the status, request, TLS session, URI and version from the payer's
+  response only when one of them is asked for, as the old stub did.
+  `PayerCallException` reads only the status and headers.
 
 ## Not yet done
 
