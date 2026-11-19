@@ -189,6 +189,19 @@ class LoopbackPayerTest {
     }
 
     @Test
+    void replyHeaderNamesAreCaseInsensitiveLikeHttpHeaders() throws Exception {
+        try (LoopbackPayer payer = new LoopbackPayer()) {
+            payer.on("/added", new Reply(200, "{}").withHeader("X-Multi", "a").withHeader("x-multi", "b"));
+            payer.on("/removed", new Reply(200, "{}").withoutHeader("content-type"));
+            payer.on("/given", new Reply(200, "{}", Map.of("X-One", List.of("a"))).withHeader("x-ONE", "b"));
+
+            assertEquals(List.of("a", "b"), get(payer.url("/added")).headers().allValues("X-Multi"));
+            assertEquals(Optional.empty(), get(payer.url("/removed")).headers().firstValue("Content-Type"));
+            assertEquals(List.of("a", "b"), get(payer.url("/given")).headers().allValues("X-One"));
+        }
+    }
+
+    @Test
     void anExplicitHeaderMapIsSentAsGiven() throws Exception {
         try (LoopbackPayer payer = new LoopbackPayer()) {
             payer.on("/x", new Reply(200, "text", Map.of("Content-Type", List.of("text/plain"))));
