@@ -5,6 +5,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerExchangeMetadata.Outcome;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Received;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
@@ -47,7 +48,14 @@ class PayerExchangeTest {
     void stop() {
         release.countDown();
         if (payer != null) {
-            payer.close();
+            try {
+                // A test that closed the payer itself to cause a transport failure has nothing to probe.
+                if (!payer.isClosed()) {
+                    UnroutedGuard.assertUnroutedIsNotFound(payer);
+                }
+            } finally {
+                payer.close();
+            }
         }
     }
 

@@ -259,6 +259,11 @@ public final class LoopbackPayer implements AutoCloseable {
         return received.stream().filter(r -> r.rawPath().equals(rawPath)).toList();
     }
 
+    /** Whether {@link #close()} has been called, for a teardown that must not probe a stopped payer. */
+    public boolean isClosed() {
+        return closed.get();
+    }
+
     /**
      * Waits, up to the settle bound, for running requests to finish; then stops the server, interrupts
      * what is still running and waits up to the bound again for it to end. Then it fails with any
