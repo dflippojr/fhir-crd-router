@@ -66,6 +66,9 @@ class CdsHooksClientAuthTest {
 
     private HttpServer server;
     private LoopbackPayer payer;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
     private final Map<String, String> secrets = new HashMap<>();
 
     @AfterEach
@@ -85,6 +88,7 @@ class CdsHooksClientAuthTest {
         AtomicReference<String> failure = new AtomicReference<>();
 
         payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
         String base = payer.origin();
         payer.on("/cds-services/order-sign-crd", request -> {
             try {
@@ -117,6 +121,7 @@ class CdsHooksClientAuthTest {
         AtomicReference<String> failure = new AtomicReference<>();
 
         payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
         String base = payer.origin();
         payer.on("/token", request -> {
             Map<String, String> form = parseForm(request.body());

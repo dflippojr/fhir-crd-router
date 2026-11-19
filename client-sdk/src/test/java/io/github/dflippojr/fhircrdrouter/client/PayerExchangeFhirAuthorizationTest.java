@@ -12,6 +12,7 @@ import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpClient;
@@ -41,6 +42,16 @@ class PayerExchangeFhirAuthorizationTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final List<PayerExchange> exchanges = new ArrayList<>();
     private final LoopbackPayer payer = new LoopbackPayer();
+
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
+    @BeforeEach
+    void routesOnly() {
+        // The tests that call reset() replace this with their own responder, as on master.
+        payer.otherwise(request -> NOT_FOUND);
+    }
 
     @AfterEach
     void stop() {

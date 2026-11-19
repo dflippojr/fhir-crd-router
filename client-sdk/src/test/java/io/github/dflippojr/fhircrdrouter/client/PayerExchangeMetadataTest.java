@@ -39,6 +39,9 @@ class PayerExchangeMetadataTest {
     private final List<PayerExchangeMetadata> seen = new ArrayList<>();
     private LoopbackPayer payer;
     private String base;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
     private final CountDownLatch release = new CountDownLatch(1);
 
     @AfterEach
@@ -195,6 +198,7 @@ class PayerExchangeMetadataTest {
 
     private void start() {
         payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
         base = payer.origin();
     }
 
