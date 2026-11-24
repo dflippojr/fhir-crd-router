@@ -40,7 +40,8 @@
     <sonar.host.url>https://sonarcloud.io</sonar.host.url>
     <jackson.version>2.22.4</jackson.version>
     <junit.version>6.1.3</junit.version>
-    <jqwik.version>1.10.2</jqwik.version>
+    <!-- Pinned to the 1.9 line (#258). Dependabot ignores 1.10+ in .github/dependabot.yml. -->
+    <jqwik.version>1.9.3</jqwik.version>
     <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
     <!-- JaCoCo coverage floor, enforced at verify. Each tested module sets its
          own floor at its measured coverage minus 0.01. Raise a floor when
