@@ -12,6 +12,10 @@ updates:
       jackson:
         patterns:
           - "com.fasterxml.jackson*"
+    # jqwik stays on the 1.9 line (#258): no 1.10 or later proposals.
+    ignore:
+      - dependency-name: "net.jqwik:*"
+        versions: [">= 1.10"]
   - package-ecosystem: github-actions
     assignees:
       - dflippojr
