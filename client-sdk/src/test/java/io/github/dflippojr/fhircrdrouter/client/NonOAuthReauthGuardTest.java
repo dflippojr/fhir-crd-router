@@ -1,21 +1,21 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -40,13 +40,24 @@ class NonOAuthReauthGuardTest {
     private static final CdsHookRequest REQUEST =
             new CdsHookRequest("order-sign", "instance-1", Map.of(), Map.of());
 
-    private HttpServer server;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
+    private final LoopbackPayer payer = new LoopbackPayer();
     private final Map<String, String> secrets = new HashMap<>();
+
+    @BeforeEach
+    void routesOnly() {
+        payer.otherwise(request -> NOT_FOUND);
+    }
 
     @AfterEach
     void stop() {
-        if (server != null) {
-            server.stop(0);
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
         }
     }
 
@@ -55,22 +66,15 @@ class NonOAuthReauthGuardTest {
     void ordinaryCallOnNonOAuthConnectionDoesNotReauthenticateAfter401(AuthType authType) throws Exception {
         AtomicInteger hookRequests = new AtomicInteger();
         AtomicInteger tokenRequests = new AtomicInteger();
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.createContext("/cds-services/order-sign-crd", exchange -> {
-            if (hookRequests.incrementAndGet() == 1) {
-                respond(exchange, 401, "{\"error\":\"unauthorized\"}");
-            } else {
-                respond(exchange, 200, EMPTY_RESPONSE);
-            }
-        });
-        server.createContext("/token", exchange -> {
+        payer.on("/cds-services/order-sign-crd", request -> hookRequests.incrementAndGet() == 1
+                ? new Reply(401, "{\"error\":\"unauthorized\"}")
+                : new Reply(200, EMPTY_RESPONSE));
+        payer.on("/token", request -> {
             tokenRequests.incrementAndGet();
-            respond(exchange, 200, "{\"access_token\":\"stray\",\"expires_in\":300}");
+            return new Reply(200, "{\"access_token\":\"stray\",\"expires_in\":300}");
         });
-        server.start();
 
-        ConnectionRecord record = record(authType, base);
+        ConnectionRecord record = record(authType);
         CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), credentials());
 
         PayerCallException failure = assertThrows(PayerCallException.class,
@@ -81,23 +85,15 @@ class NonOAuthReauthGuardTest {
         assertEquals(0, tokenRequests.get(), "token requests");
     }
 
-    private ConnectionRecord record(AuthType authType, String base) throws Exception {
-        ConnectionRecord.Builder builder = ConnectionRecord.builder()
-                .payerId("PAYER-" + authType).environment(Environment.SANDBOX).baseUrl(base)
-                .authType(authType).tokenEndpoint(base + "/token");
+    private ConnectionRecord record(AuthType authType) throws Exception {
         switch (authType) {
             case NONE -> { }
-            case API_KEY -> {
-                secrets.put("api-key", "synthetic-api-key");
-                builder.credentialRef("api-key");
-            }
-            case CDS_HOOKS_JWT -> {
-                secrets.put("signing-key", TestKeys.privateKeyPem(TestKeys.ec("secp384r1")));
-                builder.clientId("ehr-client").keyId("key-1").credentialRef("signing-key");
-            }
+            case API_KEY -> secrets.put(TestRecords.CREDENTIAL_REF, "synthetic-api-key");
+            case CDS_HOOKS_JWT -> secrets.put(TestRecords.CREDENTIAL_REF, TestKeys.privateKeyPem(TestKeys.ec("secp384r1")));
             default -> throw new IllegalArgumentException("not a non-OAuth type under test: " + authType);
         }
-        return builder.build();
+        return TestRecords.forAuth(authType, payer).payerId("PAYER-" + authType).tokenEndpoint(payer.url("/token"))
+                .build();
     }
 
     private CredentialProvider credentials() {
@@ -106,10 +102,5 @@ class NonOAuthReauthGuardTest {
             @Override public void put(String ref, String value) { secrets.put(ref, value); }
             @Override public void remove(String ref) { secrets.remove(ref); }
         };
-    }
-
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        TestResponses.respond(exchange, status, body);
     }
 }

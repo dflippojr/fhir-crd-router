@@ -145,7 +145,7 @@ class EhrRedactionTest {
         assertEquals("a.B", safe.getStackTrace()[0].getClassName());
         assertEquals(7, safe.getStackTrace()[0].getLineNumber());
         assertEquals(error.getStackTrace()[1], safe.getStackTrace()[1]);
-        assertFalse(printed(ExchangeSender.safeError(new IOException("x") {
+        assertFalse(printed(SecretScrubber.safeError(new IOException("x") {
             @Override public StackTraceElement[] getStackTrace() { return new StackTraceElement[] {frame}; }
             @Override public String getMessage() { return TOKEN; }
         }, TOKEN, false)).contains(TOKEN));
@@ -237,7 +237,7 @@ class EhrRedactionTest {
     @Test
     void theStatusOnlyResponseCarriesNothingElse() {
         HttpHeaders headers = HttpHeaders.of(Map.of("A", List.of("b")), (k, v) -> true);
-        HttpResponse<String> response = EhrRedaction.status(418, headers, URI_);
+        HttpResponse<String> response = SecretScrubber.status(418, headers, URI_);
 
         assertEquals(418, response.statusCode());
         assertSame(headers, response.headers());
@@ -254,7 +254,7 @@ class EhrRedactionTest {
         IOException error = new IOException("clean");
         error.setStackTrace(new StackTraceElement[] {new StackTraceElement("a." + TOKEN, "run", null, 3)});
 
-        Exception safe = ExchangeSender.safeError(error, TOKEN, false);
+        Exception safe = SecretScrubber.safeError(error, TOKEN, false);
 
         assertNotSame(error, safe);
         assertEquals("a.[REDACTED]", safe.getStackTrace()[0].getClassName());
@@ -267,11 +267,11 @@ class EhrRedactionTest {
                 response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), "x");
         PayerCallException inPayer = PayerCallException.transport("inner", PayerCallPhase.HOOK, TOKEN, URI_,
                 new IOException("x"));
-        assertFalse(ExchangeSender.mentions(new RouterException("w", inBody), TOKEN));
-        assertTrue(ExchangeSender.mentions(new RouterException("w", inPayer), TOKEN));
+        assertFalse(SecretScrubber.mentions(new RouterException("w", inBody), TOKEN));
+        assertTrue(SecretScrubber.mentions(new RouterException("w", inPayer), TOKEN));
         PayerCallException bodyShows = new PayerCallException("inner: ", PayerCallPhase.HOOK, "payer", URI_,
                 response(400, HttpHeaders.of(Map.of(), (k, v) -> true)), TOKEN);
-        assertTrue(ExchangeSender.fieldsShow(bodyShows, TOKEN));
+        assertTrue(SecretScrubber.fieldsShow(bodyShows, TOKEN));
     }
 
     private RuntimeException assertCopy(RuntimeException error, Class<?> kind) {

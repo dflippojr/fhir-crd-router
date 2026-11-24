@@ -1,17 +1,15 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -43,30 +41,37 @@ class VerifyFreshTokenTest {
     private final AtomicInteger tokenRequests = new AtomicInteger();
     private final List<PayerExchange> exchanges = new CopyOnWriteArrayList<>();
     private volatile String secret = "good-secret";
-    private HttpServer server;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
+    private LoopbackPayer payer;
     private CdsHooksClient client;
 
     @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/token", exchange -> {
+    void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        payer.on("/token", request -> {
             tokenRequests.incrementAndGet();
-            if (GOOD_BASIC.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
-                TestResponses.respond(exchange, 200, "{\"access_token\":\"good-token\",\"expires_in\":300}");
-            } else {
-                TestResponses.respond(exchange, 401, "{\"error\":\"invalid_client\"}");
+            if (GOOD_BASIC.equals(request.authorization())) {
+                return plain(200, "{\"access_token\":\"good-token\",\"expires_in\":300}");
             }
+            return plain(401, "{\"error\":\"invalid_client\"}");
         });
-        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 200,
-                exchange.getRequestURI().getPath().equals("/cds-services") ? CATALOG : "{\"cards\":[]}"));
-        server.start();
+        payer.on("/cds-services", request -> plain(200,
+                request.rawPath().equals("/cds-services") ? CATALOG : "{\"cards\":[]}"));
         client = new CdsHooksClient(HttpClient.newHttpClient(), provider(), null,
                 CdsHooksClient.DEFAULT_REQUEST_TIMEOUT, CdsHooksClient.DEFAULT_CONNECT_TIMEOUT, exchanges::add);
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @Test
@@ -127,9 +132,8 @@ class VerifyFreshTokenTest {
     void aDiscovery401IsReportedAfterOneTokenRequestAndLeavesTheCacheAlone() {
         client.callHook(record(), "order-sign-crd", REQUEST);
         int before = tokenRequests.get();
-        server.removeContext("/cds-services");
-        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange,
-                exchange.getRequestURI().getPath().equals("/cds-services") ? 401 : 200, "{\"cards\":[]}"));
+        payer.on("/cds-services", request -> plain(
+                request.rawPath().equals("/cds-services") ? 401 : 200, "{\"cards\":[]}"));
 
         ConnectionVerification report = client.verify(record());
 
@@ -144,8 +148,7 @@ class VerifyFreshTokenTest {
 
     @Test
     void aDiscovery401OnAColdCacheDoesNotExchangeASecondToken() {
-        server.removeContext("/cds-services");
-        server.createContext("/cds-services", exchange -> TestResponses.respond(exchange, 401, "{}"));
+        payer.on("/cds-services", plain(401, "{}"));
 
         assertEquals(OptionalInt.of(401), client.verify(record()).failureStatus());
 
@@ -155,15 +158,9 @@ class VerifyFreshTokenTest {
     @Test
     void throttleRetriesReuseTheVerifysOneToken() {
         AtomicInteger discoveries = new AtomicInteger();
-        server.removeContext("/cds-services");
-        server.createContext("/cds-services", exchange -> {
-            if (discoveries.incrementAndGet() == 1) {
-                exchange.getResponseHeaders().add("Retry-After", "0");
-                TestResponses.respond(exchange, 429, "{}");
-            } else {
-                TestResponses.respond(exchange, 200, CATALOG);
-            }
-        });
+        payer.on("/cds-services", request -> discoveries.incrementAndGet() == 1
+                ? plain(429, "{}").withHeader("Retry-After", "0")
+                : plain(200, CATALOG));
         client.retryPolicy(new RetryPolicy(3, Duration.ofSeconds(1)));
 
         assertTrue(client.verify(record()).ok());
@@ -173,11 +170,12 @@ class VerifyFreshTokenTest {
     }
 
     private ConnectionRecord record() {
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        return ConnectionRecord.builder()
-                .payerId("PAYER-ROTATED").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
-                .clientId("synthetic-client").credentialRef("rotating").build();
+        return TestRecords.oauth2(payer).payerId("PAYER-ROTATED").clientId("synthetic-client").build();
+    }
+
+    /** {@code body} with no Content-Type, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 
     private CredentialProvider provider() {

@@ -18,9 +18,9 @@
   </description>
 
   <properties>
-    <!-- JaCoCo floor (see the parent pom): measured 2026-10-30 at 0.9858 line, 0.9592 branch. -->
-    <jacoco.minimum.line>0.9758</jacoco.minimum.line>
-    <jacoco.minimum.branch>0.9492</jacoco.minimum.branch>
+    <!-- JaCoCo floor (see the parent pom): measured 2026-11-19 at 0.9924 line, 0.9612 branch. -->
+    <jacoco.minimum.line>0.9824</jacoco.minimum.line>
+    <jacoco.minimum.branch>0.9512</jacoco.minimum.branch>
   </properties>
 
   <dependencies>

@@ -13,30 +13,30 @@ class EchoedCredentialsTest {
     @Test
     void replacesEveryOccurrenceOfEachCredential() {
         assertEquals("[REDACTED] then [REDACTED] and [REDACTED]",
-                EchoedCredentials.redact("key-1 then key-1 and secret", "key-1", "secret"));
+                SecretScrubber.redact("key-1 then key-1 and secret", "key-1", "secret"));
     }
 
     @Test
     void absentOrEmptyCredentialLeavesBodyAlone() {
         // String.replace("", ...) would put the marker between every character.
-        assertEquals("body", EchoedCredentials.redact("body", null, ""));
-        assertEquals("body", EchoedCredentials.redact("body"));
+        assertEquals("body", SecretScrubber.redact("body", null, ""));
+        assertEquals("body", SecretScrubber.redact("body"));
     }
 
     @Test
     void nullBodyStaysNull() {
-        assertNull(EchoedCredentials.redact(null, "key"));
+        assertNull(SecretScrubber.redact(null, "key"));
     }
 
     @ParameterizedTest
     @CsvSource({"Bearer abc.def, abc.def", "Basic dXNlcjpwYXNz, dXNlcjpwYXNz", "bare-token, bare-token",
             "' leading', ' leading'"})
     void credentialFollowsTheScheme(String header, String credential) {
-        assertEquals(credential, EchoedCredentials.fromAuthorization(header));
+        assertEquals(credential, SecretScrubber.fromAuthorization(header));
     }
 
     @Test
     void noHeaderMeansNoCredential() {
-        assertNull(EchoedCredentials.fromAuthorization(null));
+        assertNull(SecretScrubber.fromAuthorization(null));
     }
 }

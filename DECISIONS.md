@@ -200,7 +200,7 @@ host. `http` is allowed only to a loopback host (`localhost`, `127.0.0.0/8`,
   cache lookup, since `jwksUrl` is not in the cache key, and before the
   secret supplier runs, so a failing credential provider cannot hide the
   refusal. `EndpointUrls.requireTokenUrls` is the shared check, also used by
-  `CdsHooksClient`'s preflight.
+  the preflight of every `CdsHooksClient` call (in `PayerCallLoop.send`).
 
 ## Writes sweep killed writers' temporary files (2026-11-03, #120)
 
@@ -314,7 +314,59 @@ response header name and value.
   `RouterException` naming only the original class.
 - **Payer call errors.** A HOOK `PayerCallException` gets the same treatment
   for its body (and so its message) and its kept headers, through
-  `ExchangeSender.safeHookFailure`.
+  `SecretScrubber.safeHookFailure`.
+
+## Token scrubbing in one class (2026-11-19, #233)
+
+The functions that remove a secret from what the SDK hands back used to live
+in `ExchangeSender`, next to its HTTP transport and listener reporting, with
+the echoed-credential helpers in `EchoedCredentials`. `EhrRedaction` called
+six of them, and `ExchangeSender` read `EhrRedaction`'s context, so the two
+depended on each other. Stage 1 of the #233 plan moves them, unchanged, into
+`client.internal.SecretScrubber`.
+
+- **Pure functions, one direction.** Every `SecretScrubber` function takes the
+  secret to remove as a parameter. None reads the per-call `EhrRedaction`
+  context, sends a request or keeps state. Code that reads the context reads
+  it at the boundary and passes the token in: `ExchangeSender` for listener
+  exchanges, `EhrRedaction.exception` for exceptions, `PayerCallLoop` for a
+  failed HOOK response, and `OAuth2TokenClient` for its error body. So
+  `EhrRedaction`, `ExchangeSender`, `PayerCallLoop`, `CdsHooksClient` and
+  `OAuth2TokenClient` call `SecretScrubber`, and it calls none of them. A
+  reviewer checking the #164 guarantee reads `SecretScrubber`, `EhrRedaction`
+  and those call sites.
+- **`safeHookFailure` takes the token.** It was the one helper that read the
+  context itself. The payer call loop (`PayerCallLoop` since stage 3) now
+  passes `EhrRedaction.current().token()`, on the same thread at the same
+  point in the call. A package-private overload without the token serves the
+  existing unit test, as `redactFhirAuthorization` already did for
+  `redactRequest`.
+- **Duplicates folded only where identical.** The two loops that removed the
+  token from every header name and value are now `redactHeaders`. The
+  listener's header loop stays separate, because it applies another policy:
+  it keeps only the scheme of a request `Authorization` header and drops
+  `Set-Cookie`. The two status-and-headers `HttpResponse` stubs are one stub.
+  It reads the status, request, TLS session, URI and version from the payer's
+  response only when one of them is asked for, as the old stub did.
+  `PayerCallException` reads only the status and headers.
+- **Stage 2: the transport is its own class.** `client.internal.BoundedHttp`
+  sends one request and reads its body under two bounds: the request
+  timeout covers the body as well as the headers, and a body over the limit
+  fails instead of being buffered. Its code moved unchanged from
+  `ExchangeSender`. It depends only on the JDK: it reads no `EhrRedaction`
+  context and sees no listener. `ExchangeSender.send` wraps it with the
+  listener reporting.
+- **Stage 3: `CdsHooksClient` is a facade.** It keeps its constructors and
+  methods, discovery, and the hook calls with their response parsing. The
+  rest moved unchanged into package-private classes in `client`:
+  `PayerCallLoop` (the auth header, the 401 re-authentication, the throttle
+  retries and the redaction of a failed HOOK response), `MtlsClients` (the
+  fingerprinted mutual TLS client cache), `CredentialLookup` (credential
+  reads and the exceptions for a missing or unreadable credential) and
+  `ConnectionVerifier` (how `verify` reports a catalog or a failure). The
+  plan named the first three. The verify mapping moved too, because without
+  it `CdsHooksClient.java` stayed at 397 lines, over the issue's limit of
+  350. None of the four depends on `CdsHooksClient`.
 
 ## Not yet done
 
@@ -454,16 +506,141 @@ request, and it is one of `gate`'s needs.
 `AuthType` has two public predicates: `usesOAuth2Token()`, true for the two
 OAuth2 client-credentials types, and `signsJwt()`, true for
 `OAUTH2_PRIVATE_KEY_JWT` and `CDS_HOOKS_JWT`. `ConnectionRecord`,
-`EndpointUrls` and `CdsHooksClient` ask them, not compare constants, so a new
-auth type is decided in one place. The predicates are a small addition to the
+`EndpointUrls` and the client (`PayerCallLoop` and `CredentialLookup` since
+#233) ask them, not compare constants, so a new auth type is decided in one
+place. The predicates are a small addition to the
 `directory-core` API, chosen over a `core.internal` helper so the downstream
 workbench can use them too.
 
 Both are exhaustive switches with no `default`. Adding a constant is a compile
 error until its author says which predicate it satisfies. The `||` chains they
 replace would have let a new constant fall through silently. The `switch` in
-`CdsHooksClient.applyAuth` and `OAuth2TokenClient`'s single-constant check stay
-as they are.
+`PayerCallLoop.applyAuth` (in `CdsHooksClient` until #233) and
+`OAuth2TokenClient`'s single-constant check stay as they are.
 
 Behaviour is unchanged. `ConnectionRecordTest` and `EndpointUrlsTest` pin, for
 all five types, which fields each requires and which URLs each checks.
+
+## Isolate an unreadable connection entry (2026-11-17, #231)
+
+`FileBasedConnectionStore` used to bind the whole file as one
+`ConnectionRecord[]`. One entry that failed to bind (a field its auth type
+requires missing, or a property or enum constant this version does not know)
+failed every read, so `resolve` failed for every payer, and failed `save` and
+`delete`, which read first. The one consumer pins an older commit, so a writer
+and a reader on different versions is a normal state. The owner chose option A
+on the issue: isolate the entry, and make its own key throw a specific error
+rather than read as absent. This is the rule #156 and #107 already state:
+never fail the whole catalog for one entry.
+
+- **Read.** The file is read as a list of raw nodes and each node is bound on
+  its own. A node that does not bind becomes an `InvalidEntry` (index,
+  payerId and environment where readable, and the problem class: the simple
+  name of the root exception). The payerId and environment are read with the
+  binding's own rules, so `environment: 2` is `PRODUCTION` there too. A key
+  field written twice takes its last value there as well, as the record
+  binding does (automated review at `dd5c066`: a one-property creator had
+  failed on the repeat and lost the key, so the entry read as absent). A null
+  payerId or environment argument matches nothing, as before. A file that is not YAML, or not a list, still
+  fails as a whole.
+- **Bind from the parser, write from a tree.** Each list item is bound
+  straight from the YAML parser, item by item, the way the whole-file
+  binding always bound it, so every scalar binds as before: `payerId: 1.10`
+  is `"1.10"`, `environment: +2` is `PRODUCTION`, a decimal time keeps its
+  nanoseconds. After an item fails, the parser skips to the item's end and
+  the next item binds as usual. The tree is used only for the rewrite.
+  Jackson's own tree turns `1.10` into `1.1`, so `StoredYaml` builds it
+  instead: a plain number or boolean keeps its spelling and is written back
+  unquoted. `ScalarShapeCorpusTest` checks about 60 scalar shapes, each in a
+  string, a time and an enum field, against the old binding and through a
+  rewrite. (Five automated review rounds on #238 found one shape at a time
+  while items were bound from the tree.)
+- **Known limit: a rewrite writes back only a plain tree.** Jackson's YAML
+  generator writes no tag, anchor or alias, and quotes a number with a
+  leading zero; a tree keeps one value per mapping key. Each loss can change
+  how an entry binds or break a newer reader, so the owner chose an
+  allowlist over a growing blocklist (migration review round 3 on #238).
+  - An untouched entry is written back only if its parsed tree is plain:
+    mappings, sequences and scalars in any style (plain, quoted, block),
+    with no anchor, alias, explicit tag or duplicate key. Every explicit tag
+    counts, YAML's own (`!!str 3`) and a type id (`!<limit>`) alike. Anything
+    else makes the value that holds it unwritable, and `save` and `delete`
+    refuse, name each entry by position, key and field, and leave the file
+    unchanged. What each construct would do in a rewrite:
+    `environment: !!float 2` does not bind (a float is no enum index) but
+    would come back as `2`, which binds as `PRODUCTION`. A complete record
+    with `status: INACTIVE` and a second `status: ACTIVE` does not bind but
+    would come back as a routable `ACTIVE`. A newer version's polymorphic
+    field loses its type id (`futurePolicy: !<limit>`). A newer version's
+    `@JsonIdentityInfo` object written twice (`- &1 count: 2`, `- *1`) loses
+    its anchor, and the alias comes back as the string `"1"`, which the newer
+    reader cannot resolve.
+  - The check reads SnakeYAML's events, not Jackson's tokens. Jackson's
+    parser does not report a scalar's anchor or a key's tag, so a check built
+    on it would only block what Jackson happens to show. A tag or anchor on
+    a key makes that key's value unwritable. A tag or anchor on the list
+    itself, or a second YAML document (never read, so a rewrite would drop
+    it), refuses writes for the whole file. A first document that is null
+    (`null`, `~` or an empty `---`) holds no records, but a document after
+    it refuses writes the same way (migration review 4: a save had replaced
+    the file and erased it). A file with one such document, or none, stays
+    writable. Events that do not match the tree the store read refuse the
+    whole file too. Reads never depend on the check.
+  - YAML reads a number with a leading zero as octal (`environment: 02` is
+    2, `lastVerifiedAt: 010` is 8), and the generator writes it back
+    quoted, as a string, which binds differently (`"02"` is no environment,
+    `"010"` is epoch second 10). In a known field of a readable entry the
+    rewrite writes the field's bound value instead (`PRODUCTION`, the
+    instant), the value the store wrote before #231, so the entry binds as
+    before. Anywhere else (an unreadable entry, or a field this version does
+    not know) its type is unknown, and the write refuses. A known field is
+    matched by its exact name: a name that holds `.` or `[` (`status.future`,
+    `status[0]`) is a field of its own, never a path into `status`
+    (migration review 5: a save had written `'010'` there). A refusal shows
+    such a name quoted. Each plain number
+    is checked by writing it through the generator and reading it back, so
+    any other value the generator would change is caught the same way.
+  - The entry's own repair still goes ahead: a save that sets the affected
+    field writes over its stored value, and a delete removes the entry. An
+    entry anchored or tagged as a whole cannot be written over, so any write
+    that would rewrite it refuses. An anchor in one entry and its alias in
+    another block deleting either, since the other entry would be rewritten;
+    only a hand edit clears them.
+  - History on #238: option 3 refused a tag that disagrees with its plain
+    text; migration review round 2 added duplicate keys and type ids; round
+    3 found anchors and aliases, and the owner replaced the blocklist with
+    this allowlist. Accepting the loss (option 1) and taking round 3 as a
+    follow-up were both rejected. A lossless emitter, or a rewrite that
+    splices only the changed entry's bytes, is #239.
+- **Lookup.** `findAll` returns the readable records. `findByPayerIdAndEnvironment`
+  for an invalid entry's key, and `findByPayerId` for its payer, throw
+  `InvalidConnectionRecordException`, a `RouterException`. `findByPayerId`
+  throws rather than return the payer's other records, because a silently
+  partial answer is the "reads as absent" case the owner ruled out. The
+  message names payer, environment, entry index and problem class only; the
+  Jackson exception is not attached as the cause, because its message can
+  quote a field value (as with #164's token).
+- **Write.** `save` and `delete` rebuild the file from the raw nodes. An entry
+  they do not touch is written back as read. `save` lays the record's fields
+  over its key's node in place, so an unknown field survives, and appends a new
+  key. `delete` removes an invalid entry by key, which is the repair path.
+  Saving an existing key now keeps its position; it used to move it to the
+  end. An entry with no stored `createdAt` or `updatedAt` keeps none, where a
+  rewrite used to fill them in with the time of the read.
+- **Unknown properties still make an entry invalid.** `ConnectionRecord` keeps
+  Jackson's `FAIL_ON_UNKNOWN_PROPERTIES` (option C was declined). After an
+  older writer's `save` over an entry a newer version wrote, the newer field
+  survives and that key still does not resolve on the older version. An entry
+  whose environment this version does not know matches no key, so the API
+  cannot delete it; only a hand edit can.
+- **Audit.** `AuditedConnectionStore` reads the old record before it writes.
+  On `InvalidConnectionRecordException` it records a save as
+  `connection.update` naming every audited field (the old values are
+  unknown, and the save writes every field, a cleared one too), and a delete as
+  `connection.delete`, so the wrapper is no barrier to repair.
+- **Diagnostics.** `FileBasedConnectionStore.invalidEntries()` lists the
+  invalid entries for an admin tool. It is not on `ConnectionStore`.
+
+The issue planned three stages, the first refusing writes until lossless
+writes landed. They shipped in one pull request, one commit each, so no
+released version refuses writes.

@@ -1,8 +1,17 @@
 package io.github.dflippojr.fhircrdrouter.core;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonStreamContext;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import io.github.dflippojr.fhircrdrouter.core.internal.AtomicFiles;
@@ -49,6 +58,38 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *
  * <p>A file with no YAML content (empty, whitespace or comments only) reads as
  * no records, like a missing file, and {@link #save} writes into it.
+ *
+ * <p><b>One unreadable entry does not break the others (#231).</b> The file is
+ * read as a YAML list of raw nodes and each node is bound on its own. A node
+ * that does not bind (a field its auth type requires is missing, or it has a
+ * property or enum constant this version does not know, as a file written by a
+ * newer version can) is kept as an {@link InvalidEntry}, listed by
+ * {@link #invalidEntries()}. Other payers resolve as usual, and {@link #findAll}
+ * leaves the entry out. A lookup that would include it, by its payerId or by
+ * its key, throws {@link InvalidConnectionRecordException} naming the payer,
+ * the environment and the problem class, never a field value. An entry whose
+ * environment this version does not know matches no key; only
+ * {@link #findByPayerId} and {@link #invalidEntries()} see it. A file that is
+ * not YAML, or not a list, still fails every read.
+ *
+ * <p>Writes are lossless at node level: every entry {@link #save} or
+ * {@link #delete} does not touch is written back as it was read, readable or
+ * not, with any field this version does not know. {@code save} lays the
+ * record's fields over its key's stored node, in place, so a newer field on
+ * that entry survives an older writer's update, and appends a new key at the
+ * end. {@code delete} removes every entry with the key, including an unreadable
+ * one, which is how the API clears it. YAML comments and formatting are not
+ * kept by a rewrite. A rewrite writes an entry back only while its tree is
+ * plain: mappings, sequences and scalars, with no anchor, alias, explicit tag
+ * or duplicate key (#231, owner decision). The YAML writer cannot keep any of
+ * those, and losing one can change how the entry binds
+ * ({@code environment: !!float 2} would become the readable {@code 2}) or
+ * break a newer reader (a {@code @JsonIdentityInfo} alias would become a
+ * string). While an entry to be written holds one, writes refuse and name the
+ * entry and field; a tag on the list itself, or a second YAML document (also after a null
+ * first one), refuses them for the whole file. A number with a leading zero, which YAML reads as
+ * octal and the writer would quote, is written as its field's bound value in a
+ * readable entry, and refused where its type is unknown.
  *
  * <p><b>Single-process assumption:</b> there is no cross-process file lock.
  * One process (and ideally one store instance) must own the file; concurrent
@@ -108,72 +149,347 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                 .enable(SerializationFeature.INDENT_OUTPUT);
     }
 
+    /**
+     * The payer's records. Throws {@link InvalidConnectionRecordException} when an entry this version
+     * cannot read names this payer, since the answer would otherwise be silently incomplete.
+     */
     @Override
     public List<ConnectionRecord> findByPayerId(String payerId) {
-        return readAll().stream().filter(r -> r.payerId().equals(payerId)).toList();
+        Snapshot snapshot = readAll();
+        for (InvalidEntry invalid : snapshot.invalid) {
+            if (invalid.hasPayerId(payerId)) {
+                throw invalidRecord(invalid);
+            }
+        }
+        return snapshot.records.stream().filter(r -> r.payerId().equals(payerId)).toList();
     }
 
+    /**
+     * The record for one key. Throws {@link InvalidConnectionRecordException} when an entry this
+     * version cannot read has this key, so a broken record never reads as absent (#231).
+     */
     @Override
     public Optional<ConnectionRecord> findByPayerIdAndEnvironment(String payerId, Environment environment) {
-        return readAll().stream()
+        Snapshot snapshot = readAll();
+        for (InvalidEntry invalid : snapshot.invalid) {
+            if (invalid.hasPayerId(payerId) && environment != null && invalid.environment() == environment) {
+                throw invalidRecord(invalid);
+            }
+        }
+        return snapshot.records.stream()
                 .filter(r -> r.payerId().equals(payerId) && r.environment() == environment)
                 .findFirst();
     }
 
+    /** Every record this version can read; entries it cannot read are left out (#231). */
     @Override
     public List<ConnectionRecord> findAll() {
-        return readAll();
+        return readAll().records;
     }
 
+    /**
+     * The stored entries this version cannot read, in file order, for an admin tool to show (#231).
+     * Empty when every entry binds. Not on {@link ConnectionStore}: it describes this file format.
+     * A read that fails as a whole (the file is not YAML, or not a list) throws, as the lookups do.
+     */
+    public List<InvalidEntry> invalidEntries() {
+        return readAll().invalid;
+    }
+
+    /**
+     * Writes the record over its key's stored entry, in place, or appends it when the key has none.
+     * The record's fields are laid over the stored entry's node, so a property this version does not
+     * know survives the update (#231). Every other entry, readable or not, is written back as read.
+     * A later entry with the same key is dropped, as before.
+     */
     @Override
     public void save(ConnectionRecord record) {
         lock.writeLock().lock();
         try {
-            List<ConnectionRecord> all = new ArrayList<>(readAll());
-            all.removeIf(r -> r.key().equals(record.key()));
-            all.add(record);
-            writeAll(all);
+            Snapshot snapshot = readAll();
+            List<Entry> entries = snapshot.entries;
+            ObjectNode known = mapper.valueToTree(record);
+            List<JsonNode> nodes = new ArrayList<>();
+            List<String> refusals = snapshot.refusals();
+            boolean placed = false;
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                JsonNode node;
+                if (!entry.hasKey(record.payerId(), record.environment())) {
+                    node = entry.node;
+                } else if (!placed) {
+                    node = overlay(entry.node, known);
+                    placed = true;
+                } else {
+                    continue;
+                }
+                // The saved entry's known fields come from the saved record; an untouched entry's from its own.
+                nodes.add(prepare(index, entry, node, node == entry.node ? entry.record() : record, refusals));
+            }
+            if (!placed) {
+                nodes.add(known);
+            }
+            refuseUnwritable(refusals);
+            writeAll(nodes);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
+    /**
+     * Removes every stored entry with this key, including one this version cannot read, which makes
+     * delete the way to clear a broken entry through the API (#231). Other entries are written back as
+     * read.
+     */
     @Override
     public void delete(String payerId, Environment environment) {
         lock.writeLock().lock();
         try {
-            List<ConnectionRecord> all = new ArrayList<>(readAll());
+            Snapshot snapshot = readAll();
+            List<Entry> entries = snapshot.entries;
+            List<JsonNode> kept = new ArrayList<>();
+            List<String> refusals = snapshot.refusals();
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                if (!entry.hasKey(payerId, environment)) {
+                    kept.add(prepare(index, entry, entry.node, entry.record(), refusals));
+                }
+            }
             // No match: leave the file alone, so a no-op delete neither creates it nor
             // risks a refused replace on Windows.
-            if (all.removeIf(r -> r.payerId().equals(payerId) && r.environment() == environment)) {
-                writeAll(all);
+            if (kept.size() != entries.size()) {
+                refuseUnwritable(refusals);
+                writeAll(kept);
             }
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    private List<ConnectionRecord> readAll() {
+    /**
+     * The node to write for one entry. The YAML generator cannot write every value back as it was read
+     * (#231), so a value it would change is handled before anything is written:
+     * <ul>
+     *   <li>a value outside the plain tree (an anchor, an alias, an explicit tag such as
+     *   {@code environment: !!float 2} or a type id such as {@code futurePolicy: !<limit>}, or a duplicate key,
+     *   which a tree keeps once, so {@code status: INACTIVE} then {@code status: ACTIVE} would become a routable
+     *   ACTIVE entry) is refused (owner decisions on #231: option 3, then the allowlist);</li>
+     *   <li>a number with a leading zero ({@code environment: 02}, octal 2; {@code lastVerifiedAt: 010},
+     *   octal 8), which would come back quoted, as a string, is written as the field's bound value when it is
+     *   a known field of a readable entry, the same value the store wrote before #231, so it binds as before;
+     *   anywhere else its type is unknown and it is refused.</li>
+     * </ul>
+     * A save that sets the field writes over its stored value, so the entry's own repair goes ahead; deleting
+     * the entry rewrites nothing of it.
+     * A refusal is noted by position, key and field, never by value.
+     */
+    private JsonNode prepare(int index, Entry entry, JsonNode node, ConnectionRecord record, List<String> refusals) {
+        List<StoredYaml.Problem> problems = StoredYaml.problems(node);
+        if (problems.isEmpty()) {
+            return node;
+        }
+        ObjectNode bound = record == null || !(node instanceof ObjectNode) ? null : mapper.valueToTree(record);
+        ObjectNode fixed = null;
+        for (StoredYaml.Problem problem : problems) {
+            // A known field is matched by its exact name: status.future is its own field, never a path into status.
+            if (problem.boundValueKeepsBinding() && bound != null && problem.field() != null
+                    && bound.has(problem.field())) {
+                fixed = fixed == null ? ((ObjectNode) node).deepCopy() : fixed;
+                fixed.set(problem.field(), bound.get(problem.field()));
+            } else {
+                refusals.add(where(index, entry, problem.path()) + " (" + problem.reason()
+                        + (problem.boundValueKeepsBinding() ? ", whose type is unknown here)" : ")"));
+            }
+        }
+        return fixed == null ? node : fixed;
+    }
+
+    private static String where(int index, Entry entry, String field) {
+        return "entry " + index + " (payerId=" + entry.payerId() + " environment="
+                + (entry.environment() == null ? "(unreadable)" : entry.environment()) + "), "
+                + (field.isEmpty() ? "the entry itself" : "field " + field);
+    }
+
+    /** Refuses the write, before anything is written, when an entry holds a value it cannot write back. */
+    private void refuseUnwritable(List<String> refusals) {
+        if (!refusals.isEmpty()) {
+            throw new RouterException("Refusing to write connection store at " + path + ": a rewrite writes back"
+                    + " only plain YAML (no anchor, alias, explicit tag or duplicate key) and cannot write these"
+                    + " values back as they were read: " + String.join("; ", refusals)
+                    + ". Edit them in the file by hand first.");
+        }
+    }
+
+    /**
+     * The stored node with the record's fields laid over it; fields this version does not know stay.
+     * A node with a key is an object, since a scalar or null list item has no payerId, unless the
+     * entry is anchored or tagged as a whole, in which case it is left as it stands and the write refuses it.
+     */
+    private static JsonNode overlay(JsonNode stored, ObjectNode known) {
+        if (!(stored instanceof ObjectNode object)) {
+            return stored; // an entry anchored or tagged as a whole: the write refuses it as it stands
+        }
+        ObjectNode merged = object.deepCopy();
+        merged.setAll(known);
+        return merged;
+    }
+
+    private InvalidConnectionRecordException invalidRecord(InvalidEntry invalid) {
+        return new InvalidConnectionRecordException("Connection record cannot be read: " + describe(invalid)
+                + " in " + path, invalid.payerId(), invalid.environment(), invalid.problem());
+    }
+
+    /** Names the entry by key, position and problem class only, never by a field value. */
+    private static String describe(InvalidEntry invalid) {
+        return "payerId=" + invalid.payerId()
+                + " environment=" + (invalid.environment() == null ? "(unreadable)" : invalid.environment())
+                + " (entry " + invalid.index() + ", " + invalid.problem() + ")";
+    }
+
+    private Snapshot readAll() {
         lock.readLock().lock();
         try {
             if (!Files.exists(path)) {
                 cache = null;
-                return List.of();
+                return Snapshot.EMPTY;
             }
             byte[] bytes = Files.readAllBytes(path);
             Snapshot cached = cache;
             if (cached != null && Arrays.equals(cached.bytes, bytes)) {
-                return cached.records;
+                return cached;
             }
-            ConnectionRecord[] records = hasContent(bytes) ? mapper.readValue(bytes, ConnectionRecord[].class) : null;
-            List<ConnectionRecord> parsed = records == null ? List.of() : List.of(records);
-            cache = new Snapshot(bytes, parsed);
+            Snapshot parsed = parse(bytes);
+            cache = parsed;
             return parsed;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed reading connection store at " + path, e);
         } finally {
             lock.readLock().unlock();
         }
+    }
+
+    /**
+     * Reads the file as a YAML list, then binds each list item on its own, so one entry this version
+     * cannot read leaves the others usable (#231). A file that is not a list, or not YAML, still fails as
+     * a whole.
+     */
+    private Snapshot parse(byte[] bytes) throws IOException {
+        // The tree is what a rewrite writes back; StoredYaml keeps each unquoted scalar as it was spelled.
+        if (!hasContent(bytes)) {
+            return bind(bytes, List.of(), null); // blanks and comments only: no document at all
+        }
+        StoredYaml.Document document = mapper.readValue(bytes, StoredYaml.Document.class);
+        // A null document (null, ~) never reaches the deserializer: readValue answers it as null.
+        JsonNode root = document == null ? null : document.root();
+        if (root == null) {
+            // No records, but a save replaces the whole file: a document after this one still refuses it.
+            return bind(bytes, List.of(), StoredYaml.allowlist(null, bytes));
+        }
+        if (!root.isArray()) {
+            throw new IOException("expected a YAML list of connection records, found " + root.getNodeType());
+        }
+        String unwritable = StoredYaml.allowlist((ArrayNode) root, bytes);
+        List<JsonNode> nodes = new ArrayList<>();
+        root.forEach(nodes::add);
+        return bind(bytes, nodes, unwritable);
+    }
+
+    /**
+     * Pairs each node with what its list item binds to. Items are bound from the YAML parser over the
+     * file's bytes, item by item, never from the tree: that is the binding the store always had, so every
+     * scalar (an unquoted {@code 1.10}, {@code +2}, a tagged or decimal value) binds as it did before. An
+     * item that does not bind is kept as an invalid entry; its key is read the same way, field by field.
+     */
+    private Snapshot bind(byte[] bytes, List<JsonNode> nodes, String unwritable) throws IOException {
+        if (nodes.isEmpty()) {
+            return new Snapshot(bytes, List.of(), List.of(), List.of(), unwritable);
+        }
+        List<Bound<ConnectionRecord>> bound = bindEach(bytes, mapper.readerFor(ConnectionRecord.class), nodes.size());
+        List<Bound<PayerIdField>> payerIds = null;
+        List<Bound<EnvironmentField>> environments = null;
+        List<Entry> entries = new ArrayList<>();
+        List<ConnectionRecord> records = new ArrayList<>();
+        List<InvalidEntry> invalid = new ArrayList<>();
+        for (int index = 0; index < nodes.size(); index++) {
+            JsonNode node = nodes.get(index);
+            ConnectionRecord record = bound.get(index).value();
+            if (record != null) {
+                records.add(record);
+                entries.add(new Entry(node, record.payerId(), record.environment(), record));
+                continue;
+            }
+            if (payerIds == null) {
+                payerIds = bindEach(bytes, keyReader(PayerIdField.class), nodes.size());
+                environments = bindEach(bytes, keyReader(EnvironmentField.class)
+                        .with(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL), nodes.size());
+            }
+            PayerIdField payerId = payerIds.get(index).value();
+            EnvironmentField environment = environments.get(index).value();
+            InvalidEntry entry = new InvalidEntry(index, payerId == null ? null : payerId.payerId,
+                    environment == null ? null : environment.environment, bound.get(index).problem());
+            invalid.add(entry);
+            entries.add(new Entry(node, entry.payerId(), entry.environment(), null));
+        }
+        return new Snapshot(bytes, List.copyOf(entries), List.copyOf(records), List.copyOf(invalid), unwritable);
+    }
+
+    private ObjectReader keyReader(Class<?> type) {
+        return mapper.readerFor(type).without(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+    }
+
+    /** What one list item bound to, or the simple class name of the root exception that stopped it. */
+    private record Bound<T>(T value, String problem) { }
+
+    /**
+     * One key field of an entry, bound alone so a broken environment cannot hide a readable payerId. Bound to a
+     * field, not through a creator: a key written twice takes its last value, as {@link ConnectionRecord} does,
+     * where a one-property creator would be built on the first and fail on the second, losing the key.
+     */
+    private static final class PayerIdField {
+        @JsonProperty("payerId")
+        private String payerId;
+    }
+
+    private static final class EnvironmentField {
+        @JsonProperty("environment")
+        private Environment environment;
+    }
+
+    /**
+     * Binds each item of the file's top-level list with {@code reader}, on the YAML parser. After an item
+     * fails, the parser is moved to the item's end (back to the list's own context), so the next item
+     * binds as usual. A read failure inside an item is caught too (the parser has no number for
+     * {@code .nan} in a string field): the bytes already parsed as a tree, so the stream itself is sound.
+     */
+    private <T> List<Bound<T>> bindEach(byte[] bytes, ObjectReader reader, int expected) throws IOException {
+        List<Bound<T>> out = new ArrayList<>();
+        try (JsonParser parser = mapper.createParser(bytes)) {
+            parser.nextToken();
+            JsonStreamContext list = parser.getParsingContext();
+            while (parser.nextToken() != JsonToken.END_ARRAY) {
+                try {
+                    T value = reader.readValue(parser);
+                    out.add(value == null ? new Bound<>(null, "NullEntry") : new Bound<>(value, null));
+                } catch (JsonProcessingException | IllegalArgumentException e) {
+                    out.add(new Bound<>(null, rootCause(e).getClass().getSimpleName()));
+                    while (parser.getParsingContext() != list) {
+                        parser.nextToken();
+                    }
+                }
+            }
+        }
+        if (out.size() != expected) {
+            throw new IOException("the YAML list read as " + expected + " items but bound as " + out.size());
+        }
+        return out;
+    }
+
+    private static Throwable rootCause(Throwable e) {
+        Throwable root = e;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return root;
     }
 
     /**
@@ -193,7 +509,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    private void writeAll(List<ConnectionRecord> records) {
+    private void writeAll(List<JsonNode> nodes) {
         Path dir = path.toAbsolutePath().getParent();
         Path tmp = null;
         try {
@@ -204,8 +520,13 @@ public final class FileBasedConnectionStore implements ConnectionStore {
             tmp = AtomicFiles.createOwnerOnlyTempNextTo(tempFiles, path);
             mirrorPermissions(tmp);
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            mapper.writeValue(buffer, records);
+            ArrayNode list = mapper.createArrayNode();
+            list.addAll(nodes);
+            mapper.writeValue(buffer, list);
             byte[] bytes = buffer.toByteArray();
+            // Bound before the replace, so a binding failure cannot report a write that already happened.
+            // What was written is a plain tree, so the written file has nothing a later write must refuse.
+            Snapshot written = bind(bytes, nodes, null);
             AtomicFiles.writeDurably(tmp, bytes);
             try {
                 AtomicFiles.replace(tmp, path, mover);
@@ -214,7 +535,7 @@ public final class FileBasedConnectionStore implements ConnectionStore {
                         + ": the file is open in another process or access is denied", e);
             }
             tmp = null;
-            cache = new Snapshot(bytes, List.copyOf(records));
+            cache = written;
         } catch (IOException e) {
             throw new UncheckedIOException("Failed writing connection store at " + path, e);
         } finally {
@@ -222,14 +543,64 @@ public final class FileBasedConnectionStore implements ConnectionStore {
         }
     }
 
-    /** Parsed records together with the exact file bytes they came from. */
-    private static final class Snapshot {
-        private final byte[] bytes;
-        private final List<ConnectionRecord> records;
+    /**
+     * An entry of the stored list that this version cannot bind to a {@link ConnectionRecord} (#231).
+     * It names the entry and the problem, never a field value.
+     *
+     * @param index the entry's zero-based position in the stored list
+     * @param payerId the entry's {@code payerId}, or {@code null} when it has none this version can read
+     * @param environment the entry's environment, or {@code null} when it has none this version knows
+     * @param problem the simple class name of the exception that stopped the entry binding, or
+     *     {@code NullEntry} for an empty list item
+     */
+    public record InvalidEntry(int index, String payerId, Environment environment, String problem) {
+        boolean hasPayerId(String other) {
+            return payerId != null && payerId.equals(other);
+        }
+    }
 
-        private Snapshot(byte[] bytes, List<ConnectionRecord> records) {
+    /**
+     * One item of the stored list: its node as read, never modified, its key, which is null where this
+     * version cannot read it, and the record it binds to, or null when it does not bind.
+     */
+    private record Entry(JsonNode node, String payerId, Environment environment, ConnectionRecord record) {
+        boolean hasKey(String otherPayerId, Environment otherEnvironment) {
+            // A null payerId or environment matched nothing before #231 and must not throw, nor match an entry
+            // whose payerId or environment this version cannot read.
+            return payerId != null && payerId.equals(otherPayerId)
+                    && environment != null && otherEnvironment == environment;
+        }
+    }
+
+    /**
+     * What the file held, together with the exact file bytes it came from, and what keeps the document as a
+     * whole from being written back (null where nothing does).
+     */
+    private static final class Snapshot {
+        static final Snapshot EMPTY = new Snapshot(new byte[0], List.of(), List.of(), List.of(), null);
+
+        private final byte[] bytes;
+        private final List<Entry> entries;
+        private final List<ConnectionRecord> records;
+        private final List<InvalidEntry> invalid;
+        private final String unwritable;
+
+        private Snapshot(byte[] bytes, List<Entry> entries, List<ConnectionRecord> records, List<InvalidEntry> invalid,
+                         String unwritable) {
             this.bytes = bytes;
+            this.entries = entries;
             this.records = records;
+            this.invalid = invalid;
+            this.unwritable = unwritable;
+        }
+
+        /** The refusals a write starts from: the document's own, if any. */
+        List<String> refusals() {
+            List<String> refusals = new ArrayList<>();
+            if (unwritable != null) {
+                refusals.add("the document itself (" + unwritable + ")");
+            }
+            return refusals;
         }
     }
 

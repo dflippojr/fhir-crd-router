@@ -1,16 +1,15 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
-import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
@@ -31,21 +30,28 @@ class RetryAfterTest {
     private static final String HOOK_PATH = "/cds-services/hook";
     // Generous guard: catches a client that sleeps out a 120 s Retry-After without being sensitive to a slow runner.
     private static final Duration GUARD = Duration.ofSeconds(30);
-    private HttpServer server;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+
+    private LoopbackPayer payer;
     private ConnectionRecord record;
     private final AtomicInteger calls = new AtomicInteger();
 
     @BeforeEach
-    void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.start();
-        record = ConnectionRecord.builder().payerId("PAYER-TEST").environment(Environment.SANDBOX)
-                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).authType(AuthType.NONE).build();
+    void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        record = TestRecords.none(payer).payerId("PAYER-TEST").build();
     }
 
     @AfterEach
     void stop() {
-        server.stop(0);
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            payer.close();
+        }
     }
 
     @Test
@@ -91,12 +97,10 @@ class RetryAfterTest {
     @Test
     void retrySucceedsAfter429AndListenerSeesBothAttempts() {
         List<PayerExchange> seen = new CopyOnWriteArrayList<>();
-        server.createContext(HOOK_PATH, exchange -> {
+        payer.on(HOOK_PATH, request -> {
             boolean first = calls.incrementAndGet() == 1;
-            if (first) {
-                exchange.getResponseHeaders().add("Retry-After", "1");
-            }
-            TestResponses.respond(exchange, first ? 429 : 200, first ? "slow down" : "{\"cards\":[]}");
+            Reply reply = plain(first ? 429 : 200, first ? "slow down" : "{\"cards\":[]}");
+            return first ? reply.withHeader("Retry-After", "1") : reply;
         });
         CdsHooksClient client = new CdsHooksClient(HttpClient.newHttpClient(), null, null,
                 Duration.ofSeconds(2), Duration.ofSeconds(1), seen::add)
@@ -138,23 +142,15 @@ class RetryAfterTest {
     void oauthReauthenticationIsOutsideTheThrottleBudget() {
         AtomicInteger tokens = new AtomicInteger();
         List<Integer> statuses = new CopyOnWriteArrayList<>();
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.createContext("/token", exchange -> {
-            exchange.getResponseHeaders().add("Content-Type", "application/json");
-            TestResponses.respond(exchange, 200,
-                    "{\"access_token\":\"token-" + tokens.incrementAndGet() + "\",\"expires_in\":300}");
-        });
-        server.createContext(HOOK_PATH, exchange -> {
+        payer.on("/token", request -> new Reply(200,
+                "{\"access_token\":\"token-" + tokens.incrementAndGet() + "\",\"expires_in\":300}"));
+        payer.on(HOOK_PATH, request -> {
             int status = calls.incrementAndGet() == 2 ? 401 : 429;
             statuses.add(status);
-            if (status == 429) {
-                exchange.getResponseHeaders().add("Retry-After", "0");
-            }
-            TestResponses.respond(exchange, status, "throttled");
+            Reply reply = plain(status, "throttled");
+            return status == 429 ? reply.withHeader("Retry-After", "0") : reply;
         });
-        ConnectionRecord oauth = ConnectionRecord.builder().payerId("PAYER-OAUTH").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(AuthType.OAUTH2_CLIENT_CREDENTIALS).tokenEndpoint(base + "/token")
-                .clientId("client").credentialRef("payer-oauth").build();
+        ConnectionRecord oauth = TestRecords.oauth2(payer).payerId("PAYER-OAUTH").build();
         CdsHooksClient client = new CdsHooksClient(secretProvider("secret"))
                 .retryPolicy(new RetryPolicy(2, Duration.ofSeconds(5)));
 
@@ -174,7 +170,6 @@ class RetryAfterTest {
                 .callHookRaw(record, "hook", REQUEST));
         assertEquals(1, calls.get());
 
-        server.removeContext(HOOK_PATH);
         calls.set(0);
         respond(429, Map.of());
         assertThrows(PayerCallException.class, () -> clientWith(new RetryPolicy(3, Duration.ofSeconds(1)))
@@ -207,11 +202,21 @@ class RetryAfterTest {
         };
     }
 
+    /** Replaces the hook route with one that counts each call and answers {@code status} with {@code headers}. */
     private void respond(int status, Map<String, String> headers) {
-        server.createContext(HOOK_PATH, exchange -> {
+        Reply reply = plain(status, "throttled");
+        for (Map.Entry<String, String> header : headers.entrySet()) {
+            reply = reply.withHeader(header.getKey(), header.getValue());
+        }
+        Reply canned = reply;
+        payer.on(HOOK_PATH, request -> {
             calls.incrementAndGet();
-            headers.forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
-            TestResponses.respond(exchange, status, "throttled");
+            return canned;
         });
+    }
+
+    /** {@code body} with no Content-Type, as the hand-rolled server sent it. */
+    private static Reply plain(int status, String body) {
+        return new Reply(status, body, Map.of());
     }
 }

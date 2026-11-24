@@ -1,15 +1,20 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest.FhirAuthorization;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -17,9 +22,9 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -32,6 +37,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -52,11 +58,28 @@ class EhrTokenReachabilityTest {
     private static final String EHR = "https://ehr.example.org/fhir";
     private final List<PayerExchange> exchanges = new CopyOnWriteArrayList<>();
     private final List<AutoCloseable> closers = new ArrayList<>();
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
+    private final LoopbackPayer payer = new LoopbackPayer();
+
+    @BeforeEach
+    void routesOnly() {
+        payer.otherwise(request -> NOT_FOUND);
+    }
 
     @AfterEach
     void stop() throws Exception {
-        for (AutoCloseable closer : closers) {
-            closer.close();
+        try {
+            UnroutedGuard.assertUnroutedIsNotFound(payer);
+        } finally {
+            try {
+                payer.close();
+            } finally {
+                for (AutoCloseable closer : closers) {
+                    closer.close();
+                }
+            }
         }
     }
 
@@ -92,15 +115,11 @@ class EhrTokenReachabilityTest {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
                         + token.length() + "\r\n\r\n" + token,
                 "HTTP/1.1 2x0 broken\r\n\r\n"));
-        HttpServer hooks = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger calls = new AtomicInteger();
-        hooks.createContext("/cds-services/x", e -> {
-            e.getRequestBody().readAllBytes();
-            TestResponses.respond(e, calls.incrementAndGet() == 1 ? 401 : 200, "{\"cards\":[]}");
-        });
-        hooks.start();
-        closers.add(() -> hooks.stop(0));
-        String base = "http://127.0.0.1:" + hooks.getAddress().getPort();
+        // No Content-Type, as the hand-rolled server sent it.
+        payer.on("/cds-services/x", request ->
+                new Reply(calls.incrementAndGet() == 1 ? 401 : 200, "{\"cards\":[]}", Map.of()));
+        String base = payer.origin();
 
         PayerCallException e = assertThrows(PayerCallException.class,
                 () -> client().callHook(record(base, AuthType.OAUTH2_CLIENT_CREDENTIALS,
@@ -197,6 +216,33 @@ class EhrTokenReachabilityTest {
         assertThrows(org.opentest4j.AssertionFailedError.class, () -> assertUnreachable(e));
     }
 
+    /**
+     * The raw server answers a connection only once the whole request, head and body, has arrived (#230).
+     * Answering after a partial read and closing with request bytes unread makes the close a TCP reset,
+     * and on Windows a reset discards a response the client has not read yet, so a good token response
+     * became a transport failure.
+     */
+    @Test
+    void theRawServerReadsTheWholeRequestBeforeItAnswers() throws Exception {
+        String response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        int port = rawServer(List.of(response));
+        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+            socket.setSoTimeout(300);
+            out.write("POST /token HTTP/1.1\r\nHost: 127.0.0.1\r\n".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            assertThrows(SocketTimeoutException.class, in::read, "answered before the request head ended");
+            out.write("Content-Length: 5\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            assertThrows(SocketTimeoutException.class, in::read, "answered before the request body arrived");
+            out.write("abcde".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            socket.setSoTimeout(5000);
+            assertEquals(response, new String(in.readAllBytes(), StandardCharsets.US_ASCII));
+        }
+    }
+
     /** No cause, no suppressed, and the token unreachable from the exception or any exchange. */
     private void assertLeavesNothing(Throwable e) {
         assertNull(e.getCause(), () -> "cause attached: " + e.getCause());
@@ -288,16 +334,18 @@ class EhrTokenReachabilityTest {
         }
     }
 
-    /** A loopback server that answers each connection, in order, with the next raw response. */
+    /**
+     * A loopback server that answers each connection, in order, with the next raw response. It reads the
+     * whole request before it answers, so no request byte is unread when it closes the connection: a close
+     * with unread bytes is a TCP reset, which on Windows drops the response the client has not read (#230).
+     */
     private int rawServer(List<String> responses) throws IOException {
         ServerSocket socket = new ServerSocket(0, 4, InetAddress.getLoopbackAddress());
         closers.add(socket);
         Thread server = new Thread(() -> {
             for (String response : responses) {
                 try (Socket client = socket.accept()) {
-                    InputStream in = client.getInputStream();
-                    byte[] buffer = new byte[16384];
-                    in.read(buffer);
+                    readRequest(client.getInputStream());
                     OutputStream out = client.getOutputStream();
                     out.write(response.getBytes(StandardCharsets.US_ASCII));
                     out.flush();
@@ -309,6 +357,39 @@ class EhrTokenReachabilityTest {
         server.setDaemon(true);
         server.start();
         return socket.getLocalPort();
+    }
+
+    /**
+     * Reads one HTTP/1.1 request: the head up to its blank line, then the {@code Content-Length} bytes of
+     * its body (none without the header). The JDK client sends a known-length body, never chunked.
+     */
+    private static void readRequest(InputStream raw) throws IOException {
+        InputStream in = new BufferedInputStream(raw);
+        ByteArrayOutputStream head = new ByteArrayOutputStream();
+        while (!endsWithBlankLine(head)) {
+            int b = in.read();
+            if (b < 0) {
+                throw new EOFException("request head ended early");
+            }
+            head.write(b);
+        }
+        long length = 0;
+        for (String line : head.toString(StandardCharsets.US_ASCII).split("\r\n")) {
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("transfer-encoding:")) {
+                throw new IllegalStateException("rawServer reads Content-Length bodies only: " + line);
+            }
+            if (lower.startsWith("content-length:")) {
+                length = Long.parseLong(line.substring("content-length:".length()).trim());
+            }
+        }
+        in.skipNBytes(length);
+    }
+
+    private static boolean endsWithBlankLine(ByteArrayOutputStream head) {
+        byte[] bytes = head.toByteArray();
+        int n = bytes.length;
+        return n >= 4 && bytes[n - 4] == '\r' && bytes[n - 3] == '\n' && bytes[n - 2] == '\r' && bytes[n - 1] == '\n';
     }
 
     private static CdsHookRequest request(Map<String, Object> context) {

@@ -8,7 +8,12 @@ import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsExchange;
 import com.sun.net.httpserver.HttpsParameters;
 import com.sun.net.httpserver.HttpsServer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Received;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -47,7 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** End-to-end auth tests: real HTTP(S) servers verifying what the client actually sends. */
+/**
+ * End-to-end auth tests: real HTTP(S) servers verifying what the client actually sends. The plain HTTP
+ * tests use the shared fake payer; the mutual-TLS tests keep their own {@code HttpsServer}.
+ */
 class CdsHooksClientAuthTest {
 
     private static final String EMPTY_RESPONSE = "{\"cards\":[]}";
@@ -58,12 +66,23 @@ class CdsHooksClientAuthTest {
     Path tempDir;
 
     private HttpServer server;
+    private LoopbackPayer payer;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
     private final Map<String, String> secrets = new HashMap<>();
 
     @AfterEach
     void stop() {
         if (server != null) {
             server.stop(0);
+        }
+        if (payer != null) {
+            try {
+                UnroutedGuard.assertUnroutedIsNotFound(payer);
+            } finally {
+                payer.close();
+            }
         }
     }
 
@@ -73,11 +92,12 @@ class CdsHooksClientAuthTest {
         secrets.put("signing-key", TestKeys.privateKeyPem(keys));
         AtomicReference<String> failure = new AtomicReference<>();
 
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.createContext("/cds-services/order-sign-crd", exchange -> {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        String base = payer.origin();
+        payer.on("/cds-services/order-sign-crd", request -> {
             try {
-                SignedJWT jwt = SignedJWT.parse(bearer(exchange));
+                SignedJWT jwt = SignedJWT.parse(bearer(request));
                 if (!jwt.verify(new ECDSAVerifier((ECPublicKey) keys.getPublic()))) {
                     failure.set("signature did not verify");
                 } else if (!jwt.getJWTClaimsSet().getAudience().equals(List.of(base + "/cds-services/order-sign-crd"))) {
@@ -88,13 +108,10 @@ class CdsHooksClientAuthTest {
             } catch (Exception e) {
                 failure.set(e.toString());
             }
-            respond(exchange, failure.get() == null ? 200 : 401, EMPTY_RESPONSE);
+            return new Reply(failure.get() == null ? 200 : 401, EMPTY_RESPONSE);
         });
-        server.start();
 
-        ConnectionRecord record = ConnectionRecord.builder()
-                .payerId("PAYER-CDS-JWT").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.CDS_HOOKS_JWT).clientId("ehr-client").keyId("key-1")
+        ConnectionRecord record = TestRecords.cdsHooksJwt(payer).payerId("PAYER-CDS-JWT").clientId("ehr-client")
                 .credentialRef("signing-key").build();
 
         new CdsHooksClient(HttpClient.newHttpClient(), credentials()).callHook(record, "order-sign-crd", REQUEST);
@@ -108,13 +125,14 @@ class CdsHooksClientAuthTest {
         secrets.put("signing-key", TestKeys.privateKeyPem(keys));
         AtomicReference<String> failure = new AtomicReference<>();
 
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        String base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.createContext("/token", exchange -> {
-            Map<String, String> form = parseForm(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        String base = payer.origin();
+        payer.on("/token", request -> {
+            Map<String, String> form = parseForm(request.body());
             try {
                 SignedJWT assertion = SignedJWT.parse(form.get("client_assertion"));
-                if (exchange.getRequestHeaders().containsKey("Authorization")) {
+                if (request.headers().containsKey("Authorization")) {
                     failure.set("must not send Basic auth with private_key_jwt");
                 } else if (!"urn:ietf:params:oauth:client-assertion-type:jwt-bearer".equals(form.get("client_assertion_type"))) {
                     failure.set("wrong client_assertion_type");
@@ -126,16 +144,13 @@ class CdsHooksClientAuthTest {
             } catch (Exception e) {
                 failure.set(e.toString());
             }
-            respond(exchange, 200, "{\"access_token\":\"granted\",\"expires_in\":300}");
+            return new Reply(200, "{\"access_token\":\"granted\",\"expires_in\":300}");
         });
-        server.createContext("/cds-services/order-sign-crd", exchange ->
-                respond(exchange, "granted".equals(bearer(exchange)) ? 200 : 401, EMPTY_RESPONSE));
-        server.start();
+        payer.on("/cds-services/order-sign-crd", request ->
+                new Reply("granted".equals(bearer(request)) ? 200 : 401, EMPTY_RESPONSE));
 
-        ConnectionRecord record = ConnectionRecord.builder()
-                .payerId("PAYER-PKJWT").environment(Environment.SANDBOX).baseUrl(base)
-                .authType(AuthType.OAUTH2_PRIVATE_KEY_JWT).tokenEndpoint(base + "/token")
-                .clientId("ehr-client").keyId("key-1").credentialRef("signing-key").build();
+        ConnectionRecord record = TestRecords.privateKeyJwt(payer).payerId("PAYER-PKJWT").clientId("ehr-client")
+                .credentialRef("signing-key").build();
 
         new CdsHooksClient(HttpClient.newHttpClient(), credentials()).callHook(record, "order-sign-crd", REQUEST);
 
@@ -306,8 +321,8 @@ class CdsHooksClientAuthTest {
         };
     }
 
-    private static String bearer(HttpExchange exchange) {
-        String header = exchange.getRequestHeaders().getFirst("Authorization");
+    private static String bearer(Received request) {
+        String header = request.authorization();
         return header != null && header.startsWith("Bearer ") ? header.substring("Bearer ".length()) : "";
     }
 

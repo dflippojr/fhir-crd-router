@@ -7,10 +7,10 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.fhircrdrouter.client.internal.BearerTokens;
-import io.github.dflippojr.fhircrdrouter.client.internal.EchoedCredentials;
 import io.github.dflippojr.fhircrdrouter.client.internal.EhrRedaction;
 import io.github.dflippojr.fhircrdrouter.client.internal.EndpointUrls;
 import io.github.dflippojr.fhircrdrouter.client.internal.ExchangeSender;
+import io.github.dflippojr.fhircrdrouter.client.internal.SecretScrubber;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
@@ -342,7 +342,7 @@ public final class OAuth2TokenClient {
                 if (json != null && json.path(field).isTextual()) {
                     // During a hook call, the EHR's fhirAuthorization token is removed too (#164), before
                     // PayerCallException truncates the body.
-                    safe.put(field, EchoedCredentials.redact(json.get(field).asText(), sentCredential,
+                    safe.put(field, SecretScrubber.redact(json.get(field).asText(), sentCredential,
                             EhrRedaction.current().token()));
                 }
             }

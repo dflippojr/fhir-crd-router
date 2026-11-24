@@ -1,11 +1,13 @@
 package io.github.dflippojr.fhircrdrouter.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeMetadata.Outcome;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Received;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.LoopbackPayer.Reply;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.UnroutedGuard;
 import io.github.dflippojr.fhircrdrouter.client.testsupport.TestKeys;
-import io.github.dflippojr.fhircrdrouter.client.testsupport.TestResponses;
+import io.github.dflippojr.fhircrdrouter.client.testsupport.TestRecords;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.CredentialProvider;
@@ -17,8 +19,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
@@ -37,15 +37,25 @@ class PayerExchangeTest {
     private static final String RESPONSE = "{\"cards\":[]}";
     private static final CdsHookRequest REQUEST = new CdsHookRequest("order-sign", "instance", Map.of("patientId", "pat-1"), Map.of());
     private final List<PayerExchange> exchanges = new ArrayList<>();
-    private HttpServer server;
+    private LoopbackPayer payer;
     private String base;
+    /** The hand-rolled server's answer to a path no context matched, so a request no route expects still fails. */
+    private static final Reply NOT_FOUND = new Reply(404, "<h1>404 Not Found</h1>No context found for request",
+            Map.of("Content-Type", List.of("text/html")));
     private final CountDownLatch release = new CountDownLatch(1);
 
     @AfterEach
     void stop() {
         release.countDown();
-        if (server != null) {
-            server.stop(0);
+        if (payer != null) {
+            try {
+                // A test that closed the payer itself to cause a transport failure has nothing to probe.
+                if (!payer.isClosed()) {
+                    UnroutedGuard.assertUnroutedIsNotFound(payer);
+                }
+            } finally {
+                payer.close();
+            }
         }
     }
 
@@ -56,14 +66,14 @@ class PayerExchangeTest {
         String secret = auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT
                 ? TestKeys.privateKeyPem(TestKeys.ec("secp384r1")) : "client-secret-unique";
         List<String> sensitive = new ArrayList<>(List.of(secret, "access-token-unique", "cookie-secret"));
-        server.createContext("/token", e -> {
-            rememberCredentials(e, sensitive);
-            respond(e, 200, "{\"access_token\":\"access-token-unique\",\"refresh_token\":\"refresh-secret\","
+        payer.on("/token", request -> {
+            rememberCredentials(request, sensitive);
+            return respond(200, "{\"access_token\":\"access-token-unique\",\"refresh_token\":\"refresh-secret\","
                     + "\"token_type\":\"Bearer\",\"expires_in\":300,\"scope\":\"crd\"}");
         });
-        server.createContext("/cds-services/x", e -> {
-            rememberCredentials(e, sensitive);
-            respond(e, 200, RESPONSE);
+        payer.on("/cds-services/x", request -> {
+            rememberCredentials(request, sensitive);
+            return respond(200, RESPONSE);
         });
         CdsHooksClient client = client(secret, exchanges::add, Duration.ofSeconds(2));
         client.callHook(record(auth), "x", REQUEST);
@@ -114,9 +124,9 @@ class PayerExchangeTest {
         start();
         AtomicInteger tokens = new AtomicInteger();
         AtomicInteger hooks = new AtomicInteger();
-        server.createContext("/token", e -> respond(e, 200,
+        payer.on("/token", request -> respond(200,
                 "{\"access_token\":\"token-" + tokens.incrementAndGet() + "\",\"expires_in\":300}"));
-        server.createContext("/cds-services/x", e -> respond(e, hooks.incrementAndGet() == 1 ? 401 : 200, RESPONSE));
+        payer.on("/cds-services/x", request -> respond(hooks.incrementAndGet() == 1 ? 401 : 200, RESPONSE));
         CdsHooksClient client = client("secret", exchanges::add, Duration.ofSeconds(2));
         ConnectionRecord record = record(AuthType.OAUTH2_CLIENT_CREDENTIALS);
         client.callHook(record, "x", REQUEST);
@@ -134,7 +144,7 @@ class PayerExchangeTest {
     @Test
     void discoveryIsReportedAndThrowingListenerDoesNotChangeResult() throws Exception {
         start();
-        server.createContext("/cds-services", e -> respond(e, 200, "{\"services\":[]}"));
+        payer.on("/cds-services", respond(200, "{\"services\":[]}"));
         CdsHooksClient client = client("secret", e -> {
             exchanges.add(e);
             throw new IllegalStateException("listener failure");
@@ -149,7 +159,7 @@ class PayerExchangeTest {
     @EnumSource(value = AuthType.class, names = {"NONE", "OAUTH2_CLIENT_CREDENTIALS"})
     void transportFailureIsReportedWithOriginalErrorAndNoStatus(AuthType auth) throws Exception {
         start();
-        server.stop(0);
+        payer.close();
         CdsHooksClient client = client("secret", e -> {
             exchanges.add(e);
             throw new IllegalStateException("listener failure");
@@ -167,14 +177,14 @@ class PayerExchangeTest {
     @Test
     void timeoutIsReported() throws Exception {
         start();
-        server.createContext("/cds-services/x", e -> {
+        payer.on("/cds-services/x", request -> {
             try {
                 release.await();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-            } finally {
-                e.close();
             }
+            // The client timed out long before this reply, so it never reads it.
+            return respond(200, RESPONSE);
         });
         CdsHooksClient client = client("secret", exchanges::add, Duration.ofMillis(50));
         PayerCallException error = assertThrows(PayerCallException.class, () -> client.callHook(record(AuthType.NONE), "x", REQUEST));
@@ -188,7 +198,7 @@ class PayerExchangeTest {
             "{\"scope\":{\"access_token\":\"access-token-unique\"},\"token_type\":[]}"})
     void failedTokenResponsesNeverExposeRawBody(String body) throws Exception {
         start();
-        server.createContext("/token", e -> respond(e, 400, body));
+        payer.on("/token", respond(400, body));
         CdsHooksClient client = client("secret", exchanges::add, Duration.ofSeconds(2));
         assertThrows(PayerCallException.class, () -> client.callHook(record(AuthType.OAUTH2_CLIENT_CREDENTIALS), "x", REQUEST));
         assertEquals(1, exchanges.size());
@@ -200,7 +210,7 @@ class PayerExchangeTest {
     @Test
     void nonObjectHookBodyIsReportedAsOneExchange() throws Exception {
         start();
-        server.createContext("/cds-services/x", e -> respond(e, 200, "[]"));
+        payer.on("/cds-services/x", respond(200, "[]"));
         CdsHooksClient client = client("secret", exchanges::add, Duration.ofSeconds(2));
         assertThrows(RouterException.class, () -> client.callHook(record(AuthType.NONE), "x", REQUEST));
         assertEquals(1, exchanges.size());
@@ -210,16 +220,15 @@ class PayerExchangeTest {
         assertNull(exchanges.get(0).error());
     }
 
-    private void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        base = "http://127.0.0.1:" + server.getAddress().getPort();
-        server.start();
+    private void start() {
+        payer = new LoopbackPayer();
+        payer.otherwise(request -> NOT_FOUND);
+        base = payer.origin();
     }
 
     private ConnectionRecord record(AuthType auth) {
-        return ConnectionRecord.builder().payerId("payer").environment(Environment.SANDBOX)
-                .baseUrl(base).authType(auth).credentialRef("credential").clientId("client")
-                .keyId("key").tokenEndpoint(base + "/token").build();
+        return TestRecords.forAuth(auth, base).payerId("payer").credentialRef(TestRecords.CREDENTIAL_REF)
+                .clientId(TestRecords.CLIENT_ID).keyId("key").tokenEndpoint(base + TestRecords.TOKEN_PATH).build();
     }
 
     private CdsHooksClient client(String secret, PayerExchangeListener listener, Duration timeout) {
@@ -231,12 +240,12 @@ class PayerExchangeTest {
         return new CdsHooksClient(HttpClient.newHttpClient(), credentials, null, timeout, Duration.ofSeconds(1), listener);
     }
 
-    private static void rememberCredentials(HttpExchange exchange, List<String> sensitive) throws IOException {
-        String header = exchange.getRequestHeaders().getFirst("Authorization");
+    private static void rememberCredentials(Received request, List<String> sensitive) {
+        String header = request.authorization();
         if (header != null) {
             sensitive.add(header.substring(header.indexOf(' ') + 1));
         }
-        String body = URLDecoder.decode(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+        String body = URLDecoder.decode(request.body(), StandardCharsets.UTF_8);
         for (String pair : body.split("&")) {
             if (pair.startsWith("client_assertion=")) {
                 sensitive.add(pair.substring("client_assertion=".length()));
@@ -244,9 +253,9 @@ class PayerExchangeTest {
         }
     }
 
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        exchange.getResponseHeaders().add("sEt-CoOkIe", "session=cookie-secret");
-        exchange.getResponseHeaders().add("X-Request-Id", "trace-1");
-        TestResponses.respond(exchange, status, body);
+    /** {@code body} with a cookie and a request ID, and no {@code Content-Type}, as the hand-rolled server sent it. */
+    private static Reply respond(int status, String body) {
+        return new Reply(status, body, Map.of()).withHeader("sEt-CoOkIe", "session=cookie-secret")
+                .withHeader("X-Request-Id", "trace-1");
     }
 }
